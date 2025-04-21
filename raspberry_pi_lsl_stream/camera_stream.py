@@ -274,16 +274,18 @@ class LSLCameraStreamer:
             
         # NOTE: Max settings heuristic NOT implemented for PiCamera
         # Using requested/default width, height, fps for PiCamera
+        # Explicitly request BGR888 format for compatibility with OpenCV VideoWriter
+        target_format = 'BGR888' 
         try:
-            print(f"Configuring PiCamera for {self.requested_width}x{self.requested_height} @ {self.requested_fps:.2f}fps, format {self.pixel_format}...")
+            print(f"Configuring PiCamera for {self.requested_width}x{self.requested_height} @ {self.requested_fps:.2f}fps, format {target_format}...")
             self.picam2 = Picamera2()
             # Check format compatibility (optional, but good practice)
             # sensor_formats = self.picam2.sensor_formats
-            # if self.pixel_format not in sensor_formats:
-            #     print(f"Warning: Format {self.pixel_format} not directly supported by sensor. Available: {sensor_formats}. Trying anyway...")
+            # if target_format not in sensor_formats:
+            #     print(f"Warning: Format {target_format} not directly supported by sensor. Available: {sensor_formats}. Trying anyway...")
 
             config = self.picam2.create_video_configuration(
-                main={"size": (self.requested_width, self.requested_height)},
+                main={"size": (self.requested_width, self.requested_height), "format": target_format},
                 controls={"FrameRate": self.requested_fps}
             )
             self.picam2.configure(config)
@@ -294,10 +296,11 @@ class LSLCameraStreamer:
             self.height = self.requested_height
             self.actual_fps = self.requested_fps
             self.camera_model = self.picam2.camera_properties.get('Model', 'Unknown PiCam')
-            self.lsl_pixel_format = self.pixel_format
-            self._determine_picam_channels() # Sets self.num_channels
+            self.lsl_pixel_format = target_format # Store the actual format requested
+            # self._determine_picam_channels() # Sets self.num_channels - BGR888 is 3 channels
+            self.num_channels = 3 # Explicitly 3 for BGR888
 
-            print(f"PiCamera initialized successfully. Model: {self.camera_model}")
+            print(f"PiCamera initialized successfully. Model: {self.camera_model}, Format: {target_format}")
             self.is_picamera = True
             return True
 
@@ -310,32 +313,6 @@ class LSLCameraStreamer:
             self.picam2 = None
             self.is_picamera = False
             return False
-
-    def _determine_picam_channels(self):
-        """Estimates the number of color channels based on the PiCamera pixel format.
-        
-        This is used for calculating the total number of channels in the flattened
-        LSL stream data (width * height * num_channels).
-        Handles common RGB, RGBA, YUV, and basic Bayer formats.
-        Defaults to 3 for unknown formats.
-        """
-        fmt = self.pixel_format
-        if fmt == 'RGB888': self.num_channels = 3
-        elif fmt in ['XBGR8888', 'XRGB8888']: self.num_channels = 4 # Alpha channel
-        elif fmt == 'YUV420': 
-            # YUV420 is planar and more complex. For simplicity in reshaping,
-            # we might treat it as 3 channels, but this might not be visually correct
-            # without proper conversion on the receiving end.
-            print("Warning: YUV420 streaming needs careful handling. Treating as 3 channels for LSL channel count.")
-            self.num_channels = 3 
-        elif fmt.startswith('S') and fmt.endswith(('10', '12')): # Raw Bayer formats (e.g., SBGGR10)
-             # Raw Bayer data is single channel before debayering.
-             print(f"Warning: Raw Bayer format ({fmt}). Streaming raw data. Channel count set to 1.")
-             self.num_channels = 1
-        else:
-            # Fallback for other/unknown formats.
-            print(f"Warning: Unsupported PiCamera format {fmt} for channel count estimation. Assuming 3.")
-            self.num_channels = 3
 
     def _initialize_video_writer(self):
         """Initializes the OpenCV VideoWriter and, if threaded, the frame queue."""
@@ -592,16 +569,8 @@ class LSLCameraStreamer:
         try:
             # --- Capture frame ---
             if self.is_picamera and self.picam2:
-                 frame_data_raw = self.picam2.capture_array()
-                 # Convert frame if needed before writing/previewing
-                 # Check if the source format might be 4-channel (like XBGR8888)
-                 # Simple check based on shape - refine if more formats are used.
-                 if frame_data_raw.shape[2] == 4:
-                     # print("Converting 4ch frame to BGR") # Debug print
-                     frame_data = cv2.cvtColor(frame_data_raw, cv2.COLOR_BGRA2BGR)
-                 else:
-                     # Assume it's already BGR or compatible 3-channel format
-                     frame_data = frame_data_raw 
+                 # Requesting BGR888, so capture_array should return compatible format
+                 frame_data = self.picam2.capture_array()
             elif not self.is_picamera and self.cap:
                 ret, frame_data = self.cap.read()
                 if not ret or frame_data is None:
