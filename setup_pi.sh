@@ -22,10 +22,50 @@ echo "Updating package list..."
 apt update
 
 echo "Installing essential tools (python3-pip, python3-venv, git)..."
+# Ensure git is installed early as it might be needed for liblsl build
 apt install -y python3-pip python3-venv git
 
-echo "Installing liblsl-dev (LabStreamingLayer library)..."
-apt install -y liblsl-dev
+echo "Attempting to install liblsl-dev (LabStreamingLayer library) via apt..."
+if apt install -y liblsl-dev; then
+  echo "liblsl-dev installed successfully via apt."
+else
+  echo "apt install liblsl-dev failed. Attempting to build from source..."
+  # Install build dependencies for liblsl
+  echo "Installing build dependencies for liblsl (cmake, build-essential)..."
+  apt install -y cmake build-essential
+  
+  echo "Cloning liblsl repository..."
+  # Store current directory and go to home for cloning
+  ORIG_DIR=$(pwd)
+  cd ~
+  # Remove existing directory if present
+  if [ -d "liblsl" ]; then 
+      echo "Removing existing liblsl directory..."
+      rm -rf liblsl 
+  fi
+  git clone https://github.com/sccn/liblsl.git
+  cd liblsl
+
+  echo "Configuring liblsl build with CMake..."
+  mkdir -p build # Ensure build directory exists
+  cd build
+  cmake ..
+
+  echo "Compiling liblsl (this may take a while)..."
+  make
+
+  echo "Installing compiled liblsl..."
+  make install
+
+  echo "Updating shared library cache..."
+  ldconfig
+
+  echo "liblsl successfully built and installed from source."
+  # Return to original directory
+  cd "$ORIG_DIR"
+fi
+
+# --- Install other dependencies ---
 
 echo "Installing libcap-dev (needed for python-prctl, a picamera2 dependency)..."
 apt install -y libcap-dev
