@@ -573,14 +573,14 @@ class LSLCameraStreamer:
                  frame_data = self.picam2.capture_array()
                  
                  # --- TEMP: Save first frame as PNG for debugging ---
-                 if self.frame_count == 0:
-                     try:
-                         save_path = "first_frame_test.png"
-                         print(f"DEBUG: Saving first frame to {save_path} (Shape: {frame_data.shape}, Dtype: {frame_data.dtype})")
-                         cv2.imwrite(save_path, frame_data)
-                         print(f"DEBUG: Saved {save_path}")
-                     except Exception as e_save:
-                         print(f"DEBUG: Failed to save first frame: {e_save}")
+                 # if self.frame_count == 0:
+                 #     try:
+                 #         save_path = "first_frame_test.png"
+                 #         print(f"DEBUG: Saving first frame to {save_path} (Shape: {frame_data.shape}, Dtype: {frame_data.dtype})")
+                 #         cv2.imwrite(save_path, frame_data)
+                 #         print(f"DEBUG: Saved {save_path}")
+                 #     except Exception as e_save:
+                 #         print(f"DEBUG: Failed to save first frame: {e_save}")
                  # --- END TEMP ---
                  
             elif not self.is_picamera and self.cap:
