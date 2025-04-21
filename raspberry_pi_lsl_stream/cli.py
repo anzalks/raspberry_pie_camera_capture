@@ -36,6 +36,9 @@ def main():
                         help='[Webcam Only] Attempt to use the highest resolution and FPS reported by the webcam. Overrides --width, --height, --fps.')
     parser.add_argument('--duration', type=int, default=None,
                         help='Record for a fixed duration (in seconds) then stop automatically.')
+    # Add the flag back
+    parser.add_argument('--threaded-writer', action='store_true', 
+                        help='Use a separate thread for writing video frames (recommended for high resolution/fps).')
     # Other arguments
     parser.add_argument('--version', action='version', version=f'%(prog)s {__version__}')
 
@@ -70,7 +73,8 @@ def main():
             stream_name=args.stream_name,
             source_id=args.source_id,
             show_preview=args.show_preview,
-            use_max_settings=args.use_max_settings
+            use_max_settings=args.use_max_settings,
+            threaded_writer=args.threaded_writer,
         )
         
         # Register the streamer stop method to be called on normal/exception exit
