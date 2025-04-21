@@ -592,7 +592,16 @@ class LSLCameraStreamer:
         try:
             # --- Capture frame ---
             if self.is_picamera and self.picam2:
-                 frame_data = self.picam2.capture_array()
+                 frame_data_raw = self.picam2.capture_array()
+                 # Convert frame if needed before writing/previewing
+                 # Check if the source format might be 4-channel (like XBGR8888)
+                 # Simple check based on shape - refine if more formats are used.
+                 if frame_data_raw.shape[2] == 4:
+                     # print("Converting 4ch frame to BGR") # Debug print
+                     frame_data = cv2.cvtColor(frame_data_raw, cv2.COLOR_BGRA2BGR)
+                 else:
+                     # Assume it's already BGR or compatible 3-channel format
+                     frame_data = frame_data_raw 
             elif not self.is_picamera and self.cap:
                 ret, frame_data = self.cap.read()
                 if not ret or frame_data is None:
@@ -631,7 +640,7 @@ class LSLCameraStreamer:
             else:
                   print("Warning: LSL Outlet is None. Cannot push sample.")
             
-            # --- Show Preview Frame ---
+            # --- Show Preview Frame --- (Use the converted frame_data for preview too)
             if self.show_preview and hasattr(self, 'preview_window_name'):
                  try:
                      if cv2.getWindowProperty(self.preview_window_name, cv2.WND_PROP_VISIBLE) >= 1:
