@@ -1,0 +1,5 @@
+pylsl
+numpy
+picamera2
+opencv-python
+PySide6 
