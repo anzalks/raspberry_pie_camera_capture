@@ -319,10 +319,10 @@ class LSLCameraStreamer:
         
         # Generate filename based on timestamp
         timestamp_str = time.strftime("%Y%m%d_%H%M%S")
-        self.auto_output_filename = f"lsl_capture_{timestamp_str}.mp4"
+        self.auto_output_filename = f"lsl_capture_{timestamp_str}.avi"
         
         # Choose codec - Revert to h264
-        fourcc = cv2.VideoWriter_fourcc(*'h264')
+        fourcc = cv2.VideoWriter_fourcc(*'MJPG')
         frame_size = (self.width, self.height)
         
         # Ensure FPS is valid for VideoWriter and Queue sizing
@@ -344,11 +344,11 @@ class LSLCameraStreamer:
             self.frame_queue = None # Ensure it's None if not threaded
         # ---
 
-        print(f"Initializing video writer: {self.auto_output_filename}, Codec: h264 (in MP4), Size: {frame_size}, FPS: {fps:.2f}")
+        print(f"Initializing video writer: {self.auto_output_filename}, Codec: MJPG (in AVI), Size: {frame_size}, FPS: {fps:.2f}")
         try:
             self.video_writer = cv2.VideoWriter(self.auto_output_filename, fourcc, float(fps), frame_size)
             if not self.video_writer.isOpened():
-                print(f"Error: Could not open VideoWriter for file '{self.auto_output_filename}'. Check codec support for MP4 container.") 
+                print(f"Error: Could not open VideoWriter for file '{self.auto_output_filename}'. Check MJPG codec support for AVI container.") 
                 self.video_writer = None
             else:
                 print("Video writer initialized successfully.")
