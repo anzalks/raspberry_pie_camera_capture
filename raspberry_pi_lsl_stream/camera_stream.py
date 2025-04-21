@@ -106,39 +106,37 @@ class LSLCameraStreamer:
             raise # Re-raise the exception to signal failure
 
     def _initialize_camera(self):
-        """Initializes the camera by trying PiCamera first (if available on Linux),
-           then falling back to standard webcams via OpenCV."""
-        # webcam_indices_to_try = [0, 1] # Moved lower
+        """Initializes the camera by trying webcams first (via OpenCV),
+           then falling back to PiCamera (if available on Linux)."""
         initialized = False
 
-        # --- Try PiCamera First on Linux if Available ---
-        if platform.system() == 'Linux' and PICAMERA2_AVAILABLE:
-            print("Detected Linux with picamera2 library available. Trying PiCamera first...")
+        # --- Try Webcam First ---
+        print("Attempting Webcam initialization via OpenCV first...")
+        webcam_indices_to_try = [0, 1]
+        for index in webcam_indices_to_try:
+            if self._initialize_webcam(index):
+                initialized = True
+                # Message printed within _initialize_webcam on success
+                break # Stop trying if one webcam worked
+        
+        if not initialized:
+             print(f"Webcam indices {webcam_indices_to_try} failed or unavailable.")
+
+        # --- Fallback to PiCamera (if Webcam failed and on Linux/picam2 available) ---
+        if not initialized and platform.system() == 'Linux' and PICAMERA2_AVAILABLE:
+            print("Falling back to PiCamera initialization...")
             if self._initialize_picamera():
                 initialized = True
             else:
-                print("PiCamera initialization failed. Falling back to webcams...")
-
-        # --- Fallback to Webcam Initialization (if PiCamera failed or wasn't tried) ---
-        if not initialized:
-            print("Attempting Webcam initialization via OpenCV...")
-            webcam_indices_to_try = [0, 1]
-            for index in webcam_indices_to_try:
-                if self._initialize_webcam(index):
-                    initialized = True
-                    print(f"Using selected Webcam (index {index}).")
-                    break # Stop trying if one webcam worked
-            
-            if not initialized:
-                 print(f"Webcam indices {webcam_indices_to_try} also failed or unavailable.")
+                print("PiCamera fallback initialization also failed.")
 
         # --- Final Check ---
         if not initialized:
             error_message = "Could not initialize any camera. "
             if platform.system() == 'Linux' and PICAMERA2_AVAILABLE:
-                 error_message += "Both PiCamera and Webcam attempts failed."
+                 error_message += "Both Webcam and PiCamera attempts failed."
             elif platform.system() == 'Linux':
-                 error_message += "Picamera2 library unavailable and Webcam attempts failed."
+                 error_message += "Webcam attempts failed and Picamera2 library unavailable."
             else:
                  error_message += "Webcam attempts failed (Not on Linux or Picamera2 unavailable)."
             raise RuntimeError(error_message)
