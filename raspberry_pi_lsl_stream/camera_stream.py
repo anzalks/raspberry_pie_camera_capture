@@ -25,12 +25,15 @@ class LSLCameraStreamer:
     Handles the initialization of either a Raspberry Pi camera (via picamera2)
     or a standard USB webcam (via OpenCV), sets up an LSL stream, captures
     frames continuously, and pushes them with timestamps to the LSL outlet.
+    Video is automatically saved to a timestamped file.
     """
     def __init__(self, width=640, height=480, fps=30, pixel_format='RGB888',
                  stream_name='RaspberryPiCamera', source_id='RPiCam_UniqueID',
-                 use_webcam=False, webcam_index=0):
+                 show_preview=False,
+                 use_max_settings=False):
         """
         Initializes the streamer configuration and sets up camera and LSL.
+        Video is automatically saved to a timestamped file.
 
         Args:
             width (int): Desired frame width.
@@ -40,140 +43,203 @@ class LSLCameraStreamer:
                                 Ignored if use_webcam is True.
             stream_name (str): Name for the LSL stream.
             source_id (str): Unique identifier for the LSL stream source.
-            use_webcam (bool): If True, use OpenCV to access a USB webcam.
-                               If False, attempt to use Picamera2.
-            webcam_index (int): Index of the webcam to use if use_webcam is True.
+            show_preview (bool): If True, display a live preview window using OpenCV.
+            use_max_settings (bool): If True, attempt to use max resolution/FPS for webcams.
         """
         
         # Store configuration parameters
-        self.width = width
-        self.height = height
+        # Note: width, height, fps might be overridden by use_max_settings for webcams
+        self.requested_width = width 
+        self.requested_height = height
         self.requested_fps = float(fps)
         self.pixel_format = pixel_format # PiCam specific format request
         self.stream_name = stream_name
         self.source_id = source_id
-        self.use_webcam = use_webcam
-        self.webcam_index = webcam_index
+        self.is_picamera = False # Flag to indicate if PiCamera is being used
+        self.show_preview = show_preview 
+        self.use_max_settings = use_max_settings # Store the flag
+        self.auto_output_filename = None
+        self.video_writer = None
 
-        # Internal state variables
-        self.cap = None # Holds the OpenCV VideoCapture object if using webcam
-        self.picam2 = None # Holds the Picamera2 object if using Pi camera
-        self.lsl_pixel_format = pixel_format # Actual format used for LSL metadata (may differ from request)
-        self.num_channels = 3 # Estimated number of color channels (default to 3)
-        self.actual_fps = self.requested_fps # Actual frame rate achieved (may differ from request)
-        self.camera_model = "Unknown" # Model identifier for LSL metadata
-        self.outlet = None # LSL StreamOutlet object
-        self.info = None # LSL StreamInfo object
-        self.frame_count = 0 # Counter for frames successfully pushed to LSL
-        self._is_running = False # Flag indicating if the capture loop should run
+        # Internal state variables that get set during init
+        self.width = width # Actual width used
+        self.height = height # Actual height used
+        self.cap = None
+        self.picam2 = None
+        self.lsl_pixel_format = pixel_format
+        self.num_channels = 3
+        self.actual_fps = self.requested_fps
+        self.camera_model = "Unknown" 
+        self.outlet = None
+        self.info = None
+        self.frame_count = 0
+        self._is_running = False
 
         # Initialize camera and LSL stream upon instantiation
         try:
             self._initialize_camera()
             self._setup_lsl()
+            # Initialize VideoWriter AFTER camera is initialized
+            # Filename is now generated automatically within this method
+            self._initialize_video_writer()
+            # Create preview window if requested (do this after knowing dimensions)
+            if self.show_preview:
+                self.preview_window_name = f"Preview: {self.stream_name}"
+                cv2.namedWindow(self.preview_window_name, cv2.WINDOW_NORMAL) 
+                cv2.resizeWindow(self.preview_window_name, self.width // 2, self.height // 2) # Smaller preview
         except Exception as e:
             # Ensure cleanup if initialization fails
             print(f"Streamer initialization failed: {e}")
             self.stop() # Attempt to release any partially acquired resources
-            raise # Re-raise the exception
+            raise # Re-raise the exception to signal failure
 
     def _initialize_camera(self):
-        """Initializes either the webcam using OpenCV or the PiCamera using Picamera2."""
-        if self.use_webcam:
-            # --- Webcam Initialization (OpenCV) ---
-            print(f"Initializing USB Webcam (index {self.webcam_index}) via OpenCV...")
-            # Create OpenCV capture object
-            self.cap = cv2.VideoCapture(self.webcam_index)
-            if not self.cap.isOpened():
-                # Error if the webcam cannot be opened
-                raise RuntimeError(f"Could not open webcam with index {self.webcam_index}.")
+        """Initializes the camera, trying webcam indices [0, 1] first, then falling back to PiCamera on Linux if available."""
+        
+        webcam_indices_to_try = [0, 1]
+        
+        # --- Attempt Webcam Initialization First (Priority) ---
+        for index in webcam_indices_to_try:
+            print(f"Attempting to initialize Webcam index {index} via OpenCV...")
+            try:
+                cap_attempt = cv2.VideoCapture(index)
+                if cap_attempt is not None and cap_attempt.isOpened():
+                    print(f"Successfully opened Webcam index {index}. Configuring...")
+                    self.cap = cap_attempt
+                    
+                    # --- Max Settings Heuristic (if requested) ---
+                    detected_width = 0
+                    detected_height = 0
+                    detected_fps = 0.0
+                    if self.use_max_settings:
+                        print("Attempting to detect maximum settings using heuristic...")
+                        # Try setting very high resolution and reading back
+                        try:
+                            if self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 4096) and \
+                               self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 4096):
+                                time.sleep(0.1) # Allow driver time to settle? Might not be needed.
+                                detected_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                                detected_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                                print(f"  Detected Resolution: {detected_width}x{detected_height}")
+                            else:
+                                print("  Warning: Failed to set high resolution for detection.")
+                        except Exception as e_res:
+                            print(f"  Warning: Error during resolution detection: {e_res}")
+                        
+                        # Use detected resolution (if valid) for FPS detection
+                        temp_width = detected_width if detected_width > 0 else self.requested_width
+                        temp_height = detected_height if detected_height > 0 else self.requested_height
+                        
+                        # Try setting very high FPS and reading back
+                        try:
+                            # Ensure resolution is set before trying FPS
+                            if self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, temp_width) and \
+                               self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, temp_height) and \
+                               self.cap.set(cv2.CAP_PROP_FPS, 120): # Try high FPS
+                                time.sleep(0.1)
+                                detected_fps = self.cap.get(cv2.CAP_PROP_FPS)
+                                print(f"  Detected FPS: {detected_fps}")
+                            else:
+                                print("  Warning: Failed to set high FPS for detection.")
+                        except Exception as e_fps:
+                            print(f"  Warning: Error during FPS detection: {e_fps}")
+                    # --- End Max Settings Heuristic ---
+                        
+                    # Decide which settings to actually use
+                    target_width = self.requested_width
+                    target_height = self.requested_height
+                    target_fps = self.requested_fps
+                    
+                    if self.use_max_settings and detected_width > 0 and detected_height > 0:
+                        print("Using detected resolution for configuration.")
+                        target_width = detected_width
+                        target_height = detected_height
+                        # Only use detected FPS if it's valid and higher than requested
+                        if detected_fps > 0:
+                             print("Using detected FPS for configuration.")
+                             target_fps = detected_fps 
+                        else:
+                             print("Detected FPS invalid or lower, using requested FPS.")
+                    else:
+                        print("Using requested/default settings for configuration.")
+                        
+                    # Set the final target properties
+                    self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, target_width)
+                    self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, target_height)
+                    self.cap.set(cv2.CAP_PROP_FPS, target_fps)
 
-            # Request desired properties (camera may override these)
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-            self.cap.set(cv2.CAP_PROP_FPS, self.requested_fps)
+                    # Read back final actual properties
+                    actual_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    actual_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    actual_fps_cv2 = self.cap.get(cv2.CAP_PROP_FPS)
 
-            # Read back the actual properties set by the camera driver
-            actual_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            actual_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            actual_fps_cv2 = self.cap.get(cv2.CAP_PROP_FPS)
+                    print(f"Webcam final request: {target_width}x{target_height} @ {target_fps}fps.")
+                    print(f"Webcam actual properties: {actual_width}x{actual_height} @ {actual_fps_cv2}fps.")
+                    
+                    # Update internal state with actual values
+                    self.width = actual_width
+                    self.height = actual_height
+                    self.actual_fps = actual_fps_cv2
+                    if self.actual_fps <= 0:
+                        print(f"Warning: Webcam reported invalid final FPS ({actual_fps_cv2}). Using requested FPS ({self.requested_fps}) as fallback.")
+                        self.actual_fps = self.requested_fps
+                    else:
+                         print(f"Using actual webcam FPS {self.actual_fps}.")
 
-            print(f"Webcam requested {self.width}x{self.height} @ {self.requested_fps}fps.")
-            print(f"Webcam actual properties: {actual_width}x{actual_height} @ {actual_fps_cv2}fps.")
-            
-            # Update internal state with actual values reported by the camera
-            self.width = actual_width
-            self.height = actual_height
-            self.actual_fps = actual_fps_cv2
-            # Handle cases where camera reports invalid FPS (e.g., 0)
-            if self.actual_fps <= 0:
-                print(f"Warning: Webcam reported FPS {actual_fps_cv2}. Using requested FPS {self.requested_fps}.")
-                self.actual_fps = self.requested_fps
-            else:
-                 print(f"Using actual webcam FPS {self.actual_fps}.")
-
-            # OpenCV typically provides BGR format frames
-            self.num_channels = 3
-            self.lsl_pixel_format = 'BGR888' 
-            self.camera_model = f"OpenCV Webcam {self.webcam_index}"
-            print("Webcam initialized.")
-
-        elif PICAMERA2_AVAILABLE:
-            # --- PiCamera Initialization (Picamera2) ---
-            print(f"Initializing Raspberry Pi Camera via Picamera2...")
-            print(f"Configuring for {self.width}x{self.height} @ {self.requested_fps}fps, format {self.pixel_format}...")
-
-            # Create Picamera2 instance
-            self.picam2 = Picamera2()
-            # Check if requested format is directly supported by sensor (informational)
-            sensor_formats = self.picam2.sensor_formats
-            if self.pixel_format not in sensor_formats:
-                print(f"Warning: Format {self.pixel_format} not directly supported by sensor. Available: {sensor_formats}")
-            
-            # Create a video configuration with desired size, format, and frame rate control
-            config = self.picam2.create_video_configuration(
-                main={"size": (self.width, self.height), "format": self.pixel_format},
-                controls={"FrameRate": self.requested_fps}
-            )
-            # Apply the configuration
-            self.picam2.configure(config)
-            # Get camera model from properties for LSL metadata
-            self.camera_model = self.picam2.camera_properties.get('Model', 'Unknown PiCam')
-            # Use the requested pixel format for LSL metadata (assuming picamera2 handles conversion if needed)
-            self.lsl_pixel_format = self.pixel_format
-            # Assume Picamera2 respects the requested frame rate
-            self.actual_fps = self.requested_fps 
-
-            # Determine number of channels based on the pixel format for LSL setup
-            self._determine_picam_channels()
-            print(f"Picamera2 configured. Model: {self.camera_model}")
-
-        else:
-            # --- No Camera Available --- 
-            # This block executes if webcam wasn't chosen AND Picamera2 import failed.
-            if not self.use_webcam:
-                # User specifically wanted PiCamera, but it's not available.
-                # Check if the reason is an incompatible OS.
-                if platform.system() != 'Linux':
-                    # Provide a specific warning for non-Linux systems.
-                    print(f"\n--- OS PLATFORM WARNING ---")
-                    print(f"Attempted to use PiCamera on '{platform.system()}'.")
-                    print(f"The 'picamera2' library and its dependencies generally require a Linux environment (like Raspberry Pi OS).")
-                    print(f"Cannot initialize PiCamera.")
-                    print(f"---------------------------")
-                    raise RuntimeError(f"PiCamera interface selected, but it requires Linux (running on {platform.system()}). Choose a webcam (-w/--use-webcam) or run on a compatible system.")
+                    self.num_channels = 3
+                    self.lsl_pixel_format = 'BGR888' 
+                    self.camera_model = f"OpenCV Webcam {index}" 
+                    print(f"Using selected Webcam (index {index}).")
+                    self.is_picamera = False
+                    return # Webcam succeeded
                 else:
-                    # It's Linux, but picamera2 still failed to import.
-                    # This suggests an installation issue (missing libcamera, etc.).
-                    print(f"\n--- IMPORT WARNING ---")
-                    print(f"Attempted to use PiCamera on Linux, but the 'picamera2' library failed to import.")
-                    print(f"Ensure 'picamera2' and its system dependencies (e.g., libcamera-apps) are installed correctly.")
-                    print(f"-----------------------")
-                    raise RuntimeError("PiCamera selected, but 'picamera2' library failed to import. Check installation and system dependencies.")
-            else:
-                # Fallback error if webcam was intended but failed (though VideoCapture should raise earlier)
-                # or if somehow this state is reached unexpectedly.
-                raise RuntimeError("No suitable camera interface found (Webcam failed or was not selected, and PiCamera is not available/supported on this platform).")
+                    print(f"Warning: Could not open webcam index {index}.")
+                    if cap_attempt is not None:
+                         cap_attempt.release()
+            except Exception as e:
+                print(f"Error during webcam index {index} initialization attempt: {e}")
+
+        # --- Fallback to PiCamera on Linux (if All Webcams Failed) ---
+        if self.cap is None and platform.system() == 'Linux' and PICAMERA2_AVAILABLE:
+            print(f"Webcam indices {webcam_indices_to_try} failed. Detected Linux and Picamera2 library. Attempting fallback to PiCamera...")
+            # -- NOTE: Max settings heuristic NOT implemented for PiCamera --
+            # -- Using requested/default width, height, fps for PiCamera --
+            try:
+                print(f"Configuring for {self.requested_width}x{self.requested_height} @ {self.requested_fps}fps, format {self.pixel_format}...") # Use requested args
+                self.picam2 = Picamera2()
+                sensor_formats = self.picam2.sensor_formats
+                if self.pixel_format not in sensor_formats:
+                    print(f"Warning: Format {self.pixel_format} not directly supported by sensor. Available: {sensor_formats}")
+                
+                config = self.picam2.create_video_configuration(
+                    main={"size": (self.requested_width, self.requested_height)}, # Use requested args
+                    controls={"FrameRate": self.requested_fps} # Use requested args
+                )
+                self.picam2.configure(config)
+                self.camera_model = self.picam2.camera_properties.get('Model', 'Unknown PiCam')
+                self.lsl_pixel_format = self.pixel_format
+                # Assume PiCamera achieves requested settings
+                self.width = self.requested_width
+                self.height = self.requested_height
+                self.actual_fps = self.requested_fps 
+                self._determine_picam_channels()
+                print(f"PiCamera initialized successfully as fallback. Model: {self.camera_model}")
+                self.is_picamera = True
+                return # PiCamera succeeded
+
+            except Exception as e:
+                print(f"ERROR: Fallback to PiCamera also failed: {e}")
+        
+        # --- Final Check and Error --- 
+        if self.cap is None and self.picam2 is None:
+            error_message = f"Could not initialize any camera. Failed Webcam indices: {webcam_indices_to_try}."
+            if platform.system() == 'Linux' and PICAMERA2_AVAILABLE:
+                 error_message += " Fallback attempt to PiCamera also failed."
+            elif platform.system() == 'Linux':
+                 error_message += " Picamera2 library not found or failed to import for fallback."
+            else: 
+                 error_message += " Not on Linux or Picamera2 library unavailable for PiCamera fallback."
+            raise RuntimeError(error_message)
 
     def _determine_picam_channels(self):
         """Estimates the number of color channels based on the PiCamera pixel format.
@@ -201,40 +267,74 @@ class LSLCameraStreamer:
             print(f"Warning: Unsupported PiCamera format {fmt} for channel count estimation. Assuming 3.")
             self.num_channels = 3
 
+    def _initialize_video_writer(self):
+        """Initializes the OpenCV VideoWriter, generating a timestamped filename."""
+        # if self.output_video_file: # Removed check - always attempt to save
+        
+        # Generate filename based on timestamp
+        timestamp_str = time.strftime("%Y%m%d_%H%M%S")
+        self.auto_output_filename = f"lsl_capture_{timestamp_str}.mp4"
+        
+        # Choose a codec. 'avc1' (H.264) is often more compatible for .mp4 than 'mp4v'.
+        # Alternatives: 'mp4v', 'h264' (might depend on specific OpenCV build/backend)
+        fourcc = cv2.VideoWriter_fourcc(*'h264') # Use h264 as requested
+        # Use actual width, height, and fps determined during camera init
+        frame_size = (self.width, self.height)
+        fps = self.requested_fps
+        
+        # Ensure FPS is valid for VideoWriter
+        if fps <= 0:
+            print(f"Warning: Invalid FPS ({fps}) for VideoWriter. Defaulting to 30.")
+            fps = 30.0
+            
+        print(f"Initializing video writer: {self.auto_output_filename}, Codec: h264, Size: {frame_size}, FPS: {fps:.2f}")
+        print(f"DEBUG: Passing FPS value {float(fps)} to cv2.VideoWriter()")
+        try:
+            self.video_writer = cv2.VideoWriter(self.auto_output_filename, fourcc, float(fps), frame_size)
+            if not self.video_writer.isOpened():
+                print(f"Error: Could not open VideoWriter for file '{self.auto_output_filename}'. Check codec, path, and permissions.")
+                self.video_writer = None # Ensure it's None if failed
+            else:
+                print("Video writer initialized successfully.")
+        except Exception as e:
+            print(f"Error initializing VideoWriter: {e}")
+            self.video_writer = None
+            
     def _setup_lsl(self):
-        """Configures and creates the LSL StreamInfo and StreamOutlet."""
-        # LSL requires the data to be flattened into a 1D array.
-        # The channel count reflects the total number of elements in this array.
-        channel_count = self.width * self.height * self.num_channels
-        print(f"LSL Stream Info: Channels={channel_count}, Format={self.lsl_pixel_format}, Rate={self.actual_fps}")
+        """Configures and creates the LSL StreamInfo and StreamOutlet for Frame Numbers."""
+        # LSL stream for frame numbers only
+        channel_count = 1 # Only sending the frame number
+        # Use cf_int32 for frame number (pylsl constant is 4)
+        # Use cf_int64 (5) if frame counts might exceed 2 billion
+        channel_format_lsl = 4 # cf_int32 
+        stream_type = 'FrameCounter' 
+
+        print(f"LSL Stream Info: Name='{self.stream_name}', Type={stream_type}, Channels={channel_count}, Format=cf_int32, Rate={self.actual_fps}")
 
         # Create the StreamInfo object describing the stream.
-        # channel_format=2 corresponds to pylsl.cf_uint8.
         self.info = StreamInfo(name=self.stream_name,
-                               type='Video', # Standard type for video streams
-                               channel_count=channel_count, # Total elements in flattened frame
-                               nominal_srate=float(self.actual_fps), # Expected frame rate
-                               channel_format=2, # Data type: uint8
+                               type=stream_type, 
+                               channel_count=channel_count, # Single channel for frame number
+                               nominal_srate=float(self.actual_fps), # Rate frames are generated
+                               channel_format=channel_format_lsl, 
                                source_id=self.source_id)
 
         # Add detailed metadata to the stream description (XML format).
-        # This metadata can be read by LSL clients (like view_stream.py)
-        # to correctly interpret the stream (e.g., reshape frames).
         desc = self.info.desc()
         desc.append_child_value("acquisition_software", "RaspberryPiLSLStream")
-        desc.append_child_value("camera_model", self.camera_model)
-        desc.append_child_value("source_type", "Webcam" if self.use_webcam else "PiCamera")
+        desc.append_child_value("camera_model", self.camera_model) # Keep camera info
+        desc.append_child_value("source_type", "PiCamera" if self.is_picamera else "Webcam") # Keep source info
         
-        # Add a dedicated <resolution> child element for clarity
-        resolution_info = desc.append_child("resolution")
-        resolution_info.append_child_value("width", str(self.width))
-        resolution_info.append_child_value("height", str(self.height))
-        resolution_info.append_child_value("num_channels_estimated", str(self.num_channels))
-        resolution_info.append_child_value("lsl_channel_count", str(channel_count))
-        resolution_info.append_child_value("pixel_format_lsl", self.lsl_pixel_format)
+        # Add description for the single channel
+        chn = desc.append_child("channels").append_child("channel")
+        chn.append_child_value("label", "FrameNumber")
+        chn.append_child_value("unit", "count")
+        chn.append_child_value("type", stream_type)
+
+        # (Removed resolution/pixel format metadata from LSL stream description)
+        # desc.append_child("timing").append_child_value("frame_numbering", "Sequential starting from 1") # Implicitly true now
 
         # Create the StreamOutlet using the configured StreamInfo.
-        # This makes the stream available on the network.
         try:
             self.outlet = StreamOutlet(self.info)
             print(f"LSL stream '{self.stream_name}' created and waiting for consumers.")
@@ -246,86 +346,86 @@ class LSLCameraStreamer:
             raise # Re-raise the exception to signal failure
             
     def start(self):
-        """Starts the camera capture process.
-        
-        For OpenCV VideoCapture, reading the first frame implicitly starts capture.
-        For Picamera2, explicitly calls its start() method.
-        Sets the _is_running flag to True.
-        """
+        """Starts the camera capture process based on which camera was initialized."""
         if self._is_running:
-            # Prevent starting if already running
             print("Streamer already running.")
             return
             
-        if self.use_webcam and self.cap:
-            # OpenCV VideoCapture doesn't require an explicit start command
-            # after initialization. Capture begins with the first .read() call.
-            print("Starting OpenCV webcam capture (implicit via read)...")
-            self._is_running = True
-        elif self.picam2:
-            # Picamera2 requires an explicit start call.
+        if self.is_picamera and self.picam2:
+            # Start PiCamera
             try:
                 print("Starting Picamera2 capture...")
                 self.picam2.start()
                 self._is_running = True
                 print("Picamera2 started.")
             except Exception as e:
-                # Handle errors during Picamera2 start
                 print(f"Error starting Picamera2: {e}")
                 traceback.print_exc()
-                # Do not set _is_running to True if start failed
+        elif not self.is_picamera and self.cap:
+             # Start Webcam (implicitly via read)
+            print("Starting OpenCV webcam capture (implicit via read)...")
+            self._is_running = True
         else:
-            # Should not happen if initialization succeeded, but check anyway.
             print("Error: Camera not properly initialized. Cannot start.")
 
     def stop(self):
-        """Stops the camera capture and releases resources.
-        
-        Sets the _is_running flag to False.
-        Releases the OpenCV capture object or stops/closes the Picamera2 object.
-        The LSL outlet is implicitly closed when the object is garbage collected,
-        but setting it to None helps signal intent.
-        """
+        """Stops the camera capture and releases resources."""
         if not self._is_running:
-             # Avoid stopping if already stopped or never started
              return
              
         print("Stopping camera...")
-        self._is_running = False # Signal loops to stop attempting capture
+        self._is_running = False 
         
-        # Release Webcam resources
-        if self.use_webcam and self.cap:
+        # Release resources based on which camera was used
+        if self.is_picamera and self.picam2:
+            # Stop and close PiCamera resources
             try:
-                self.cap.release()
-                print("OpenCV webcam released.")
-                self.cap = None # Clear the object reference
-            except Exception as e:
-                print(f"Error releasing OpenCV webcam: {e}")
-                
-        # Stop and close PiCamera resources
-        elif self.picam2:
-            try:
-                # Check if picam2 object exists and has the 'started' attribute 
-                # (or similar check depending on picamera2 version specifics if needed)
-                # and if it was actually started.
-                if hasattr(self.picam2, 'is_open') and self.picam2.is_open: # Check based on typical camera objects
-                     # Newer picamera2 might use different state checks, adjust if necessary.
-                    self.picam2.stop()
-                    print("Picamera2 stopped.")
+                if hasattr(self.picam2, 'is_open') and self.picam2.is_open:
+                     self.picam2.stop()
+                     print("Picamera2 stopped.")
                 else:
-                     # print("Picamera2 object exists but was not running/started.")
                      pass 
             except Exception as e:
                 print(f"Error stopping Picamera2: {e}")
             finally:
-                # Attempt to close the camera connection even if stop failed or wasn't needed.
                 try:
-                    if self.picam2: # Check if picam2 object still exists
+                    if self.picam2:
                         self.picam2.close()
                         print("Picamera2 closed.")
-                        self.picam2 = None # Clear the object reference
+                        self.picam2 = None
                 except Exception as e:
                     print(f"Error closing Picamera2 connection: {e}")
+        elif not self.is_picamera and self.cap:
+            # Release Webcam resources
+            try:
+                self.cap.release()
+                print("OpenCV webcam released.")
+                self.cap = None
+            except Exception as e:
+                print(f"Error releasing OpenCV webcam: {e}")
+        
+        # --- Release VideoWriter ---
+        if self.video_writer is not None:
+            # Use the automatically generated filename in the message
+            print(f"Releasing video writer ('{self.auto_output_filename}')...")
+            try:
+                self.video_writer.release()
+                print("Video writer released.")
+            except Exception as e:
+                print(f"Error releasing video writer: {e}")
+            self.video_writer = None
+        # ---
+            
+        # --- Destroy Preview Window ---
+        if self.show_preview:
+            # Check if attribute exists in case init failed before window creation
+            if hasattr(self, 'preview_window_name'): 
+                print(f"Closing preview window ('{self.preview_window_name}')...")
+                try:
+                    cv2.destroyWindow(self.preview_window_name)
+                except Exception as e:
+                    print(f"Error closing preview window: {e}")
+        # ---
         
         # LSL Outlet cleanup: Python's garbage collector handles closing the 
         # underlying LSL C library connection when the StreamOutlet object is destroyed.
@@ -336,55 +436,73 @@ class LSLCameraStreamer:
 
     def capture_frame(self):
         """
-        Captures a single frame from the initialized camera, flattens it,
-        pushes it to the LSL outlet with a timestamp.
+        Captures a single frame from the initialized camera, saves it locally,
+        optionally displays preview, and pushes frame number to LSL.
 
         Returns:
             tuple: (frame_data, timestamp) where frame_data is the captured 
                    numpy array (or None if capture failed/not running), and 
                    timestamp is the LSL timestamp (or None).
         """
-        # Check if the stream is supposed to be running and the outlet is valid
-        if not self._is_running or self.outlet is None:
-            return None, None
+        if not self._is_running:
+             return None, None # Check running state first
+             
+        # Outlet check moved after running check
+        if self.outlet is None:
+             print("Error: LSL Outlet is not available. Cannot push sample.")
+             return None, None
 
-        # Get LSL timestamp as close to the capture time as possible
         timestamp = local_clock()
         frame_data = None
         
         try:
-            # Capture frame based on the camera type
-            if self.use_webcam and self.cap:
-                ret, frame_data = self.cap.read() # Reads a frame in BGR format
+            # Capture frame based on the automatically detected camera
+            if self.is_picamera and self.picam2:
+                 # Capture frame as a numpy array using Picamera2
+                 frame_data = self.picam2.capture_array()
+            elif not self.is_picamera and self.cap:
+                # Capture frame using OpenCV
+                ret, frame_data = self.cap.read() 
                 if not ret:
-                    # Handle cases where the webcam fails to provide a frame
                     print("Warning: Failed to grab frame from webcam. Skipping.")
                     return None, None
-            elif self.picam2:
-                # Capture frame as a numpy array using Picamera2
-                frame_data = self.picam2.capture_array()
             else:
-                # This case should ideally not be reached if _is_running is True
-                print("Error: Camera not available for capture.")
+                print("Error: Camera not available for capture (state inconsistency).")
                 return None, None
 
-            # Flatten the numpy array (e.g., 3D HxWxC to 1D)
-            # LSL push_sample expects a list or 1D numpy array.
-            flat_frame_data = frame_data.flatten()
+            # --- Write frame to local video file --- 
+            if self.video_writer is not None:
+                try:
+                    self.video_writer.write(frame_data) 
+                except Exception as e:
+                    print(f"Error writing frame to video file: {e}")
+            # ---
             
-            # Push the flattened data and timestamp to the LSL outlet
-            self.outlet.push_sample(flat_frame_data, timestamp)
-            self.frame_count += 1 # Increment frame counter
+            # --- Show Preview Frame (if enabled) ---
+            if self.show_preview and hasattr(self, 'preview_window_name'):
+                 try:
+                     cv2.imshow(self.preview_window_name, frame_data)
+                     key = cv2.waitKey(1) 
+                 except Exception as e:
+                     print(f"Error showing preview frame: {e}")
+            # ---
             
-            # Return the original (non-flattened) frame data and timestamp
+            # --- Push Frame Number to LSL ---
+            # (Temporarily disabled for testing video write speed)
+            self.frame_count += 1 
+            # try:
+            #     self.outlet.push_sample([self.frame_count], timestamp) 
+            # except Exception as e:
+            #     print(f"Error pushing frame number to LSL: {e}")
+            #     return None, None # Indicate failure if LSL push fails
+            # ---
+            
+            # Return frame_data (for potential external use) and timestamp
             return frame_data, timestamp
 
         except Exception as e:
-            # Catch potential errors during capture (e.g., camera disconnect) or LSL push
-            print(f"Error during frame capture or LSL push: {e}")
+            print(f"Error during frame capture/processing: {e}")
             traceback.print_exc()
-            # Consider adding logic to stop the stream after repeated errors.
-            # self.stop()
             return None, None # Indicate failure
             
     def get_info(self):
@@ -394,12 +512,14 @@ class LSLCameraStreamer:
             "height": self.height,
             "actual_fps": self.actual_fps,
             "lsl_pixel_format": self.lsl_pixel_format,
-            "num_channels": self.num_channels,
+            "num_channels": self.num_channels, # Note: May not be relevant for frame counter stream
             "stream_name": self.stream_name,
             "source_id": self.source_id,
             "camera_model": self.camera_model,
-            "source_type": "Webcam" if self.use_webcam else "PiCamera",
+            # Update source type based on detected camera
+            "source_type": "PiCamera" if self.is_picamera else "Webcam", 
             "is_running": self._is_running,
+            "auto_output_filename": self.auto_output_filename # Add filename info
         }
 
     def get_frame_count(self):

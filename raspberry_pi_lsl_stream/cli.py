@@ -4,6 +4,7 @@ import argparse
 import sys
 import signal
 import time  # Import time for the loop sleep
+import atexit # Import atexit for cleanup registration
 # from .camera_stream import stream_camera # Relative import <- Remove old import
 from .camera_stream import LSLCameraStreamer # <-- Import the class
 from ._version import __version__
@@ -28,11 +29,11 @@ def main():
                         help='LSL stream name')
     parser.add_argument('--source-id', type=str, default='RPiCam_UniqueID',
                         help='Unique LSL source ID')
-    # Webcam specific arguments
-    parser.add_argument('-w', '--use-webcam', action='store_true',
-                        help='Use a standard USB webcam (via OpenCV) instead of PiCamera')
-    parser.add_argument('--webcam-index', type=int, default=0,
-                        help='Index of the webcam to use if --use-webcam is specified')
+    # Video saving is automatic now
+    parser.add_argument('--show-preview', action='store_true',
+                        help='Show a live preview window (using OpenCV). Requires graphical environment.')
+    parser.add_argument('--use-max-settings', action='store_true',
+                        help='[Webcam Only] Attempt to use the highest resolution and FPS reported by the webcam. Overrides --width, --height, --fps.')
     # Other arguments
     parser.add_argument('--version', action='version', version=f'%(prog)s {__version__}')
 
@@ -41,16 +42,6 @@ def main():
 
     # --- Initial Information Output ---
     print(f"Starting LSL stream '{args.stream_name}'...")
-    if args.use_webcam:
-        print(f"Using USB Webcam (Index: {args.webcam_index}) via OpenCV.")
-    else:
-        # Inform the user if PiCamera is intended, but check OS compatibility.
-        # The LSLCameraStreamer class handles the actual error/warning if run on non-Linux.
-        import platform
-        if platform.system() == 'Linux':
-             print("Attempting to use Raspberry Pi Camera via Picamera2.")
-        else:
-             print("Warning: Raspberry Pi Camera selected but not running on Linux. Webcam (-w) is required on this OS.")
 
     streamer = None # Initialize streamer variable for cleanup in finally block
 
@@ -76,9 +67,14 @@ def main():
             pixel_format=args.format, # Note: format is mostly relevant for PiCamera
             stream_name=args.stream_name,
             source_id=args.source_id,
-            use_webcam=args.use_webcam,
-            webcam_index=args.webcam_index
+            show_preview=args.show_preview,
+            use_max_settings=args.use_max_settings
         )
+        
+        # Register the streamer stop method to be called on normal/exception exit
+        # This provides an extra layer of cleanup attempts.
+        # Note: Does NOT handle abrupt external kills (SIGKILL, power loss).
+        atexit.register(streamer.stop)
 
         # Get and print the actual configuration reported by the streamer
         # (camera might have adjusted width, height, fps).
