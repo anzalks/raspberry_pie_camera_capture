@@ -11,61 +11,61 @@ A Python package to capture video frames from a Raspberry Pi camera and stream t
 
 ## Prerequisites
 
-*   Raspberry Pi (tested with Pi 4) running Raspberry Pi OS (Bullseye or later, 64-bit recommended).
-*   Raspberry Pi Camera Module (v1, v2, v3, HQ, Noir, etc.) connected.
-*   Python 3.7+
+*   Raspberry Pi (tested with Pi 4/5) running Raspberry Pi OS (Bookworm or later, 64-bit recommended).
+*   Raspberry Pi Camera Module (v1, v2, v3, HQ, Noir, etc.) connected and enabled via `raspi-config`.
+*   Python 3.9+ (aligns with Bookworm's default)
 *   Git (for cloning this repository).
 
 ## Installation on Raspberry Pi
 
-Installing this project on a Raspberry Pi involves two phases because it depends on both standard Python packages (managed by `pip`) and system-level libraries (managed by `apt`), including the special `picamera2` library which is best installed via the Raspberry Pi OS package manager. `pip` cannot manage system libraries or run `apt` for security reasons, hence the two-step process.
+This project utilizes a `src` layout for better packaging. Installation involves system setup via a script and then Python environment setup.
 
 **Phase 1: System Setup (Run as root/using `sudo`)**
 
 1.  **Clone the Repository:**
     ```bash
-    git clone https://github.com/Dognosis/raspberry_pie_camera_capture.git
+    git clone https://github.com/Dognosis/raspberry_pie_camera_capture.git # Replace with your actual repo URL if different
     cd raspberry_pie_camera_capture
     ```
-2.  **Run Setup Script:** This script installs system libraries (`liblsl-dev`, `libcap-dev`, etc.) and `python3-picamera2` using `apt`. It will attempt to install `liblsl-dev` via `apt` and fall back to building from source if `apt` fails.
+2.  **Run Setup Script:** This script installs essential system libraries (`liblsl-dev`, `libcap-dev`, `libcamera-apps`, etc.) and crucially installs `python3-picamera2` using `apt` (the recommended way). It handles potential `liblsl` build steps if the `apt` package isn't available.
     ```bash
     sudo bash setup_pi.sh
     ```
-3.  **Enable Camera Interface:** Use the Raspberry Pi configuration tool.
+    *Review the script (`setup_pi.sh`) beforehand to see exactly what it does.*
+3.  **Enable Camera Interface (If not already done):** If you haven't already, use the Raspberry Pi configuration tool:
     ```bash
     sudo raspi-config
     ```
-    Navigate to `Interface Options` -> `Camera`. Ensure the camera is **Enabled**. Importantly, ensure the **Legacy Camera** option is **Disabled** if you are using a recent Pi OS and `picamera2`.
-4.  **Reboot (If Required):** If you made changes in `raspi-config`, reboot the Pi:
+    Navigate to `Interface Options` -> `Camera`. Ensure the camera is **Enabled**. Make sure the **Legacy Camera** option is **Disabled**.
+4.  **Reboot (Recommended):** Especially if you changed camera settings in `raspi-config`.
     ```bash
     sudo reboot
     ```
 
 **Phase 2: Python Environment and Package Installation (Run as normal user)**
 
-1.  **Create Virtual Environment:** Create a Python virtual environment. **Crucially, use the `--system-site-packages` flag** to allow the environment to access the system-installed `python3-picamera2`.
+1.  **Create Virtual Environment:** Create a Python virtual environment. **Crucially, use the `--system-site-packages` flag.** This allows the environment to access the system-installed `python3-picamera2`, avoiding potential conflicts.
     ```bash
-    # Ensure you are in a suitable location, e.g., your home directory or the project directory
-    python3 -m venv --system-site-packages ~/.virtualenvs/dognosis 
+    # Ensure you are in a suitable location, e.g., your home directory
+    python3 -m venv --system-site-packages ~/.virtualenvs/dognosis # Or your preferred name/location
     ```
-    *(Replace `~/.virtualenvs/dognosis` with your preferred location if desired)*
 2.  **Activate Environment:**
     ```bash
     source ~/.virtualenvs/dognosis/bin/activate
     ```
-    *(Your prompt should now start with `(dognosis)`)*
-3.  **Navigate to Project Directory:**
+    *(Your terminal prompt should now start with `(dognosis)` or your chosen environment name)*
+3.  **Navigate to Project Directory:** Go back to the directory where you cloned the project (the one containing `pyproject.toml`, `setup.cfg`, and the `src` folder).
     ```bash
-    cd /path/to/your/raspberry_pie_camera_capture 
+    cd /path/to/your/raspberry_pie_camera_capture
     ```
-4.  **Install Python Dependencies:** Install the package and its Python dependencies (`pylsl`, `numpy`, `opencv-python`) into the active virtual environment.
+4.  **Install Python Dependencies:** Install the package in editable mode (`-e`) along with its core Python dependencies (`pylsl`, `numpy`, `opencv-python`) into the active virtual environment.
     ```bash
-    pip install --upgrade pip
+    pip install --upgrade pip setuptools wheel # Ensure build tools are up-to-date
     pip install -e .
     ```
-    *(Note: `picamera2` should already be available from the system install and accessible due to `--system-site-packages`)*
+    *Because we used `--system-site-packages`, `pip` will recognize that `picamera2` is already provided by the system and won't try to reinstall it.*
 
-After these steps, the `rpi-lsl-stream` command should be available in your terminal while the `dognosis` virtual environment is active.
+After these steps, the `rpi-lsl-stream` command should be available in your terminal as long as the virtual environment (`dognosis`) is active.
 
 ## Usage
 
