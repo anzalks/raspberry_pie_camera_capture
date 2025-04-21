@@ -280,7 +280,7 @@ class LSLCameraStreamer:
         fourcc = cv2.VideoWriter_fourcc(*'h264') # Use h264 as requested
         # Use actual width, height, and fps determined during camera init
         frame_size = (self.width, self.height)
-        fps = self.requested_fps
+        fps = self.actual_fps
         
         # Ensure FPS is valid for VideoWriter
         if fps <= 0:
@@ -488,13 +488,12 @@ class LSLCameraStreamer:
             # ---
             
             # --- Push Frame Number to LSL ---
-            # (Temporarily disabled for testing video write speed)
             self.frame_count += 1 
-            # try:
-            #     self.outlet.push_sample([self.frame_count], timestamp) 
-            # except Exception as e:
-            #     print(f"Error pushing frame number to LSL: {e}")
-            #     return None, None # Indicate failure if LSL push fails
+            try:
+                self.outlet.push_sample([self.frame_count], timestamp) 
+            except Exception as e:
+                print(f"Error pushing frame number to LSL: {e}")
+                return None, None # Indicate failure if LSL push fails
             # ---
             
             # Return frame_data (for potential external use) and timestamp

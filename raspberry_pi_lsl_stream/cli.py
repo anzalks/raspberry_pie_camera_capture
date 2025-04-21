@@ -34,6 +34,8 @@ def main():
                         help='Show a live preview window (using OpenCV). Requires graphical environment.')
     parser.add_argument('--use-max-settings', action='store_true',
                         help='[Webcam Only] Attempt to use the highest resolution and FPS reported by the webcam. Overrides --width, --height, --fps.')
+    parser.add_argument('--duration', type=int, default=None,
+                        help='Record for a fixed duration (in seconds) then stop automatically.')
     # Other arguments
     parser.add_argument('--version', action='version', version=f'%(prog)s {__version__}')
 
@@ -86,11 +88,20 @@ def main():
         # Start the camera capture process (e.g., picam2.start()).
         streamer.start()
 
-        print("\nStreaming frames... Press Ctrl+C to stop.")
+        print("\nStreaming frames... Press Ctrl+C to stop (or wait for duration if set).")
 
         # --- Main Capture Loop ---
-        # Continuously capture frames and push them to LSL until interrupted.
+        # Continuously capture frames and push them to LSL until interrupted or duration expires.
+        start_time = time.time() # Record start time for duration check
         while True:
+            # --- Duration Check --- 
+            if args.duration is not None:
+                elapsed_time = time.time() - start_time
+                if elapsed_time >= args.duration:
+                    print(f"\nDuration of {args.duration} seconds reached. Stopping...")
+                    break # Exit the loop
+            # ---
+            
             # Capture a frame and get its LSL timestamp.
             frame, timestamp = streamer.capture_frame()
             
