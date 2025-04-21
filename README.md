@@ -12,10 +12,23 @@ A Python package to capture video frames from a Raspberry Pi camera and stream t
 ## Prerequisites
 
 *   Raspberry Pi (tested with Pi 4) running Raspberry Pi OS (Bullseye or later recommended).
-*   Raspberry Pi Camera Module (v1, v2, v3, HQ, Noir, etc.) connected and enabled (`sudo raspi-config`).
+*   Raspberry Pi Camera Module (v1, v2, v3, HQ, Noir, etc.) connected and enabled.
 *   Python 3.7+
-*   `liblsl` library installed (`apt-get update && apt-get install liblsl-dev` or built from source).
 *   Git (for cloning).
+*   **System Dependencies (Install on Pi):**
+    *   `liblsl-dev` (Core LSL library)
+    *   `libcamera-apps` (Recommended for camera support and testing)
+    ```bash
+    sudo apt update && sudo apt install -y liblsl-dev libcamera-apps
+    ```
+*   **Camera Interface Enabled (Configure on Pi):**
+    *   Use `sudo raspi-config`.
+    *   Navigate to `Interface Options` -> `Camera`.
+    *   Ensure the camera interface is **Enabled**.
+    *   Crucially, ensure the **Legacy Camera** support is **Disabled** (as this package uses the newer `libcamera`/`picamera2` stack).
+    *   A **reboot** (`sudo reboot`) is required after changing camera settings.
+
+*(Alternatively, for dependency installation only, you can try running `sudo bash setup_pi.sh` from this repository on the Pi, but manual camera configuration via `raspi-config` is still recommended.)*
 
 ## Installation
 
