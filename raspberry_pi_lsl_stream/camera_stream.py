@@ -313,15 +313,30 @@ class LSLCameraStreamer:
             return False
 
     def _initialize_video_writer(self):
-        """Initializes the OpenCV VideoWriter and, if threaded, the frame queue."""
+        """Initializes the OpenCV VideoWriter and, if threaded, the frame queue.
+           Uses H.264/MP4 for Webcams and MJPG/AVI for PiCamera as a fallback.
+        """
         
         # Generate filename based on timestamp
         timestamp_str = time.strftime("%Y%m%d_%H%M%S")
-        self.auto_output_filename = f"lsl_capture_{timestamp_str}.avi"
-        
-        # Choose codec - Revert to h264
-        fourcc = cv2.VideoWriter_fourcc(*'MJPG')
         frame_size = (self.width, self.height)
+
+        # --- Select Codec and Container based on Camera Type ---
+        if self.is_picamera:
+            # Use MJPG/AVI for PiCamera (found to be more reliable)
+            print("Using MJPG/AVI for PiCamera output.")
+            self.auto_output_filename = f"lsl_capture_{timestamp_str}.avi"
+            fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+            codec_name = "MJPG"
+            container_name = "AVI"
+        else:
+            # Use H.264/MP4 for Webcam (better compression)
+            print("Using H.264/MP4 for Webcam output.")
+            self.auto_output_filename = f"lsl_capture_{timestamp_str}.mp4"
+            fourcc = cv2.VideoWriter_fourcc(*'h264') 
+            codec_name = "H.264"
+            container_name = "MP4"
+        # ---
         
         # Ensure FPS is valid for VideoWriter and Queue sizing
         fps = self.actual_fps
@@ -342,11 +357,11 @@ class LSLCameraStreamer:
             self.frame_queue = None # Ensure it's None if not threaded
         # ---
 
-        print(f"Initializing video writer: {self.auto_output_filename}, Codec: MJPG (in AVI), Size: {frame_size}, FPS: {fps:.2f}")
+        print(f"Initializing video writer: {self.auto_output_filename}, Codec: {codec_name} (in {container_name}), Size: {frame_size}, FPS: {fps:.2f}")
         try:
             self.video_writer = cv2.VideoWriter(self.auto_output_filename, fourcc, float(fps), frame_size)
             if not self.video_writer.isOpened():
-                print(f"Error: Could not open VideoWriter for file '{self.auto_output_filename}'. Check MJPG codec support for AVI container.") 
+                print(f"Error: Could not open VideoWriter for file '{self.auto_output_filename}'. Check {codec_name} codec support for {container_name} container.") 
                 self.video_writer = None
             else:
                 print("Video writer initialized successfully.")
