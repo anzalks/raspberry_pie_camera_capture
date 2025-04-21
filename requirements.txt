@@ -1,5 +1,5 @@
 pylsl
 numpy
-picamera2
 opencv-python
-PySide6 
+# Optional, for Raspberry Pi Camera module:
+picamera2 
