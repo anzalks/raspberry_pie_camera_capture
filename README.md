@@ -11,53 +11,53 @@ A Python package to capture video frames from a Raspberry Pi camera and stream t
 
 ## Prerequisites
 
-*   Raspberry Pi (tested with Pi 4) running Raspberry Pi OS (Bullseye or later recommended).
-*   Raspberry Pi Camera Module (v1, v2, v3, HQ, Noir, etc.) connected and enabled.
+*   Raspberry Pi (tested with Pi 4) running Raspberry Pi OS (Bullseye or later, 64-bit recommended).
+*   Raspberry Pi Camera Module (v1, v2, v3, HQ, Noir, etc.) connected.
 *   Python 3.7+
-*   Git (for cloning).
-*   **System Dependencies (Install on Pi):**
-    *   `liblsl-dev` (Core LSL library)
-    *   `libcamera-apps` (Recommended for camera support and testing)
+*   Git (for cloning this repository).
+
+## Installation on Raspberry Pi
+
+Setting up this project on a Raspberry Pi involves two main phases: installing system dependencies using the provided script, and then installing the Python package within a virtual environment.
+
+**Why the two-phase installation?** This project relies on both standard Python packages (installable via `pip`) and system-level libraries or Python packages with complex system dependencies (`picamera2`). Standard Python packaging tools like `pip` cannot manage system libraries or run system package managers like `apt` for security and technical reasons. The `picamera2` library, in particular, depends heavily on the Pi's `libcamera` system stack and its dependencies are best handled by Raspberry Pi OS's `apt` package manager. Therefore, we first use the `setup_pi.sh` script (run with `sudo`) to prepare the system, and then use standard `pip` commands within a virtual environment to install the core Python package and its pure-Python dependencies.
+
+**1. System Setup (Run as root):**
+
+*   Clone this repository or download the source code onto your Raspberry Pi.
+*   Navigate to the project's root directory in the terminal.
+*   Run the provided setup script using `sudo`. This installs system libraries (like `liblsl-dev`, `libcap-dev`), Python tools (`pip`, `venv`), and `python3-picamera2` using `apt`.
     ```bash
-    sudo apt update && sudo apt install -y liblsl-dev libcamera-apps
+    cd /path/to/your/raspberry_pi_lsl_stream # Navigate to project root
+    sudo bash setup_pi.sh
     ```
-*   **Camera Interface Enabled (Configure on Pi):**
-    *   Use `sudo raspi-config`.
-    *   Navigate to `Interface Options` -> `Camera`.
-    *   Ensure the camera interface is **Enabled**.
-    *   Crucially, ensure the **Legacy Camera** support is **Disabled** (as this package uses the newer `libcamera`/`picamera2` stack).
-    *   A **reboot** (`sudo reboot`) is required after changing camera settings.
+*   Follow the instructions printed by the script regarding camera configuration:
+    *   Use `sudo raspi-config` to **Enable** the camera interface.
+    *   Ensure the **Legacy Camera** interface is **Disabled**.
+    *   **Reboot** (`sudo reboot`) if you changed camera settings.
 
-*(Alternatively, for dependency installation only, you can try running `sudo bash setup_pi.sh` from this repository on the Pi, but manual camera configuration via `raspi-config` is still recommended.)*
+**2. Python Environment and Package Installation (Run as normal user):**
 
-## Installation
-
-1.  **Clone the repository (if not installing from PyPI):**
+*   After running `setup_pi.sh` and rebooting (if needed), create and activate a Python virtual environment (recommended):
     ```bash
-    git clone https://github.com/yourusername/raspberry_pi_lsl_stream # Replace with your repo URL
-    cd raspberry_pi_lsl_stream
+    # Example using venv in ~/.virtualenvs/
+    python3 -m venv ~/.virtualenvs/dognosis
+    source ~/.virtualenvs/dognosis/bin/activate
     ```
-
-2.  **Install Python dependencies:**
+*   Navigate back to the project's root directory (where `setup.cfg` is located):
     ```bash
-    pip install -r requirements.txt
+    cd /path/to/your/raspberry_pi_lsl_stream
     ```
-
-3.  **Install the package:**
-    *   For development (editable install):
-        ```bash
-        pip install -e .
-        ```
-    *   For standard installation:
-        ```bash
-        pip install .
-        ```
-    *   (Optional) If published to PyPI:
-        ```bash
-        # pip install raspberry-pi-lsl-stream
-        ```
+*   Install the package. This command will also automatically install the required Python dependencies (`pylsl`, `numpy`, `opencv-python`) listed in `setup.cfg`. Use the `-e` flag for an editable install if you plan to modify the code.
+    ```bash
+    pip install --upgrade pip
+    pip install -e .
+    ```
+    *(Note: `picamera2` should already be available from the system install performed by `setup_pi.sh` and is not installed by pip here).*
 
 ## Usage
+
+Make sure your virtual environment is active (`source ~/.virtualenvs/dognosis/bin/activate`).
 
 Run the streamer from the command line:
 
@@ -72,15 +72,23 @@ rpi-lsl-stream [OPTIONS]
 *   `--fps`: Frames per second (default: 30).
 *   `--stream-name`: LSL stream name (default: 'RaspberryPiCamera').
 *   `--source-id`: Unique LSL source ID (default: 'RPiCam_UniqueID').
-*   `--format`: Camera capture format (default: 'RGB888'). See `picamera2` documentation for options.
+*   `--format`: Camera capture format (default: 'RGB888') - used by PiCamera backend.
+*   `--show-preview`: Show a live preview window (requires graphical environment).
+*   `--use-max-settings`: [Webcam Only] Attempt to use the highest resolution and FPS reported by the webcam. Overrides `--width`, `--height`, `--fps`.
+*   `--duration DURATION`: Record for a fixed duration (in seconds) then stop automatically.
+*   `--threaded-writer`: Use a separate thread for writing video frames (recommended for high resolution/fps like 4K@30fps).
+*   `--version`: Show program's version number and exit.
+*   `-h`, `--help`: Show help message and exit.
 
-**Example:**
+**Examples:**
 
 ```bash
-rpi-lsl-stream --width 1280 --height 720 --fps 60 --stream-name MyPiCam
-```
+# Stream at 1080p 30fps indefinitely
+rpi-lsl-stream --width 1920 --height 1080 --fps 30
 
-This will start the camera capture and create an LSL stream named `MyPiCam`. You can then connect to this stream using an LSL client like LabRecorder.
+# Stream using max webcam settings (e.g., 4K@30fps) with threaded writer for 60s
+rpi-lsl-stream --use-max-settings --duration 60 --threaded-writer
+```
 
 ## LSL Stream Details
 
