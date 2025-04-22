@@ -340,7 +340,7 @@ class LSLCameraStreamer:
 
     def _initialize_video_writer(self):
         """Initializes the OpenCV VideoWriter and, if threaded, the frame queue.
-           Uses H.264 codec and MKV container for all camera types.
+           Attempts H.265, H.264 codecs first, falling back to MJPG in an MKV container.
         """
         
         # Generate base filename based on timestamp
@@ -359,26 +359,51 @@ class LSLCameraStreamer:
 
         frame_size = (self.width, self.height)
 
-        # --- Set Codec and Container (H.264/MKV) ---
-        print("Attempting H.264/MKV for video output.")
-        self.auto_output_filename = f"lsl_capture_{timestamp_str}.mkv" # Keep .mkv extension
-        fourcc = cv2.VideoWriter_fourcc(*'h264') # Try H.264 codec
-        codec_name = "H.264"
+        # --- Define Codecs to Try (Priority Order) ---
+        # List of tuples: (codec_name, fourcc_string)
+        codecs_to_try = [
+            ("H.265 (HEVC)", 'h265'), # Try H.265 first (most efficient)
+            ("H.265 (HEVC)", 'hevc'), # Alternative FourCC for H.265
+            ("H.264 (AVC)",  'h264'), # Then H.264
+            ("H.264 (AVC)",  'avc1')  # Alternative FourCC for H.264
+        ]
+        fallback_codec = ("MJPG", 'MJPG') # Fallback if others fail
         container_name = "MKV"
-        # ---
         
-        # Ensure FPS is valid for VideoWriter and Queue sizing
-        fps = self.actual_fps
-        if fps <= 0:
-            print(f"Warning: Invalid actual FPS ({fps}) detected. Using requested FPS ({self.requested_fps}) for writer.")
-            fps = self.requested_fps
-            if fps <= 0:
-                 print(f"Warning: Requested FPS ({fps}) also invalid. Defaulting to 30 FPS for writer.")
-                 fps = 30.0
+        # Variables to store the successfully chosen codec
+        chosen_codec_name = None
+        chosen_fourcc = None
+        
+        # --- Attempt Preferred Codecs --- 
+        print(f"Attempting to find a working codec for {container_name} container...")
+        for name, code in codecs_to_try:
+            print(f"  Trying codec: {name} (FourCC: {code})...")
+            fourcc = cv2.VideoWriter_fourcc(*code)
+            try:
+                # Attempt to create the writer (we release it immediately if it opens)
+                temp_writer = cv2.VideoWriter(self.auto_output_filename, fourcc, float(self.actual_fps), frame_size)
+                if temp_writer is not None and temp_writer.isOpened():
+                    print(f"    Success! Codec {name} seems available.")
+                    chosen_codec_name = name
+                    chosen_fourcc = fourcc
+                    temp_writer.release() # Release the temporary writer
+                    break # Found a working codec
+                else:
+                    print(f"    Codec {name} failed to open writer.")
+                    if temp_writer: temp_writer.release()
+            except Exception as e_codec:
+                print(f"    Error initializing writer with codec {name}: {e_codec}")
+        
+        # --- Use Fallback if No Preferred Codec Worked ---
+        if chosen_codec_name is None:
+            print(f"No preferred codecs (H.265/H.264) worked. Falling back to {fallback_codec[0]}." )
+            chosen_codec_name = fallback_codec[0]
+            chosen_fourcc = cv2.VideoWriter_fourcc(*fallback_codec[1])
+        # ---
 
         # --- Initialize Frame Queue (Conditional again) ---
         if self.threaded_writer:
-            queue_max_size = max(10, int(fps * self.queue_size_seconds))
+            queue_max_size = max(10, int(self.actual_fps * self.queue_size_seconds))
             print(f"Initializing frame queue for threaded writer (max size: {queue_max_size})")
             self.frame_queue = Queue(maxsize=queue_max_size)
         else:
@@ -386,16 +411,18 @@ class LSLCameraStreamer:
             self.frame_queue = None # Ensure it's None if not threaded
         # ---
 
-        print(f"Initializing video writer: {self.auto_output_filename}, Codec: {codec_name} (in {container_name}), Size: {frame_size}, FPS: {fps:.2f}")
+        # --- Initialize Final Video Writer with Chosen Codec ---
+        print(f"Initializing final video writer: {self.auto_output_filename}, Chosen Codec: {chosen_codec_name} (in {container_name}), Size: {frame_size}, FPS: {self.actual_fps:.2f}")
         try:
-            self.video_writer = cv2.VideoWriter(self.auto_output_filename, fourcc, float(fps), frame_size)
+            self.video_writer = cv2.VideoWriter(self.auto_output_filename, chosen_fourcc, float(self.actual_fps), frame_size)
             if not self.video_writer.isOpened():
-                print(f"Error: Could not open VideoWriter for file '{self.auto_output_filename}'. Check if {codec_name} encoder is available and compatible with {container_name} container in your OpenCV build.")
+                # This error is less likely now if the fallback worked, but keep it as a safeguard
+                print(f"Error: Could not open final VideoWriter for file '{self.auto_output_filename}' even with chosen codec {chosen_codec_name}.")
                 self.video_writer = None
             else:
-                print("Video writer initialized successfully.")
+                print("Final video writer initialized successfully.")
         except Exception as e:
-            print(f"Error initializing VideoWriter: {e}")
+            print(f"Error initializing final VideoWriter: {e}")
             traceback.print_exc()
             self.video_writer = None
 
@@ -623,43 +650,35 @@ class LSLCameraStreamer:
              
         timestamp = local_clock()
         frame_data = None
+        current_frame_index = -1 # Initialize to indicate error if capture fails
         
         try:
             # --- Capture frame ---
             if self.is_picamera and self.picam2:
-                 # Requesting BGR888, so capture_array should return compatible format
                  frame_data = self.picam2.capture_array()
-                 
-                 # --- TEMP: Save first frame as PNG for debugging ---
-                 # if self.frame_count == 0:
-                 #     try:
-                 #         save_path = "first_frame_test.png"
-                 #         print(f"DEBUG: Saving first frame to {save_path} (Shape: {frame_data.shape}, Dtype: {frame_data.dtype})")
-                 #         cv2.imwrite(save_path, frame_data)
-                 #         print(f"DEBUG: Saved {save_path}")
-                 #     except Exception as e_save:
-                 #         print(f"DEBUG: Failed to save first frame: {e_save}")
-                 # --- END TEMP ---
-                 
             elif not self.is_picamera and self.cap:
                 ret, frame_data = self.cap.read()
                 if not ret or frame_data is None:
                     print("Warning: Failed to grab frame from webcam. Skipping.")
-                    return None, None
+                    return None, None # Don't proceed if capture failed
             else:
                 print("Error: Camera not available for capture (state inconsistency).")
                 self._is_running = False
-                return None, None
+                return None, None # Don't proceed if camera is not ready
+            
+            # --- Assign frame index *after* successful capture ---
+            # This ensures we only count/push frames that were actually read
+            current_frame_index = self.frame_count
+            self.frame_count += 1
 
             # --- Write Frame (Conditional: Queue or Direct) ---
             if self.video_writer is not None:
                  if self.threaded_writer:
                      if self.frame_queue is not None:
                           try:
-                              # Increment frame count *before* attempting to queue/write
-                              # This counts frames the main thread attempted to process
-                              current_frame_index = self.frame_count
-                              self.frame_count += 1 
+                              # Frame count incremented above
+                              # current_frame_index = self.frame_count
+                              # self.frame_count += 1 
                               self.frame_queue.put_nowait(frame_data)
                           except Full:
                               print("Warning: Frame queue full (threaded writer). Dropping frame.")
@@ -671,18 +690,20 @@ class LSLCameraStreamer:
                  else:
                      # --- Write frame directly (Non-Threaded) ---
                      try:
-                         # Increment frame count *before* attempting to write
-                         current_frame_index = self.frame_count
-                         self.frame_count += 1
+                         # Frame count incremented above
+                         # current_frame_index = self.frame_count
+                         # self.frame_count += 1
                          self.video_writer.write(frame_data)
                          self.frames_written_count += 1 # Increment sync write count
                      except Exception as e:
                          print(f"Error writing frame directly: {e}")
+            # else: # Optional: Log if video writer is None, though it should be logged during init
+            #     print("Debug: Video writer is None, skipping frame write.")
 
             # --- Push Frame Number to LSL (Always Direct Now) ---
             if self.outlet is not None:
                  try:
-                     # Use the frame index captured *before* potential queue drop
+                     # Use the frame index assigned after successful capture
                      self.outlet.push_sample([current_frame_index], timestamp)
                  except Exception as e:
                      print(f"Error pushing frame number ({current_frame_index}) to LSL directly: {e}")
@@ -699,7 +720,6 @@ class LSLCameraStreamer:
                       pass
             
             # Frame count is now incremented earlier
-            # self.frame_count += 1 
             
             return frame_data, timestamp
 
@@ -707,8 +727,6 @@ class LSLCameraStreamer:
             # Catch errors specific to camera capture or preview
             print(f"Error during frame capture/preview: {e}")
             traceback.print_exc()
-            # Attempt to gracefully stop if capture fails critically?
-            # self.stop() # Maybe too aggressive?
             return None, None # Indicate failure for this frame
 
 
