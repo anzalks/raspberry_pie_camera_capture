@@ -34,8 +34,9 @@ class LSLCameraStreamer:
                  stream_name='RaspberryPiCamera', source_id='RPiCam_UniqueID',
                  show_preview=False,
                  use_max_settings=False,
-                 queue_size_seconds=2,
-                 threaded_writer=False):
+                 queue_size_seconds=5,
+                 threaded_writer=False,
+                 output_path=None):
         """
         Initializes the streamer configuration and sets up camera and LSL.
 
@@ -51,6 +52,7 @@ class LSLCameraStreamer:
             use_max_settings (bool): If True, attempt to use max resolution/FPS for webcams.
             queue_size_seconds (int): Approximate buffer size in seconds for the video writer queue (used only if threaded_writer is True).
             threaded_writer (bool): If True, use a separate thread for video writing.
+            output_path (str, optional): Directory path to save the video file. Defaults to current directory if None.
         """
         
         # Store configuration parameters
@@ -68,6 +70,7 @@ class LSLCameraStreamer:
         self.threaded_writer = threaded_writer
         self.auto_output_filename = None
         self.video_writer = None
+        self.output_path = output_path # Store the output path
 
         # Internal state variables that get set during init
         self.width = width # Actual width used
@@ -338,13 +341,25 @@ class LSLCameraStreamer:
            Uses MJPG codec and MKV container for all camera types.
         """
         
-        # Generate filename based on timestamp
+        # Generate base filename based on timestamp
         timestamp_str = time.strftime("%Y%m%d_%H%M%S")
+        base_filename = f"lsl_capture_{timestamp_str}.mkv"
+
+        # Construct the full output path
+        if self.output_path and os.path.isdir(self.output_path):
+            self.auto_output_filename = os.path.join(self.output_path, base_filename)
+            print(f"Video will be saved to: {self.auto_output_filename}")
+        else:
+            if self.output_path:
+                print(f"Warning: Provided output path '{self.output_path}' is not a valid directory. Saving to current directory instead.")
+            self.auto_output_filename = base_filename # Save in current directory
+            print(f"Video will be saved to current directory: {self.auto_output_filename}")
+
         frame_size = (self.width, self.height)
 
         # --- Set Codec and Container (MJPG/MKV) ---
         print("Using MJPG/MKV for video output.")
-        self.auto_output_filename = f"lsl_capture_{timestamp_str}.mkv" # Use .mkv extension
+        # self.auto_output_filename = f"lsl_capture_{timestamp_str}.mkv" # This line is replaced by the path joining logic above
         fourcc = cv2.VideoWriter_fourcc(*'MJPG') # Use MJPG codec
         codec_name = "MJPG"
         container_name = "MKV"

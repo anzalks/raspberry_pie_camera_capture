@@ -57,7 +57,7 @@ This project utilizes a `src` layout for better packaging. Installation involves
     *(Your terminal prompt should now start with `(dognosis)` or your chosen environment name)*
 3.  **Navigate to Project Directory:** Go back to the directory where you cloned the project (the one containing `pyproject.toml`, `setup.cfg`, and the `src` folder).
     ```bash
-    cd /path/to/your/raspberry_pie_camera_capture
+    cd /path/to/your/raspberry_pie_camera_capture 
     ```
 4.  **Install Python Dependencies:** Install the package in editable mode (`-e`) along with its core Python dependencies (`pylsl`, `numpy`, `opencv-python`) into the active virtual environment.
     ```bash

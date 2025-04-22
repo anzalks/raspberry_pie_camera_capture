@@ -24,6 +24,9 @@ def main():
     parser.add_argument('--fps', type=int, default=30, help='Frames per second')
     parser.add_argument('--format', type=str, default='RGB888',
                         help='Camera pixel format (e.g., RGB888, XBGR8888, YUV420) - PiCam only')
+    # Output configuration
+    parser.add_argument('--output-path', type=str, default=None,
+                        help='Directory path to save the output video file. Defaults to the current directory.')
     # LSL configuration arguments
     parser.add_argument('--stream-name', type=str, default='RaspberryPiCamera',
                         help='LSL stream name')
@@ -75,6 +78,7 @@ def main():
             show_preview=args.show_preview,
             use_max_settings=args.use_max_settings,
             threaded_writer=args.threaded_writer,
+            output_path=args.output_path # Pass the output path argument
         )
         
         # Register the streamer stop method to be called on normal/exception exit
