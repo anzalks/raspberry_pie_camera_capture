@@ -338,7 +338,7 @@ class LSLCameraStreamer:
 
     def _initialize_video_writer(self):
         """Initializes the OpenCV VideoWriter and, if threaded, the frame queue.
-           Uses MJPG codec and MKV container for all camera types.
+           Uses H.264 codec and MKV container for all camera types.
         """
         
         # Generate base filename based on timestamp
@@ -357,11 +357,11 @@ class LSLCameraStreamer:
 
         frame_size = (self.width, self.height)
 
-        # --- Set Codec and Container (MJPG/MKV) ---
-        print("Using MJPG/MKV for video output.")
-        # self.auto_output_filename = f"lsl_capture_{timestamp_str}.mkv" # This line is replaced by the path joining logic above
-        fourcc = cv2.VideoWriter_fourcc(*'MJPG') # Use MJPG codec
-        codec_name = "MJPG"
+        # --- Set Codec and Container (H.264/MKV) ---
+        print("Attempting H.264/MKV for video output.")
+        self.auto_output_filename = f"lsl_capture_{timestamp_str}.mkv" # Keep .mkv extension
+        fourcc = cv2.VideoWriter_fourcc(*'h264') # Try H.264 codec
+        codec_name = "H.264"
         container_name = "MKV"
         # ---
         
@@ -388,7 +388,7 @@ class LSLCameraStreamer:
         try:
             self.video_writer = cv2.VideoWriter(self.auto_output_filename, fourcc, float(fps), frame_size)
             if not self.video_writer.isOpened():
-                print(f"Error: Could not open VideoWriter for file '{self.auto_output_filename}'. Check {codec_name} codec support for {container_name} container.")
+                print(f"Error: Could not open VideoWriter for file '{self.auto_output_filename}'. Check if {codec_name} encoder is available and compatible with {container_name} container in your OpenCV build.")
                 self.video_writer = None
             else:
                 print("Video writer initialized successfully.")
@@ -557,26 +557,40 @@ class LSLCameraStreamer:
             print("Signaling writer thread to stop and waiting for queue to flush...")
             self.stop_writer_event.set()
             try:
-                 self.writer_thread.join(timeout=max(5.0, self.queue_size_seconds * 1.5))
+                 # Drastically Increased timeout: at least 60s, plus more based on queue size
+                 join_timeout = max(60.0, self.queue_size_seconds * 3.0) # Give it much more time
+                 print(f"Waiting up to {join_timeout:.1f} seconds for writer thread...")
+                 self.writer_thread.join(timeout=join_timeout)
                  if self.writer_thread.is_alive():
-                       print("Warning: Writer thread did not finish within timeout.")
+                       print("ERROR: Writer thread is STILL ALIVE after extended timeout! Video file might be incomplete or corrupted.")
                  else:
                        print("Writer thread finished.")
             except Exception as e:
                  print(f"Error waiting for writer thread: {e}")
-            self.writer_thread = None
+            self.writer_thread = None # Set to None even if it didn't join cleanly
         elif self.threaded_writer and self.writer_thread is None:
              print("Warning: Threaded writer was enabled but thread object is None during stop.")
 
-        # --- Release VideoWriter (AFTER writer thread finishes) ---
+        # --- Release VideoWriter (AFTER writer thread finishes or times out) ---
         if self.video_writer is not None:
-            print(f"Releasing video writer ('{self.auto_output_filename}')...")
+            # Check if it's still considered open by OpenCV before releasing
+            # Note: This check might not be foolproof if the object is corrupted internally
+            is_opened = False
             try:
-                self.video_writer.release()
-                print("Video writer released.")
-            except Exception as e:
-                print(f"Error releasing video writer: {e}")
-            self.video_writer = None
+                 is_opened = self.video_writer.isOpened()
+            except Exception as e_check:
+                 print(f"Warning: Error checking if VideoWriter is open before release: {e_check}")
+            
+            if is_opened:
+                print(f"Releasing video writer ('{self.auto_output_filename}')...")
+                try:
+                    self.video_writer.release()
+                    print("Video writer released.")
+                except Exception as e:
+                    print(f"Error releasing video writer: {e}") # Still might segfault here if internal state is bad
+            else:
+                 print(f"Video writer ('{self.auto_output_filename}') was not considered open. Skipping release call.")
+            self.video_writer = None # Set to None regardless
             
         # --- Destroy Preview Window ---
         if self.show_preview:
