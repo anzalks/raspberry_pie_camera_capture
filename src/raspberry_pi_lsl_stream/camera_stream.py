@@ -340,12 +340,11 @@ class LSLCameraStreamer:
 
     def _initialize_video_writer(self):
         """Initializes the OpenCV VideoWriter and, if threaded, the frame queue.
-           Attempts H.265, H.264 codecs first, falling back to MJPG in an MKV container.
+           Attempts H.265, H.264 codecs first, falling back to MJPG, saving in an MKV container for better resilience.
         """
         
-        # Generate base filename based on timestamp
         timestamp_str = time.strftime("%Y%m%d_%H%M%S")
-        base_filename = f"lsl_capture_{timestamp_str}.mkv"
+        base_filename = f"lsl_capture_{timestamp_str}.mkv" # Reverted extension to .mkv
 
         # Construct the full output path
         if self.output_path and os.path.isdir(self.output_path):
@@ -360,15 +359,14 @@ class LSLCameraStreamer:
         frame_size = (self.width, self.height)
 
         # --- Define Codecs to Try (Priority Order) ---
-        # List of tuples: (codec_name, fourcc_string)
         codecs_to_try = [
-            ("H.265 (HEVC)", 'h265'), # Try H.265 first (most efficient)
-            ("H.265 (HEVC)", 'hevc'), # Alternative FourCC for H.265
-            ("H.264 (AVC)",  'h264'), # Then H.264
-            ("H.264 (AVC)",  'avc1')  # Alternative FourCC for H.264
+            ("H.265 (HEVC)", 'h265'),
+            ("H.265 (HEVC)", 'hevc'),
+            ("H.264 (AVC)",  'h264'),
+            ("H.264 (AVC)",  'avc1')
         ]
-        fallback_codec = ("MJPG", 'MJPG') # Fallback if others fail
-        container_name = "MKV"
+        fallback_codec = ("MJPG", 'MJPG')
+        container_name = "MKV" # Reverted container name
         
         # Variables to store the successfully chosen codec
         chosen_codec_name = None
@@ -376,45 +374,60 @@ class LSLCameraStreamer:
         
         # --- Attempt Preferred Codecs --- 
         print(f"Attempting to find a working codec for {container_name} container...")
+        fps = self.actual_fps # Get fps for the temp writer test
+        if fps <= 0: fps = 30.0 # Use fallback fps for test if needed
         for name, code in codecs_to_try:
             print(f"  Trying codec: {name} (FourCC: {code})...")
             fourcc = cv2.VideoWriter_fourcc(*code)
             try:
-                # Attempt to create the writer (we release it immediately if it opens)
-                temp_writer = cv2.VideoWriter(self.auto_output_filename, fourcc, float(self.actual_fps), frame_size)
+                # Use a temporary filename for codec testing to avoid zero-byte files if it fails immediately
+                temp_filename = os.path.join(self.output_path if self.output_path and os.path.isdir(self.output_path) else ".", f"_codec_test_{code}.{container_name.lower()}")
+                temp_writer = cv2.VideoWriter(temp_filename, fourcc, float(fps), frame_size)
                 if temp_writer is not None and temp_writer.isOpened():
                     print(f"    Success! Codec {name} seems available.")
                     chosen_codec_name = name
                     chosen_fourcc = fourcc
-                    temp_writer.release() # Release the temporary writer
-                    break # Found a working codec
+                    temp_writer.release()
+                    # Clean up the temp file
+                    try: os.remove(temp_filename) 
+                    except OSError: pass
+                    break 
                 else:
                     print(f"    Codec {name} failed to open writer.")
                     if temp_writer: temp_writer.release()
+                    # Clean up the temp file if it exists
+                    try: os.remove(temp_filename) 
+                    except OSError: pass
             except Exception as e_codec:
-                print(f"    Error initializing writer with codec {name}: {e_codec}")
+                 print(f"    Error initializing writer with codec {name}: {e_codec}")
+                 # Clean up the temp file if it exists
+                 try: os.remove(temp_filename) 
+                 except OSError: pass
         
         # --- Use Fallback if No Preferred Codec Worked ---
         if chosen_codec_name is None:
             print(f"No preferred codecs (H.265/H.264) worked. Falling back to {fallback_codec[0]}." )
+            # No warning needed for MJPG in MKV
             chosen_codec_name = fallback_codec[0]
             chosen_fourcc = cv2.VideoWriter_fourcc(*fallback_codec[1])
         # ---
 
-        # --- Initialize Frame Queue (Conditional again) ---
+        # --- FPS Validation and Queue Setup --- 
+        # Use the actual fps for the final writer and queue
+        fps = self.actual_fps 
         if self.threaded_writer:
-            queue_max_size = max(10, int(self.actual_fps * self.queue_size_seconds))
-            print(f"Initializing frame queue for threaded writer (max size: {queue_max_size})")
-            self.frame_queue = Queue(maxsize=queue_max_size)
+             queue_max_size = max(10, int(fps * self.queue_size_seconds)) # Use validated fps here
+             print(f"Initializing frame queue for threaded writer (max size: {queue_max_size})")
+             self.frame_queue = Queue(maxsize=queue_max_size)
         else:
             print("Threaded writer disabled. Frames will be written synchronously.")
             self.frame_queue = None # Ensure it's None if not threaded
         # ---
 
         # --- Initialize Final Video Writer with Chosen Codec ---
-        print(f"Initializing final video writer: {self.auto_output_filename}, Chosen Codec: {chosen_codec_name} (in {container_name}), Size: {frame_size}, FPS: {self.actual_fps:.2f}")
+        print(f"Initializing final video writer: {self.auto_output_filename}, Chosen Codec: {chosen_codec_name} (in {container_name}), Size: {frame_size}, FPS: {fps:.2f}")
         try:
-            self.video_writer = cv2.VideoWriter(self.auto_output_filename, chosen_fourcc, float(self.actual_fps), frame_size)
+            self.video_writer = cv2.VideoWriter(self.auto_output_filename, chosen_fourcc, float(fps), frame_size)
             if not self.video_writer.isOpened():
                 # This error is less likely now if the fallback worked, but keep it as a safeguard
                 print(f"Error: Could not open final VideoWriter for file '{self.auto_output_filename}' even with chosen codec {chosen_codec_name}.")
