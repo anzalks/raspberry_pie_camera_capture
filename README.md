@@ -4,10 +4,11 @@ A Python package to capture video frames from a Raspberry Pi camera and stream t
 
 ## Features
 
-*   Captures frames using `picamera2`.
-*   Streams video data (flattened frames) via LSL.
-*   Includes timestamps and frame numbers.
+*   Captures frames using `picamera2` or a standard webcam (`OpenCV`).
+*   Saves captured video to a local file (`.mp4` or `.avi`).
+*   Streams **frame numbers** and timestamps via LSL.
 *   Configurable resolution, frame rate, and LSL stream parameters.
+*   Includes optional live preview and threaded video writing.
 
 ## Prerequisites
 
@@ -104,16 +105,19 @@ rpi-lsl-stream --use-max-settings --duration 60 --threaded-writer
 
 ## LSL Stream Details
 
+**Note:** The current implementation streams only the frame number, not the full video frame data. The video is saved locally to a file.
+
 *   **Name:** As specified by `--stream-name`.
-*   **Type:** 'Video'
-*   **Channels:** `width * height * number_of_color_channels` (e.g., `640 * 480 * 3` for RGB888).
-*   **Format:** `cf_uint8` (unsigned 8-bit integers).
-*   **Nominal Rate:** As specified by `--fps`.
+*   **Type:** 'FrameCounter' (Indicates only frame numbers are streamed)
+*   **Channels:** 1 (for the frame number).
+*   **Format:** `cf_int32` (32-bit integer for the frame number).
+*   **Nominal Rate:** As specified by `--fps` (or the actual rate achieved by the camera).
 *   **Source ID:** As specified by `--source-id`.
 *   **Metadata:** Includes:
-    *   Resolution (width, height)
-    *   Color Format (e.g., 'RGB888')
-    *   Frame Number (in channel description)
+    *   Camera Model (`camera_model`)
+    *   Source Type (`source_type`: PiCamera or Webcam)
+    *   Acquisition Software (`acquisition_software`)
+    *   Channel Label (`label`: FrameNumber)
 
 ## Troubleshooting
 
