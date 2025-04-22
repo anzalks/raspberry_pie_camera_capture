@@ -145,11 +145,45 @@ def main():
         # or an exception occurred (unless it was sys.exit).
         if streamer:
             print("\nStopping stream and cleaning up resources...")
-            # Get the final frame count before stopping.
-            final_frame_count = streamer.get_frame_count()
+            # Get stats *before* calling stop, as stop might alter them or cleanup objects
+            # Note: frame_count includes frames attempted, not necessarily written/pushed
+            total_frames_processed = streamer.get_frame_count()
+            frames_written = streamer.get_frames_written()
+            frames_dropped = streamer.get_frames_dropped()
+            
             # Ensure the streamer's stop method is called to release resources.
             streamer.stop() 
-            print(f"Stream stopped. Total frames pushed: {final_frame_count}")
+            
+            # Report statistics
+            print("\n--- Stream Statistics ---")
+            
+            # Threading Info
+            if streamer.threaded_writer:
+                print("Threading: Enabled (Main thread: Capture/LSL/Queue, Writer thread: Video Save)")
+                print(f"Application Threads Primarily Used: 2")
+            else:
+                print("Threading: Disabled (Main thread: Capture/LSL/Video Save)")
+                print(f"Application Threads Primarily Used: 1")
+                
+            print("-") # Separator
+            
+            # Frame Counts
+            print(f"Frames processed by capture loop (Main Thread): {total_frames_processed}")
+            if streamer.threaded_writer:
+                print(f"Frames successfully written to file (Writer Thread): {frames_written}")
+                print(f"Frames dropped due to full queue (Main Thread): {frames_dropped}")
+                if total_frames_processed > 0:
+                    dropped_percentage = (frames_dropped / total_frames_processed) * 100
+                    print(f"Dropped percentage: {dropped_percentage:.2f}%")
+                else:
+                    print("Dropped percentage: N/A")
+            else: # Non-threaded
+                print(f"Frames successfully written to file (Main Thread): {frames_written}")
+                # Drop count is not applicable/tracked in non-threaded mode
+                
+            print("------------------------")
+            
+            # print(f"Stream stopped. Total frames processed: {total_frames_processed}") # Old message replaced by stats block
         else:
             # Handle cases where the streamer object wasn't successfully created.
             print("Stream process finished (streamer was not initialized).")

@@ -84,6 +84,8 @@ class LSLCameraStreamer:
         self.outlet = None
         self.info = None
         self.frame_count = 0
+        self.frames_written_count = 0
+        self.frames_dropped_count = 0
         self._is_running = False
 
         # --- Threading components ---
@@ -443,7 +445,7 @@ class LSLCameraStreamer:
         frame_write_count = 0
         while not self.stop_writer_event.is_set() or not self.frame_queue.empty():
             try:
-                frame_data = self.frame_queue.get(timeout=0.1) 
+                frame_data = self.frame_queue.get(timeout=0.1)
                 if frame_data is not None and self.video_writer is not None:
                     try:
                         self.video_writer.write(frame_data)
@@ -456,13 +458,15 @@ class LSLCameraStreamer:
                      pass
             except Empty:
                 if self.stop_writer_event.is_set():
-                     break 
+                     break
                 else:
                      continue
             except Exception as e:
                  print(f"Unexpected error in writer thread loop: {e}")
                  traceback.print_exc()
-        print(f"Writer thread stopping. Total frames written: {frame_write_count}")
+        # Store the final count before exiting
+        self.frames_written_count = frame_write_count
+        print(f"Writer thread stopping. Total frames written by this thread: {self.frames_written_count}")
 
     def start(self):
         """Starts the camera capture process and optionally the writer thread."""
@@ -652,9 +656,14 @@ class LSLCameraStreamer:
                  if self.threaded_writer:
                      if self.frame_queue is not None:
                           try:
+                              # Increment frame count *before* attempting to queue/write
+                              # This counts frames the main thread attempted to process
+                              current_frame_index = self.frame_count
+                              self.frame_count += 1 
                               self.frame_queue.put_nowait(frame_data)
                           except Full:
                               print("Warning: Frame queue full (threaded writer). Dropping frame.")
+                              self.frames_dropped_count += 1 # Increment dropped counter
                           except Exception as e:
                                print(f"Error putting frame into queue: {e}")
                      else:
@@ -662,16 +671,21 @@ class LSLCameraStreamer:
                  else:
                      # --- Write frame directly (Non-Threaded) ---
                      try:
+                         # Increment frame count *before* attempting to write
+                         current_frame_index = self.frame_count
+                         self.frame_count += 1
                          self.video_writer.write(frame_data)
+                         self.frames_written_count += 1 # Increment sync write count
                      except Exception as e:
                          print(f"Error writing frame directly: {e}")
 
             # --- Push Frame Number to LSL (Always Direct Now) ---
             if self.outlet is not None:
                  try:
-                     self.outlet.push_sample([self.frame_count], timestamp)
+                     # Use the frame index captured *before* potential queue drop
+                     self.outlet.push_sample([current_frame_index], timestamp)
                  except Exception as e:
-                     print(f"Error pushing frame number to LSL directly: {e}")
+                     print(f"Error pushing frame number ({current_frame_index}) to LSL directly: {e}")
             else:
                   print("Warning: LSL Outlet is None. Cannot push sample.")
             
@@ -684,8 +698,8 @@ class LSLCameraStreamer:
                  except Exception as e:
                       pass
             
-            # Increment frame count *before* queueing/pushing
-            self.frame_count += 1
+            # Frame count is now incremented earlier
+            # self.frame_count += 1 
             
             return frame_data, timestamp
 
@@ -721,8 +735,16 @@ class LSLCameraStreamer:
         }
 
     def get_frame_count(self):
-        """Returns the number of frames successfully pushed to LSL."""
+        """Returns the number of frames attempted to be processed by capture_frame."""
         return self.frame_count
+
+    def get_frames_written(self):
+        """Returns the total number of frames successfully written to the video file."""
+        return self.frames_written_count
+    
+    def get_frames_dropped(self):
+        """Returns the number of frames dropped because the writer queue was full."""
+        return self.frames_dropped_count
 
     # Ensure cleanup if the object is deleted or goes out of scope
     def __del__(self):
