@@ -335,28 +335,19 @@ class LSLCameraStreamer:
 
     def _initialize_video_writer(self):
         """Initializes the OpenCV VideoWriter and, if threaded, the frame queue.
-           Uses H.264/MP4 for Webcams and MJPG/AVI for PiCamera as a fallback.
+           Uses MJPG codec and MKV container for all camera types.
         """
         
         # Generate filename based on timestamp
         timestamp_str = time.strftime("%Y%m%d_%H%M%S")
         frame_size = (self.width, self.height)
 
-        # --- Select Codec and Container based on Camera Type ---
-        if self.is_picamera:
-            # Use MJPG/AVI for PiCamera (found to be more reliable)
-            print("Using MJPG/AVI for PiCamera output.")
-            self.auto_output_filename = f"lsl_capture_{timestamp_str}.avi"
-            fourcc = cv2.VideoWriter_fourcc(*'MJPG')
-            codec_name = "MJPG"
-            container_name = "AVI"
-        else:
-            # Use H.264/MP4 for Webcam (better compression)
-            print("Using H.264/MP4 for Webcam output.")
-            self.auto_output_filename = f"lsl_capture_{timestamp_str}.mp4"
-            fourcc = cv2.VideoWriter_fourcc(*'h264') 
-            codec_name = "H.264"
-            container_name = "MP4"
+        # --- Set Codec and Container (MJPG/MKV) ---
+        print("Using MJPG/MKV for video output.")
+        self.auto_output_filename = f"lsl_capture_{timestamp_str}.mkv" # Use .mkv extension
+        fourcc = cv2.VideoWriter_fourcc(*'MJPG') # Use MJPG codec
+        codec_name = "MJPG"
+        container_name = "MKV"
         # ---
         
         # Ensure FPS is valid for VideoWriter and Queue sizing
@@ -382,7 +373,7 @@ class LSLCameraStreamer:
         try:
             self.video_writer = cv2.VideoWriter(self.auto_output_filename, fourcc, float(fps), frame_size)
             if not self.video_writer.isOpened():
-                print(f"Error: Could not open VideoWriter for file '{self.auto_output_filename}'. Check {codec_name} codec support for {container_name} container.") 
+                print(f"Error: Could not open VideoWriter for file '{self.auto_output_filename}'. Check {codec_name} codec support for {container_name} container.")
                 self.video_writer = None
             else:
                 print("Video writer initialized successfully.")
