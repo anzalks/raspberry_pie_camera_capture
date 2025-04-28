@@ -8,6 +8,7 @@ import platform # For OS-specific checks
 import os # Added for checking device existence
 import threading # Added for writer thread
 from queue import Queue, Empty, Full # Added for frame buffer queue
+import glob # Added for device detection
 
 # Attempt to import Picamera2 and set a flag indicating its availability.
 # This allows the code to run on non-Pi systems (using a webcam)
@@ -115,7 +116,7 @@ class LSLCameraStreamer:
             raise # Re-raise the exception to signal failure
 
     def _initialize_camera(self):
-        """Initializes the camera, prioritizing PiCamera if available, then falling back to Webcams."""
+        """Initializes the camera, prioritizing PiCamera if available, then falling back to detected Webcams."""
         initialized = False
         is_linux = platform.system() == 'Linux'
         picam2_usable = is_linux and PICAMERA2_AVAILABLE
@@ -127,17 +128,17 @@ class LSLCameraStreamer:
             if self._initialize_picamera():
                 initialized = True
             else:
-                print("PiCamera initialization failed. Falling back to iterating through Webcams (0-9)...")
+                print("PiCamera initialization failed. Falling back to detecting and trying Webcams...")
                 # Try webcams only if PiCamera fails
-                MAX_WEBCAM_INDEX = 9 # Limit check to indices 0-9
-                for index in range(MAX_WEBCAM_INDEX + 1):
+                webcam_indices_to_try = self._detect_webcam_indices(is_linux)
+                for index in webcam_indices_to_try:
                     if self._initialize_webcam(index):
                         initialized = True
                         break # Stop on first success
         else:
-            print("picamera2 library not available or not Linux. Iterating through Webcams (0-9)...")
-            MAX_WEBCAM_INDEX = 9 # Limit check to indices 0-9
-            for index in range(MAX_WEBCAM_INDEX + 1):
+            print("picamera2 library not available or not Linux. Detecting and trying Webcams...")
+            webcam_indices_to_try = self._detect_webcam_indices(is_linux)
+            for index in webcam_indices_to_try:
                 if self._initialize_webcam(index):
                     initialized = True
                     break # Stop on first success
@@ -147,11 +148,40 @@ class LSLCameraStreamer:
             error_message = "Could not initialize any camera. "
             # Add more specific info based on what was attempted
             if picam2_usable:
-                 error_message += "Attempted PiCamera (failed) and Webcams (0-9). "
+                 error_message += "Attempted PiCamera (failed) and detected Webcams. "
             else:
-                 error_message += "Attempted Webcams (0-9). "
+                 error_message += "Attempted detected Webcams. "
             error_message += "All attempts failed."
             raise RuntimeError(error_message)
+            
+    def _detect_webcam_indices(self, is_linux):
+        """Detects available /dev/videoX indices on Linux, returns default list otherwise."""
+        indices = []
+        if is_linux:
+            try:
+                print("Detecting video devices in /dev/...")
+                devices = glob.glob('/dev/video*')
+                for device in devices:
+                    try:
+                        # Extract number from end of /dev/videoX
+                        index = int(device.replace('/dev/video', '')) 
+                        indices.append(index)
+                    except (ValueError, IndexError):
+                        print(f"  Warning: Could not parse index from device '{device}'. Skipping.")
+                        continue
+                indices.sort() # Try lower indices first
+                if indices:
+                    print(f"  Detected potential webcam indices: {indices}")
+                else:
+                    print("  No /dev/video* devices found. Will try default indices [0, 1].")
+                    indices = [0, 1] # Fallback if glob finds nothing
+            except Exception as e:
+                print(f"Error detecting video devices: {e}. Will try default indices [0, 1].")
+                indices = [0, 1]
+        else:
+            print("Not on Linux. Will try default webcam indices [0, 1].")
+            indices = [0, 1] # Default for non-Linux
+        return indices
 
     def _initialize_webcam(self, index):
         """Attempts to initialize and configure a specific webcam index."""
