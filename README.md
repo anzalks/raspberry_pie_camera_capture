@@ -120,3 +120,26 @@ rpi-lsl-stream --stream-name MyExperimentCam --source-id Cam01_Session02
 ```
 
 ## LSL Stream Details
+
+## Troubleshooting
+
+*   **Camera not detected:** Ensure the camera is securely connected and enabled via `raspi-config`. Also check the output of `libcamera-hello --list-cameras`.
+*   **`picamera2` not found (after running setup):** Make sure you activated the correct virtual environment (`source .venv/bin/activate`) created by the setup script. This environment uses `--system-site-packages` to link to the system-installed `picamera2`.
+*   **Video Frame Rate Issues:** If the saved video doesn't seem to have the expected frame rate, use the verification tool (see below).
+*   **`liblsl` not found:** Verify `liblsl-dev` is installed (the `setup_pi.sh` script handles this).
+*   **Permission errors:** Check permissions for accessing camera devices (`/dev/video*`). Running the main stream command usually doesn't require `sudo` if setup was done correctly.
+*   **Performance issues:** Lower resolution or frame rate might be necessary depending on the Pi model and workload. Using `--threaded-writer` is recommended for high-resolution/FPS streams.
+
+## Verifying Saved Video Files
+
+A utility script is included to check the metadata of saved video files.
+
+1.  **Activate Environment:** Make sure your virtual environment is active (`source .venv/bin/activate`).
+2.  **Run Verification:**
+    ```bash
+    verify-lsl-video /path/to/your/video/lsl_capture_YYYYMMDD_HHMMSS.mkv
+    ```
+
+This will print the resolution, frame rate (as stored in the file metadata), frame count, and calculated duration.
+
+## Contributing
