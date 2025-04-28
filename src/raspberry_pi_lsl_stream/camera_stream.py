@@ -115,58 +115,41 @@ class LSLCameraStreamer:
             raise # Re-raise the exception to signal failure
 
     def _initialize_camera(self):
-        """Initializes the camera by dynamically choosing the order based on device detection.
-           - If /dev/video1 exists, assumes Webcam is primary: Tries Webcam 1, 0, then PiCam fallback.
-           - If /dev/video1 absent but PiCam available: Tries PiCam, then Webcam 0 fallback.
-           - Otherwise, tries Webcams 0, 1.
-        """
+        """Initializes the camera, prioritizing PiCamera if available, then falling back to Webcams."""
         initialized = False
-        dev_video1_exists = os.path.exists('/dev/video1')
         is_linux = platform.system() == 'Linux'
         picam2_usable = is_linux and PICAMERA2_AVAILABLE
 
         print("Starting dynamic camera initialization...")
 
-        if dev_video1_exists:
-            print("Detected /dev/video1, prioritizing Webcams (1, then 0)...")
-            webcam_indices_to_try = [1, 0]
-            for index in webcam_indices_to_try:
-                if self._initialize_webcam(index):
-                    initialized = True
-                    break
-            if not initialized and picam2_usable:
-                print("Webcams failed, falling back to PiCamera...")
-                if self._initialize_picamera():
-                    initialized = True
-        
-        elif picam2_usable: # /dev/video1 doesn't exist, but picam2 is available
-            print("/dev/video1 not found, picamera2 available. Prioritizing PiCamera...")
+        if picam2_usable:
+            print("picamera2 library available. Prioritizing PiCamera...")
             if self._initialize_picamera():
                 initialized = True
             else:
-                print("PiCamera failed, falling back to Webcam 0...")
-                if self._initialize_webcam(0):
-                    initialized = True
-        
-        else: # No /dev/video1, no usable PiCamera (e.g., non-Linux or picam2 lib missing)
-            print("/dev/video1 not found, PiCamera unavailable. Trying Webcams 0, then 1...")
-            webcam_indices_to_try = [0, 1]
-            for index in webcam_indices_to_try:
+                print("PiCamera initialization failed. Falling back to iterating through Webcams (0-9)...")
+                # Try webcams only if PiCamera fails
+                MAX_WEBCAM_INDEX = 9 # Limit check to indices 0-9
+                for index in range(MAX_WEBCAM_INDEX + 1):
+                    if self._initialize_webcam(index):
+                        initialized = True
+                        break # Stop on first success
+        else:
+            print("picamera2 library not available or not Linux. Iterating through Webcams (0-9)...")
+            MAX_WEBCAM_INDEX = 9 # Limit check to indices 0-9
+            for index in range(MAX_WEBCAM_INDEX + 1):
                 if self._initialize_webcam(index):
                     initialized = True
-                    break
+                    break # Stop on first success
 
-        # --- Final Check ---
+        # --- Final Check --- 
         if not initialized:
             error_message = "Could not initialize any camera. "
             # Add more specific info based on what was attempted
-            if dev_video1_exists:
-                 error_message += "Attempted Webcams (1, 0) "
-                 if picam2_usable: error_message += "and PiCamera fallback. "
-            elif picam2_usable:
-                 error_message += "Attempted PiCamera and Webcam 0 fallback. "
+            if picam2_usable:
+                 error_message += "Attempted PiCamera (failed) and Webcams (0-9). "
             else:
-                 error_message += "Attempted Webcams (0, 1). "
+                 error_message += "Attempted Webcams (0-9). "
             error_message += "All attempts failed."
             raise RuntimeError(error_message)
 
