@@ -77,6 +77,51 @@ apt install -y libcamera-apps
 echo "Installing python3-picamera2 (Recommended method via apt)..."
 apt install -y python3-picamera2
 
+# --- Python Virtual Environment and Project Installation ---
+
+echo "Attempting to set up Python virtual environment and install project..."
+
+# Check if running via sudo and get the original user
+if [ -z "$SUDO_USER" ]; then
+  echo "Warning: SUDO_USER variable not set. Cannot determine original user."
+  echo "Python environment setup will be skipped. Please run Phase 2 manually (see README)."
+else
+  echo "Running Python setup steps as user: $SUDO_USER"
+  
+  # Define the virtual environment path relative to the script's assumed location
+  # This assumes the script is run from the project root directory
+  VENV_DIR=".venv"
+  PROJECT_DIR=$(pwd) # Assuming the script is run from the project root
+
+  echo "Creating virtual environment in '$PROJECT_DIR/$VENV_DIR'..."
+  # Create the venv as the original user
+  sudo -u "$SUDO_USER" python3 -m venv --system-site-packages "$VENV_DIR"
+  
+  # Check if venv creation was successful
+  if [ ! -f "$VENV_DIR/bin/activate" ]; then
+      echo "ERROR: Failed to create virtual environment."
+      echo "Please check Python3 venv installation and permissions."
+  else
+      echo "Virtual environment created successfully."
+      
+      echo "Upgrading pip, setuptools, and wheel in the virtual environment..."
+      # Run pip install as the original user using the venv's pip
+      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install --upgrade pip setuptools wheel
+      
+      echo "Installing project 'raspberry-pi-lsl-stream' in editable mode..."
+      # Install the project itself as the original user
+      # Ensure we are in the correct directory before running pip install -e .
+      cd "$PROJECT_DIR"
+      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install -e .
+      
+      if [ $? -eq 0 ]; then
+          echo "Project installed successfully into the virtual environment."
+      else
+          echo "ERROR: Failed to install project using pip."
+      fi
+  fi
+fi
+
 # --- Camera Enablement Reminder --- 
 # Enabling the camera interface via script is complex and depends on OS version.
 # It's often SAFER to do this manually via 'sudo raspi-config' -> Interface Options -> Camera.
@@ -90,15 +135,10 @@ echo "Next Steps:"
 echo "1. Ensure the camera is ENABLED using 'sudo raspi-config'" 
 echo "   (Interface Options -> Camera -> Enable, and ensure Legacy Camera is DISABLED)."
 echo "2. REBOOT the Raspberry Pi if you changed camera settings: sudo reboot"
-echo "3. Create and activate a Python virtual environment:"
-echo "   python3 -m venv --system-site-packages ~/.virtualenvs/dognosis  # Or your preferred location"
-echo "   source ~/.virtualenvs/dognosis/bin/activate"
-echo "4. Navigate to the project directory:"
-echo "   cd /path/to/your/raspberry_pie_camera_capture" 
-echo "5. Install Python packages within the activated environment:"
-echo "   pip install --upgrade pip"
-echo "   pip install -e ." 
-echo "   (Note: picamera2 should already be available from the system install)"
+echo "3. Activate the Python virtual environment created in this directory:"
+echo "   source .venv/bin/activate"
+echo "4. You can now run the command:"
+echo "   rpi-lsl-stream --help"
 echo "-----------------------------------------------------"
 
 exit 0 

@@ -12,10 +12,13 @@ from queue import Queue, Empty, Full # Added for frame buffer queue
 # Attempt to import Picamera2 and set a flag indicating its availability.
 # This allows the code to run on non-Pi systems (using a webcam)
 # without crashing on import if picamera2 is not installed or supported.
+print("DEBUG: About to attempt importing picamera2...")
 try:
     from picamera2 import Picamera2
     PICAMERA2_AVAILABLE = True
-except ImportError:
+    print("DEBUG: picamera2 imported successfully.")
+except ImportError as e:
+    print(f"DEBUG: Failed to import picamera2: {e}")
     PICAMERA2_AVAILABLE = False
     # Inform the user if the PiCamera library is missing
     print("Warning: picamera2 library not found. Raspberry Pi camera functionality disabled.")
