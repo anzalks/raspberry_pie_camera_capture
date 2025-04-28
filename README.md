@@ -71,4 +71,52 @@ Make sure you are in the project directory and the virtual environment is active
 
 Run the streamer from the command line:
 
+```bash
+rpi-lsl-stream [OPTIONS]
 ```
+
+**Command-Line Options:**
+
+*   `--width`: Video width (default: 640).
+*   `--height`: Video height (default: 480).
+*   `--fps`: Frames per second (default: 30).
+*   `--format`: Camera pixel format (default: 'RGB888') - used by PiCamera backend.
+*   `--output-path`: Directory path to save the output video file (default: current directory).
+*   `--stream-name`: LSL stream name (default: 'RaspberryPiCamera').
+*   `--source-id`: Unique LSL source ID (default: 'RPiCam_UniqueID').
+*   `--show-preview`: Show a live preview window (requires graphical environment).
+*   `--use-max-settings`: [Webcam Only] Attempt to use the highest resolution and FPS reported by the webcam. Overrides `--width`, `--height`, `--fps`.
+*   `--duration DURATION`: Record for a fixed duration (in seconds) then stop automatically.
+*   `--threaded-writer`: Use a separate thread for writing video frames (recommended for high resolution/fps).
+*   `--version`: Show program's version number and exit.
+*   `-h`, `--help`: Show help message and exit.
+
+**Examples:**
+
+```bash
+# Basic usage (default 640x480 @ 30fps)
+rpi-lsl-stream
+
+# Stream at 1920x1080 resolution at 30 fps indefinitely
+rpi-lsl-stream --width 1920 --height 1080 --fps 30
+
+# Stream at 1280x720 resolution at 60 fps for 2 minutes (120 seconds)
+rpi-lsl-stream --width 1280 --height 720 --fps 60 --duration 120
+
+# Stream at 1080p, 30fps for 5 minutes, saving video to /home/pi/Videos
+rpi-lsl-stream --width 1920 --height 1080 --fps 30 --duration 300 --output-path /home/pi/Videos
+
+# Stream using PiCamera default settings but enable preview window for 30 seconds
+rpi-lsl-stream --show-preview --duration 30
+
+# Stream at high resolution (e.g., 3840x2160 if supported) at 15 fps using threaded writer for 10 minutes
+rpi-lsl-stream --width 3840 --height 2160 --fps 15 --threaded-writer --duration 600
+
+# Attempt to use max settings for a connected WEBCAM for 1 minute with preview
+rpi-lsl-stream --use-max-settings --duration 60 --show-preview
+
+# Stream with a custom LSL stream name and source ID
+rpi-lsl-stream --stream-name MyExperimentCam --source-id Cam01_Session02
+```
+
+## LSL Stream Details

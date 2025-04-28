@@ -94,16 +94,26 @@ else
   PROJECT_DIR=$(pwd) # Assuming the script is run from the project root
 
   echo "Creating virtual environment in '$PROJECT_DIR/$VENV_DIR'..."
-  # Create the venv as the original user
-  sudo -u "$SUDO_USER" python3 -m venv --system-site-packages "$VENV_DIR"
-  
-  # Check if venv creation was successful
-  if [ ! -f "$VENV_DIR/bin/activate" ]; then
-      echo "ERROR: Failed to create virtual environment."
-      echo "Please check Python3 venv installation and permissions."
+  # Check if the venv directory already exists
+  if [ -d "$VENV_DIR" ]; then
+      echo "Virtual environment '$VENV_DIR' already exists. Skipping creation."
   else
-      echo "Virtual environment created successfully."
-      
+      # Create the venv as the original user only if it doesn't exist
+      sudo -u "$SUDO_USER" python3 -m venv --system-site-packages "$VENV_DIR"
+      if [ $? -eq 0 ]; then
+          echo "Virtual environment created successfully."
+      else
+          echo "ERROR: Failed to create virtual environment."
+          # Exit or handle error appropriately if needed
+          exit 1 # Exit if venv creation fails
+      fi
+  fi
+  
+  # Now proceed with checks and installation assuming venv exists or was just created
+  if [ ! -f "$VENV_DIR/bin/activate" ]; then
+      echo "ERROR: Virtual environment activation script not found at '$VENV_DIR/bin/activate'."
+      echo "Cannot proceed with Python package installation."
+  else
       echo "Upgrading pip, setuptools, and wheel in the virtual environment..."
       # Run pip install as the original user using the venv's pip
       sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install --upgrade pip setuptools wheel
