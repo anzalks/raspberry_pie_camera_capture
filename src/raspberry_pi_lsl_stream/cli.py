@@ -5,9 +5,11 @@ import sys
 import signal
 import time  # Import time for the loop sleep
 import atexit # Import atexit for cleanup registration
+import os # Import os for file existence check
 # from .camera_stream import stream_camera # Relative import <- Remove old import
 from .camera_stream import LSLCameraStreamer # <-- Import the class
 from ._version import __version__
+from .verify_video import verify_video # <<< Import the verification function
 
 def main():
     """Parses command-line arguments, sets up the streamer, and runs the capture loop."""
@@ -143,13 +145,16 @@ def main():
         # --- Cleanup ---
         # This block executes whether the loop finished normally, was interrupted,
         # or an exception occurred (unless it was sys.exit).
+        output_filename = None # Store filename for verification later
         if streamer:
             print("\nStopping stream and cleaning up resources...")
             # Get stats *before* calling stop, as stop might alter them or cleanup objects
             # Note: frame_count includes frames attempted, not necessarily written/pushed
+            output_filename = streamer.auto_output_filename # Get filename before stop potentially clears it
             total_frames_processed = streamer.get_frame_count()
             frames_written = streamer.get_frames_written()
             frames_dropped = streamer.get_frames_dropped()
+            threaded = streamer.threaded_writer # Store threading state
             
             # Ensure the streamer's stop method is called to release resources.
             streamer.stop() 
@@ -158,7 +163,7 @@ def main():
             print("\n--- Stream Statistics ---")
             
             # Threading Info
-            if streamer.threaded_writer:
+            if threaded:
                 print("Threading: Enabled (Main thread: Capture/LSL/Queue, Writer thread: Video Save)")
                 print(f"Application Threads Primarily Used: 2")
             else:
@@ -169,7 +174,7 @@ def main():
             
             # Frame Counts
             print(f"Frames processed by capture loop (Main Thread): {total_frames_processed}")
-            if streamer.threaded_writer:
+            if threaded:
                 print(f"Frames successfully written to file (Writer Thread): {frames_written}")
                 print(f"Frames dropped due to full queue (Main Thread): {frames_dropped}")
                 if total_frames_processed > 0:
@@ -183,7 +188,14 @@ def main():
                 
             print("------------------------")
             
-            # print(f"Stream stopped. Total frames processed: {total_frames_processed}") # Old message replaced by stats block
+            # --- Automatic Video Verification ---
+            if output_filename and os.path.exists(output_filename):
+                print("\nVerifying saved video file...")
+                verify_video(output_filename) # Call the verification function
+            elif output_filename:
+                print(f"\nWarning: Output file '{output_filename}' not found. Skipping verification.")
+            # ---
+            
         else:
             # Handle cases where the streamer object wasn't successfully created.
             print("Stream process finished (streamer was not initialized).")

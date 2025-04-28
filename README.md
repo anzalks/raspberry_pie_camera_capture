@@ -132,7 +132,9 @@ rpi-lsl-stream --stream-name MyExperimentCam --source-id Cam01_Session02
 
 ## Verifying Saved Video Files
 
-A utility script is included to check the metadata of saved video files.
+The metadata (resolution, FPS, frame count, duration) of the video file saved during a run is automatically printed to the console when the `rpi-lsl-stream` command finishes.
+
+If you need to check a video file manually at a later time, a separate utility script is also available:
 
 1.  **Activate Environment:** Make sure your virtual environment is active (`source .venv/bin/activate`).
 2.  **Run Verification:**
