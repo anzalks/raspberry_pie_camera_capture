@@ -191,6 +191,7 @@ def main():
     finally:
         # --- Cleanup ---
         print() # Ensure newline before final messages
+        end_time = time.time() # <<< Record end time
         
         # Ensure stop_event is set for threads
         stop_event.set()
@@ -218,6 +219,13 @@ def main():
             
             # Report statistics
             print("\n--- Stream Statistics ---")
+            
+            # Timing Info
+            total_run_duration = end_time - start_time
+            minutes = int(total_run_duration // 60)
+            seconds = total_run_duration % 60
+            print(f"Total Run Time: {minutes}m {seconds:.2f}s") # <<< Add Total Run Time
+            print("-") # Separator
             
             # Threading Info
             if threaded:

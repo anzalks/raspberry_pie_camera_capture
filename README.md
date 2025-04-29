@@ -130,6 +130,27 @@ rpi-lsl-stream --camera-index pi --stream-name PiCam_Test_Stream
 
 ## LSL Stream Details
 
+**Note:** The current implementation streams only the frame number, not the full video frame data. The video is saved locally to a file.
+
+*   **Name:** As specified by `--stream-name`.
+*   **Type:** 'FrameCounter' (Indicates only frame numbers are streamed)
+*   **Channels:** 1 (for the frame number).
+*   **Format:** `cf_int32` (32-bit integer for the frame number).
+*   **Nominal Rate:** As specified by `--fps` (or the actual rate achieved by the camera).
+*   **Source ID:** As specified by `--source-id`.
+*   **Metadata:** Includes:
+    *   Camera Model (`camera_model`)
+    *   Source Type (`source_type`: PiCamera or Webcam)
+    *   Acquisition Software (`acquisition_software`)
+    *   Channel Label (`label`: FrameNumber)
+
+**Timestamp Information:**
+
+*   **Source:** Timestamps are generated using `pylsl.local_clock()`.
+*   **Timing:** The timestamp associated with a specific frame number is captured *immediately before* the corresponding frame data is requested from the camera (`capture_array()` or `read()`).
+*   **Clock:** `pylsl.local_clock()` provides high-resolution, monotonic time based on the underlying LSL library (`liblsl`). It aims to use the best monotonic clock source available on the OS (e.g., `CLOCK_MONOTONIC` on Linux). This clock is designed for accurate interval measurement and event ordering within LSL and is not generally affected by system wall-clock changes (e.g., NTP updates) after the stream starts.
+*   **Synchronization:** The timestamps represent the time on the local machine running the script. They will automatically become synchronized with other LSL streams on the network **if** LSL time synchronization is active on the network (e.g., via LabRecorder or another synchronization tool). This script itself does not initiate network time synchronization.
+
 ## Troubleshooting
 
 *   **Camera not detected:** Ensure the camera is securely connected and enabled via `raspi-config`. Also check the output of `libcamera-hello --list-cameras`.
@@ -165,5 +186,23 @@ A separate command is available to connect to the LSL stream created by `rpi-lsl
     *Optional arguments: `--stream-name YourStreamName` and `--timeout N` if you changed the defaults on the streamer.*
 
 This viewer will print the received frame number and LSL timestamp to the console until you stop it with `Ctrl+C`.
+
+## Converting Saved Videos to RGB
+
+The videos saved by `rpi-lsl-stream` are in BGR format, which is standard for OpenCV. If you specifically need a video file with the RGB color order, a conversion utility is provided. 
+
+**Warning:** Converting to RGB and saving with common codecs (like MJPG used here) can lead to larger file sizes and potential color/playback issues in some video players. It's often better to perform BGR-to-RGB conversion during analysis if needed.
+
+To convert a video:
+
+1.  **Activate Environment:** Make sure your virtual environment is active (`source .venv/bin/activate`).
+2.  **Run Conversion:**
+    ```bash
+    # Example: Convert input.mkv to input_RGB.mkv (default output name)
+    convert-video-rgb input.mkv
+    
+    # Example: Specify output filename
+    convert-video-rgb input.mkv -o output_rgb_video.mkv 
+    ```
 
 ## Contributing

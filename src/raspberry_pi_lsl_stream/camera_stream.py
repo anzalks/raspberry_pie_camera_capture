@@ -134,7 +134,7 @@ class LSLCameraStreamer:
                  index_to_try = int(requested_index)
                  print(f"Explicitly trying Webcam index {index_to_try}...")
                  if self._initialize_webcam(index_to_try):
-                     initialized = True
+                    initialized = True
                  else:
                      raise RuntimeError(f"Failed to initialize explicitly requested Webcam index {index_to_try}.")
             except ValueError:
@@ -146,7 +146,7 @@ class LSLCameraStreamer:
             if not picam2_usable:
                  raise RuntimeError("PiCamera requested ('--camera-index pi') but picamera2 library not available or not on Linux.")
             if self._initialize_picamera():
-                 initialized = True
+                initialized = True
             else:
                  raise RuntimeError("Failed to initialize explicitly requested PiCamera.")
 
@@ -168,15 +168,15 @@ class LSLCameraStreamer:
             else:
                 print("picamera2 library not available or not Linux. Detecting and trying Webcams...")
                 webcam_indices_to_try = self._detect_webcam_indices(is_linux)
-                for index in webcam_indices_to_try:
-                    if self._initialize_webcam(index):
-                        initialized = True
+            for index in webcam_indices_to_try:
+                if self._initialize_webcam(index):
+                    initialized = True
                         break # Stop on first success
         else:
              # Invalid string for requested_index
              raise ValueError(f"Invalid value for --camera-index: '{requested_index}'. Use 'auto', 'pi', or an integer.")
 
-        # --- Final Check --- 
+        # --- Final Check ---
         if not initialized:
             # Construct error message based on what was attempted
             error_message = "Could not initialize any camera. "
@@ -187,7 +187,7 @@ class LSLCameraStreamer:
             elif requested_index == 'auto':
                  if picam2_usable:
                      error_message += "Attempted PiCamera (failed) and detected Webcams. "
-                 else:
+            else:
                      error_message += "Attempted detected Webcams. "
             error_message += "Initialization failed."
             raise RuntimeError(error_message)
