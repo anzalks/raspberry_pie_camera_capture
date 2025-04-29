@@ -6,10 +6,28 @@ import signal
 import time  # Import time for the loop sleep
 import atexit # Import atexit for cleanup registration
 import os # Import os for file existence check
+import threading # <<< Import threading
 # from .camera_stream import stream_camera # Relative import <- Remove old import
 from .camera_stream import LSLCameraStreamer # <-- Import the class
 from ._version import __version__
 from .verify_video import verify_video # <<< Import the verification function
+
+def _status_updater_loop(start_time, stop_event):
+    """Target function for the status update thread."""
+    while not stop_event.is_set():
+        current_time = time.time()
+        elapsed_total_seconds = current_time - start_time
+        minutes = int(elapsed_total_seconds // 60)
+        seconds = int(elapsed_total_seconds % 60)
+        
+        status_text = f"Running for: {minutes:02d}:{seconds:02d}"
+        # Print status, padding with spaces to overwrite previous line, use \r
+        print(f"{status_text:<70}", end='\r') 
+        
+        # Wait for 1 second or until stop_event is set
+        stop_event.wait(timeout=1.0)
+    # Clear the status line one last time upon exit
+    print(" " * 70, end='\r')
 
 def main():
     """Parses command-line arguments, sets up the streamer, and runs the capture loop."""
@@ -57,14 +75,17 @@ def main():
     print(f"Starting LSL stream '{args.stream_name}'...")
 
     streamer = None # Initialize streamer variable for cleanup in finally block
+    status_thread = None # Initialize status thread variable
+    stop_event = threading.Event() # Event to signal threads to stop
 
     # Define a signal handler for graceful shutdown on Ctrl+C (SIGINT) or termination (SIGTERM).
     def signal_handler(sig, frame):
         print(f'\nCaught signal {sig}, initiating shutdown...')
-        if streamer:
-            # Call the streamer's stop method to release camera and LSL resources.
-            streamer.stop() 
-        sys.exit(0) # Exit cleanly
+        stop_event.set() # <<< Signal status thread to stop
+        # Let the finally block handle streamer.stop() and thread join
+        # if streamer: 
+        #     streamer.stop() 
+        # sys.exit(0) # Let the main thread exit naturally after the loop breaks
 
     # Register the signal handler for SIGINT and SIGTERM.
     signal.signal(signal.SIGINT, signal_handler)
@@ -101,39 +122,61 @@ def main():
 
         # Start the camera capture process (e.g., picam2.start()).
         streamer.start()
+        
+        # --- Start Status Updater Thread ---
+        start_time = time.time() # Record start time
+        status_thread = threading.Thread(
+            target=_status_updater_loop, 
+            args=(start_time, stop_event)
+        )
+        status_thread.start()
+        # ---
 
         print("\nStreaming frames... Press Ctrl+C to stop (or wait for duration if set).")
 
         # --- Main Capture Loop ---
         # Continuously capture frames and push them to LSL until interrupted or duration expires.
-        start_time = time.time() # Record start time for duration check
-        while True:
+        # REMOVED: start_time = time.time()
+        # REMOVED: last_status_update_time = start_time
+        # REMOVED: frames_in_last_second = 0
+        # REMOVED: current_loop_fps = 0.0
+        
+        while not stop_event.is_set(): # <<< Check stop_event here
             # --- Duration Check --- 
             if args.duration is not None:
-                elapsed_time = time.time() - start_time
+                current_time_for_duration = time.time() # Need current time here
+                elapsed_time = current_time_for_duration - start_time
                 if elapsed_time >= args.duration:
                     print(f"\nDuration of {args.duration} seconds reached. Stopping...")
+                    stop_event.set() # <<< Signal stop
                     break # Exit the loop
             # ---
             
             # Capture a frame and get its LSL timestamp.
+            # Add timeout to capture_frame call if possible? Or handle blocking differently?
+            # For now, assume capture_frame might block, but check stop_event frequently.
             frame, timestamp = streamer.capture_frame()
             
             # Check if capture failed (e.g., stream stopped, error)
-            if frame is None:
+            if frame is None and not stop_event.is_set(): # Only print if not already stopping
+                print() 
                 print("Capture frame returned None, stream might have stopped or errored. Exiting loop.")
+                stop_event.set() # <<< Signal stop
                 break # Exit the loop cleanly
+            elif frame is None and stop_event.is_set():
+                 # Expected if stopping, just break
+                 break
+                 
+            # --- Status Update REMOVED from here --- 
 
-            # Optional: A small sleep can be added here if the loop consumes too much CPU,
-            # especially if the camera's frame rate is very high or capture is very fast.
-            # However, ideally, the blocking nature of capture_frame or LSL push
-            # should regulate the loop speed close to the actual frame rate.
+            # Optional: A small sleep could be added if the main loop is too tight 
+            #           when capture_frame doesn't block sufficiently.
             # time.sleep(0.001) 
 
     except KeyboardInterrupt:
-        # This block catches Ctrl+C if the signal handler doesn't exit first.
-        # The signal handler should ideally handle the stop call.
-        print("KeyboardInterrupt caught (likely via signal handler), stopping.")
+        # Signal handler should catch this first and set the event
+        print("\nKeyboardInterrupt caught (main loop), ensuring stop.") 
+        stop_event.set()
     except RuntimeError as e:
         # Catch specific errors raised during streamer initialization or runtime 
         # (e.g., camera not found, OS incompatibility).
@@ -147,8 +190,18 @@ def main():
         sys.exit(1) # Exit with error code
     finally:
         # --- Cleanup ---
-        # This block executes whether the loop finished normally, was interrupted,
-        # or an exception occurred (unless it was sys.exit).
+        print() # Ensure newline before final messages
+        
+        # Ensure stop_event is set for threads
+        stop_event.set()
+        
+        # Stop and join the status thread
+        if status_thread is not None:
+            print("Stopping status updater thread...")
+            status_thread.join(timeout=1.5) # Wait for thread to finish
+            if status_thread.is_alive():
+                print("Warning: Status thread did not exit cleanly.")
+        
         output_filename = None # Store filename for verification later
         if streamer:
             print("\nStopping stream and cleaning up resources...")
