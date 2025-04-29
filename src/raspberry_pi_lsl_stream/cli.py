@@ -103,8 +103,7 @@ def main():
             source_id=args.source_id,
             show_preview=args.show_preview,
             use_max_settings=args.use_max_settings,
-            threaded_writer=args.threaded_writer,
-            output_path=args.output_path, # Pass the output path argument
+            output_path=args.output_path,
             camera_index=args.camera_index # <<< Pass the camera index
         )
         
