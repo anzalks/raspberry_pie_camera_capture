@@ -168,9 +168,9 @@ class LSLCameraStreamer:
             else:
                 print("picamera2 library not available or not Linux. Detecting and trying Webcams...")
                 webcam_indices_to_try = self._detect_webcam_indices(is_linux)
-            for index in webcam_indices_to_try:
-                if self._initialize_webcam(index):
-                    initialized = True
+                for index in webcam_indices_to_try:
+                    if self._initialize_webcam(index):
+                        initialized = True
                         break # Stop on first success
         else:
              # Invalid string for requested_index
