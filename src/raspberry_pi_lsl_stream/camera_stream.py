@@ -346,21 +346,37 @@ class LSLCameraStreamer:
             return False
 
     def _initialize_picamera(self):
-        """Attempts to initialize and configure the PiCamera."""
+        """Attempts to initialize and configure the PiCamera, verifying the model."""
         if not PICAMERA2_AVAILABLE:
             return False # Should not happen if called correctly, but safeguard
             
-        # NOTE: Max settings heuristic NOT implemented for PiCamera
-        # Using requested/default width, height, fps for PiCamera
-        # Explicitly request BGR888 format for compatibility with OpenCV VideoWriter
         target_format = 'BGR888' 
+        temp_picam2 = None # Use a temporary object for initial check
         try:
-            print(f"Configuring PiCamera for {self.requested_width}x{self.requested_height} @ {self.requested_fps:.2f}fps, format {target_format}...")
-            self.picam2 = Picamera2()
-            # Check format compatibility (optional, but good practice)
-            # sensor_formats = self.picam2.sensor_formats
-            # if target_format not in sensor_formats:
-            #     print(f"Warning: Format {target_format} not directly supported by sensor. Available: {sensor_formats}. Trying anyway...")
+            print(f"Attempting to initialize PiCamera object...")
+            temp_picam2 = Picamera2()
+            
+            # --- Verify Camera Model ---
+            cam_props = temp_picam2.camera_properties
+            cam_model = cam_props.get('Model', 'Unknown')
+            print(f"  picamera2 detected model: {cam_model}")
+            
+            # Heuristic check for non-Pi camera models
+            # Add known USB/Webcam identifiers here if needed
+            non_pi_identifiers = ['usb', 'webcam', 'logitech', 'angetube'] 
+            is_non_pi_cam = any(identifier in cam_model.lower() for identifier in non_pi_identifiers)
+            
+            if is_non_pi_cam:
+                 print(f"  Detected model '{cam_model}' does not appear to be a Pi Camera module. Skipping picamera2 initialization.")
+                 temp_picam2.close() # Release the temporary object
+                 return False # Indicate failure so fallback can occur
+            # ---
+            
+            # If we passed the check, assign to self and configure
+            self.picam2 = temp_picam2 
+            self.camera_model = cam_model # Store the verified model
+            
+            print(f"Configuring PiCamera ({self.camera_model}) for {self.requested_width}x{self.requested_height} @ {self.requested_fps:.2f}fps, format {target_format}...")
 
             config = self.picam2.create_video_configuration(
                 main={"size": (self.requested_width, self.requested_height), "format": target_format}
@@ -368,37 +384,35 @@ class LSLCameraStreamer:
             self.picam2.configure(config)
             
             # Now attempt to set controls AFTER configuration, if needed
-            # This might be more robust for FrameRate
             try:
                  print(f"Setting FrameRate control to {self.requested_fps}...")
                  self.picam2.set_controls({"FrameRate": self.requested_fps})
-                 # Allow some time for controls to apply if needed
-                 # time.sleep(0.1) 
             except RuntimeError as e_ctrl:
                  print(f"Warning: Could not set FrameRate control explicitly after configure: {e_ctrl}")
                  print("Proceeding with default/inferred frame rate.")
 
-            # Read back actual configuration details if possible (might need adjustment based on picamera2 API version)
-            # For now, assume requested settings are achieved for PiCamera
+            # Read back actual configuration details if possible
             self.width = self.requested_width
             self.height = self.requested_height
             self.actual_fps = self.requested_fps
-            self.camera_model = self.picam2.camera_properties.get('Model', 'Unknown PiCam')
-            self.lsl_pixel_format = target_format # Store the actual format requested
-            # self._determine_picam_channels() # Sets self.num_channels - BGR888 is 3 channels
+            self.lsl_pixel_format = target_format 
             self.num_channels = 3 # Explicitly 3 for BGR888
 
-            print(f"PiCamera initialized successfully. Model: {self.camera_model}, Format: {target_format}")
+            print(f"PiCamera initialized successfully.")
             self.is_picamera = True
             return True
 
         except Exception as e:
-            print(f"ERROR: Fallback to PiCamera failed during configuration: {e}")
+            print(f"ERROR: PiCamera initialization/configuration failed: {e}")
             traceback.print_exc()
+            # Clean up potential picam2 object (either temp or self assigned)
             if self.picam2:
-                 try: self.picam2.close() # Attempt cleanup
+                 try: self.picam2.close()
                  except: pass
-            self.picam2 = None
+                 self.picam2 = None
+            elif temp_picam2: # If error happened before assignment to self.picam2
+                 try: temp_picam2.close()
+                 except: pass
             self.is_picamera = False
             return False
 
