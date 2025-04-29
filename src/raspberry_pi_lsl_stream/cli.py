@@ -26,6 +26,9 @@ def main():
     parser.add_argument('--fps', type=int, default=30, help='Frames per second')
     parser.add_argument('--format', type=str, default='RGB888',
                         help='Camera pixel format (e.g., RGB888, XBGR8888, YUV420) - PiCam only')
+    # Explicit camera selection
+    parser.add_argument('--camera-index', type=str, default='auto',
+                        help="Camera to use: 'auto' (default: PiCam then Webcams), 'pi' (PiCam only), or an integer index (e.g., 0, 1) for a specific webcam.")
     # Output configuration
     parser.add_argument('--output-path', type=str, default=None,
                         help='Directory path to save the output video file. Defaults to the current directory.')
@@ -80,7 +83,8 @@ def main():
             show_preview=args.show_preview,
             use_max_settings=args.use_max_settings,
             threaded_writer=args.threaded_writer,
-            output_path=args.output_path # Pass the output path argument
+            output_path=args.output_path, # Pass the output path argument
+            camera_index=args.camera_index # <<< Pass the camera index
         )
         
         # Register the streamer stop method to be called on normal/exception exit

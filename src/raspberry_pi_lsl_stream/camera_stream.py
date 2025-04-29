@@ -40,7 +40,8 @@ class LSLCameraStreamer:
                  use_max_settings=False,
                  queue_size_seconds=5,
                  threaded_writer=False,
-                 output_path=None):
+                 output_path=None,
+                 camera_index='auto'):
         """
         Initializes the streamer configuration and sets up camera and LSL.
 
@@ -57,6 +58,7 @@ class LSLCameraStreamer:
             queue_size_seconds (int): Approximate buffer size in seconds for the video writer queue (used only if threaded_writer is True).
             threaded_writer (bool): If True, use a separate thread for video writing.
             output_path (str, optional): Directory path to save the video file. Defaults to current directory if None.
+            camera_index (str | int): Specific camera to use ('auto', 'pi', or int index). Default 'auto'.
         """
         
         # Store configuration parameters
@@ -75,6 +77,7 @@ class LSLCameraStreamer:
         self.auto_output_filename = None
         self.video_writer = None
         self.output_path = output_path # Store the output path
+        self.requested_camera_index = camera_index # Store requested index
 
         # Internal state variables that get set during init
         self.width = width # Actual width used
@@ -116,42 +119,77 @@ class LSLCameraStreamer:
             raise # Re-raise the exception to signal failure
 
     def _initialize_camera(self):
-        """Initializes the camera, prioritizing PiCamera if available, then falling back to detected Webcams."""
+        """Initializes the camera based on requested_camera_index ('auto', 'pi', or int)."""
         initialized = False
         is_linux = platform.system() == 'Linux'
         picam2_usable = is_linux and PICAMERA2_AVAILABLE
+        requested_index = self.requested_camera_index
 
-        print("Starting dynamic camera initialization...")
+        print(f"Starting camera initialization (Requested: '{requested_index}')...")
 
-        if picam2_usable:
-            print("picamera2 library available. Prioritizing PiCamera...")
+        # --- Handle explicit requests --- 
+        if isinstance(requested_index, int) or requested_index.isdigit():
+            # Explicit webcam index request
+            try:
+                 index_to_try = int(requested_index)
+                 print(f"Explicitly trying Webcam index {index_to_try}...")
+                 if self._initialize_webcam(index_to_try):
+                     initialized = True
+                 else:
+                     raise RuntimeError(f"Failed to initialize explicitly requested Webcam index {index_to_try}.")
+            except ValueError:
+                 raise ValueError(f"Invalid integer format for --camera-index: '{requested_index}'")
+        
+        elif requested_index == 'pi':
+            # Explicit PiCamera request
+            print("Explicitly trying PiCamera...")
+            if not picam2_usable:
+                 raise RuntimeError("PiCamera requested ('--camera-index pi') but picamera2 library not available or not on Linux.")
             if self._initialize_picamera():
-                initialized = True
+                 initialized = True
             else:
-                print("PiCamera initialization failed. Falling back to detecting and trying Webcams...")
-                # Try webcams only if PiCamera fails
+                 raise RuntimeError("Failed to initialize explicitly requested PiCamera.")
+
+        elif requested_index == 'auto':
+            # --- Automatic detection logic --- 
+            print("Using automatic camera detection ('auto')...")
+            if picam2_usable:
+                print("picamera2 library available. Prioritizing PiCamera...")
+                if self._initialize_picamera():
+                    initialized = True
+                else:
+                    print("PiCamera initialization failed. Falling back to detecting and trying Webcams...")
+                    # Try webcams only if PiCamera fails
+                    webcam_indices_to_try = self._detect_webcam_indices(is_linux)
+                    for index in webcam_indices_to_try:
+                        if self._initialize_webcam(index):
+                            initialized = True
+                            break # Stop on first success
+            else:
+                print("picamera2 library not available or not Linux. Detecting and trying Webcams...")
                 webcam_indices_to_try = self._detect_webcam_indices(is_linux)
                 for index in webcam_indices_to_try:
                     if self._initialize_webcam(index):
                         initialized = True
                         break # Stop on first success
         else:
-            print("picamera2 library not available or not Linux. Detecting and trying Webcams...")
-            webcam_indices_to_try = self._detect_webcam_indices(is_linux)
-            for index in webcam_indices_to_try:
-                if self._initialize_webcam(index):
-                    initialized = True
-                    break # Stop on first success
+             # Invalid string for requested_index
+             raise ValueError(f"Invalid value for --camera-index: '{requested_index}'. Use 'auto', 'pi', or an integer.")
 
         # --- Final Check --- 
         if not initialized:
+            # Construct error message based on what was attempted
             error_message = "Could not initialize any camera. "
-            # Add more specific info based on what was attempted
-            if picam2_usable:
-                 error_message += "Attempted PiCamera (failed) and detected Webcams. "
-            else:
-                 error_message += "Attempted detected Webcams. "
-            error_message += "All attempts failed."
+            if isinstance(requested_index, int) or requested_index.isdigit():
+                 error_message += f"Attempted Webcam index {requested_index}. "
+            elif requested_index == 'pi':
+                 error_message += "Attempted PiCamera. "
+            elif requested_index == 'auto':
+                 if picam2_usable:
+                     error_message += "Attempted PiCamera (failed) and detected Webcams. "
+                 else:
+                     error_message += "Attempted detected Webcams. "
+            error_message += "Initialization failed."
             raise RuntimeError(error_message)
             
     def _detect_webcam_indices(self, is_linux):

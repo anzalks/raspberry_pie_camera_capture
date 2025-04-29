@@ -81,6 +81,7 @@ rpi-lsl-stream [OPTIONS]
 *   `--height`: Video height (default: 480).
 *   `--fps`: Frames per second (default: 30).
 *   `--format`: Camera pixel format (default: 'RGB888') - used by PiCamera backend.
+*   `--camera-index`: Camera to use: 'auto' (default: PiCam then Webcams), 'pi' (PiCam only), or an integer index (e.g., 0, 1) for a specific webcam. (default: auto).
 *   `--output-path`: Directory path to save the output video file (default: current directory).
 *   `--stream-name`: LSL stream name (default: 'RaspberryPiCamera').
 *   `--source-id`: Unique LSL source ID (default: 'RPiCam_UniqueID').
@@ -93,30 +94,38 @@ rpi-lsl-stream [OPTIONS]
 
 **Examples:**
 
+These examples show various combinations of options. Remember to replace `/path/to/save/videos` with your desired output directory if using `--output-path`.
+
 ```bash
-# Basic usage (default 640x480 @ 30fps)
+# Default: Auto-detect camera (PiCam first), 640x480, 30fps, run indefinitely
 rpi-lsl-stream
 
-# Stream at 1920x1080 resolution at 30 fps indefinitely
+# Auto-detect camera, 1080p (1920x1080), 30fps, run indefinitely
 rpi-lsl-stream --width 1920 --height 1080 --fps 30
 
-# Stream at 1280x720 resolution at 60 fps for 2 minutes (120 seconds)
+# Auto-detect camera, 720p (1280x720), 60fps, run for 2 minutes (120s)
 rpi-lsl-stream --width 1280 --height 720 --fps 60 --duration 120
 
-# Stream at 1080p, 30fps for 5 minutes, saving video to /home/pi/Videos
-rpi-lsl-stream --width 1920 --height 1080 --fps 30 --duration 300 --output-path /home/pi/Videos
+# Auto-detect camera, 1080p, 30fps, run for 5 minutes (300s), save to specific path
+rpi-lsl-stream --width 1920 --height 1080 --fps 30 --duration 300 --output-path /path/to/save/videos
 
-# Stream using PiCamera default settings but enable preview window for 30 seconds
+# Auto-detect camera, default settings, show preview window for 30 seconds
 rpi-lsl-stream --show-preview --duration 30
 
-# Stream at high resolution (e.g., 3840x2160 if supported) at 15 fps using threaded writer for 10 minutes
-rpi-lsl-stream --width 3840 --height 2160 --fps 15 --threaded-writer --duration 600
+# Explicitly use PiCamera, 4K resolution (if supported), 15fps, threaded writer, 10 minutes (600s)
+rpi-lsl-stream --camera-index pi --width 3840 --height 2160 --fps 15 --threaded-writer --duration 600
 
-# Attempt to use max settings for a connected WEBCAM for 1 minute with preview
-rpi-lsl-stream --use-max-settings --duration 60 --show-preview
+# Explicitly use Webcam index 0, 1080p, 30fps, show preview, 1 minute (60s)
+rpi-lsl-stream --camera-index 0 --width 1920 --height 1080 --fps 30 --show-preview --duration 60
 
-# Stream with a custom LSL stream name and source ID
+# Explicitly use Webcam index 1, attempt max settings, run for 2 minutes, save to specific path
+rpi-lsl-stream --camera-index 1 --use-max-settings --duration 120 --output-path /path/to/save/videos
+
+# Auto-detect camera, default settings, custom LSL stream name and source ID
 rpi-lsl-stream --stream-name MyExperimentCam --source-id Cam01_Session02
+
+# Explicitly use PiCamera, default settings, custom LSL stream name
+rpi-lsl-stream --camera-index pi --stream-name PiCam_Test_Stream
 ```
 
 ## LSL Stream Details
@@ -143,5 +152,18 @@ If you need to check a video file manually at a later time, a separate utility s
     ```
 
 This will print the resolution, frame rate (as stored in the file metadata), frame count, and calculated duration.
+
+## Viewing Live Frame Numbers (LSL Client)
+
+A separate command is available to connect to the LSL stream created by `rpi-lsl-stream` and view the frame numbers and timestamps being broadcast in real-time. This can be useful for monitoring the stream or synchronizing with other LSL-aware applications without needing the saved video file.
+
+1.  **Start the Streamer:** In one terminal (with the `.venv` activated), run `rpi-lsl-stream` with your desired options.
+2.  **Start the Viewer:** In another terminal (with the `.venv` activated):
+    ```bash
+    view-lsl-framenumbers
+    ```
+    *Optional arguments: `--stream-name YourStreamName` and `--timeout N` if you changed the defaults on the streamer.*
+
+This viewer will print the received frame number and LSL timestamp to the console until you stop it with `Ctrl+C`.
 
 ## Contributing
