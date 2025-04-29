@@ -441,6 +441,7 @@ class LSLCameraStreamer:
             ("H.265 (HEVC)", 'h265'),
             ("H.265 (HEVC)", 'hevc'),
             ("H.264 (AVC)",  'h264'),
+            ("H.264 (AVC)",  'X264'),
             ("H.264 (AVC)",  'avc1')
         ]
         fallback_codec = ("MJPG", 'MJPG')
