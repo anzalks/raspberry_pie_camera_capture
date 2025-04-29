@@ -363,10 +363,20 @@ class LSLCameraStreamer:
             #     print(f"Warning: Format {target_format} not directly supported by sensor. Available: {sensor_formats}. Trying anyway...")
 
             config = self.picam2.create_video_configuration(
-                main={"size": (self.requested_width, self.requested_height), "format": target_format},
-                controls={"FrameRate": self.requested_fps}
+                main={"size": (self.requested_width, self.requested_height), "format": target_format}
             )
             self.picam2.configure(config)
+            
+            # Now attempt to set controls AFTER configuration, if needed
+            # This might be more robust for FrameRate
+            try:
+                 print(f"Setting FrameRate control to {self.requested_fps}...")
+                 self.picam2.set_controls({"FrameRate": self.requested_fps})
+                 # Allow some time for controls to apply if needed
+                 # time.sleep(0.1) 
+            except RuntimeError as e_ctrl:
+                 print(f"Warning: Could not set FrameRate control explicitly after configure: {e_ctrl}")
+                 print("Proceeding with default/inferred frame rate.")
 
             # Read back actual configuration details if possible (might need adjustment based on picamera2 API version)
             # For now, assume requested settings are achieved for PiCamera
