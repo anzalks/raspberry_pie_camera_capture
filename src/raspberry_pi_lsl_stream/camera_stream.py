@@ -39,7 +39,6 @@ class LSLCameraStreamer:
                  show_preview=False,
                  use_max_settings=False,
                  queue_size_seconds=5,
-                 threaded_writer=False,
                  output_path=None,
                  camera_index='auto'):
         """
@@ -55,8 +54,7 @@ class LSLCameraStreamer:
             source_id (str): Unique identifier for the LSL stream source.
             show_preview (bool): If True, display a live preview window using OpenCV.
             use_max_settings (bool): If True, attempt to use max resolution/FPS for webcams.
-            queue_size_seconds (int): Approximate buffer size in seconds for the video writer queue (used only if threaded_writer is True).
-            threaded_writer (bool): If True, use a separate thread for video writing.
+            queue_size_seconds (int): Approximate buffer size in seconds for the video writer queue.
             output_path (str, optional): Directory path to save the video file. Defaults to current directory if None.
             camera_index (str | int): Specific camera to use ('auto', 'pi', or int index). Default 'auto'.
         """
@@ -73,7 +71,7 @@ class LSLCameraStreamer:
         self.show_preview = show_preview 
         self.use_max_settings = use_max_settings
         self.queue_size_seconds = queue_size_seconds
-        self.threaded_writer = threaded_writer
+        self.threaded_writer = True # <<< ALWAYS True now
         self.auto_output_filename = None
         self.video_writer = None
         self.output_path = output_path # Store the output path
@@ -494,13 +492,9 @@ class LSLCameraStreamer:
         # --- FPS Validation and Queue Setup --- 
         # Use the actual fps for the final writer and queue
         fps = self.actual_fps 
-        if self.threaded_writer:
-             queue_max_size = max(10, int(fps * self.queue_size_seconds)) # Use validated fps here
-             print(f"Initializing frame queue for threaded writer (max size: {queue_max_size})")
-             self.frame_queue = Queue(maxsize=queue_max_size)
-        else:
-            print("Threaded writer disabled. Frames will be written synchronously.")
-            self.frame_queue = None # Ensure it's None if not threaded
+        queue_max_size = max(10, int(fps * self.queue_size_seconds)) # Use validated fps here
+        print(f"Initializing frame queue for threaded writer (max size: {queue_max_size})")
+        self.frame_queue = Queue(maxsize=queue_max_size)
         # ---
 
         # --- Initialize Final Video Writer with Chosen Codec ---
