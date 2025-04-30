@@ -94,42 +94,37 @@ else
         
         # Install build dependencies for curlftpfs
         echo "Installing build dependencies for curlftpfs (check output for errors)..."
-        apt install -y build-essential pkg-config autoconf automake libtool libfuse-dev libcurl4-openssl-dev
+        # Added libglib2.0-dev as required by the fork's README/configure checks
+        apt install -y build-essential pkg-config autoconf automake libtool libfuse-dev libcurl4-openssl-dev libglib2.0-dev
         # Note: libfuse-dev might be fuse3-dev on newer systems.
         # Note: libcurl4-openssl-dev might be libcurl4-gnutls-dev.
-        # If the above fails, you may need to find the correct dev package names for FUSE and libcurl.
+        # If the above fails, you may need to find the correct dev package names.
 
-        # Define source info (Update URL/Version as needed)
-        CURLFTPFS_VERSION="0.9.2"
-        CURLFTPFS_URL="https://downloads.sourceforge.net/project/curlftpfs/curlftpfs/${CURLFTPFS_VERSION}/curlftpfs-${CURLFTPFS_VERSION}.tar.gz"
-        CURLFTPFS_SRC_DIR="curlftpfs-${CURLFTPFS_VERSION}"
+        # Define build directory and repo URL
         BUILD_DIR="/tmp/curlftpfs_build"
+        REPO_URL="https://github.com/JackSlateur/curlftpfs.git"
+        ORIG_DIR=$(pwd) # Remember where we started
 
         echo "Creating temporary build directory: ${BUILD_DIR}"
+        rm -rf "${BUILD_DIR}" # Clean previous attempts
         mkdir -p "${BUILD_DIR}"
         cd "${BUILD_DIR}"
 
-        echo "Downloading curlftpfs source from ${CURLFTPFS_URL}..."
-        if wget -q -O "curlftpfs.tar.gz" "${CURLFTPFS_URL}"; then
-            echo "Download complete. Extracting..."
-            if tar -xzf curlftpfs.tar.gz; then
-                echo "Extraction complete. Updating config scripts..."
-                cd "${CURLFTPFS_SRC_DIR}"
-                
-                # Download latest config.guess and config.sub
-                wget -O config.guess "https://git.savannah.gnu.org/gitweb/?p=config.git;a=blob_plain;f=config.guess;hb=HEAD"
-                wget -O config.sub "https://git.savannah.gnu.org/gitweb/?p=config.git;a=blob_plain;f=config.sub;hb=HEAD"
-                chmod +x config.guess config.sub # Ensure they are executable
-                
+        echo "Cloning curlftpfs source from ${REPO_URL}..."
+        if git clone "${REPO_URL}" curlftpfs_src; then
+            cd curlftpfs_src
+            echo "Running autoreconf to generate configure script..."
+            if autoreconf -fi; then
                 echo "Running configure script..."
                 if ./configure; then
                     echo "Configuration successful. Compiling (make)..."
                     if make; then
-                        echo "Compilation successful. Installing (sudo make install)..."
+                        echo "Compilation successful. Installing (make install)..."
+                        # Run install as root since we are in a sudo script
                         if make install; then
                             echo "curlftpfs successfully built and installed from source."
                         else
-                            echo "ERROR: 'sudo make install' failed." >&2
+                            echo "ERROR: 'make install' failed." >&2
                         fi
                     else
                         echo "ERROR: 'make' failed." >&2
@@ -137,19 +132,19 @@ else
                 else
                     echo "ERROR: './configure' failed. Check dependencies were installed correctly." >&2
                 fi
-                # Go back to parent for cleanup regardless of success/failure inside
-                cd .. 
             else
-                echo "ERROR: Failed to extract downloaded archive." >&2
+                 echo "ERROR: 'autoreconf -fi' failed. Check build dependencies." >&2
             fi
+            # Go back to parent build dir before cleanup
+            cd .. 
         else
-            echo "ERROR: Failed to download curlftpfs source." >&2
+            echo "ERROR: Failed to clone curlftpfs source from GitHub." >&2
         fi
         
         # Cleanup build directory
         echo "Cleaning up build directory: ${BUILD_DIR}"
+        cd "${ORIG_DIR}" # Go back to original directory first
         rm -rf "${BUILD_DIR}"
-        cd $OLDPWD # Go back to the original directory script was run from
 
         # Final check if command exists after build attempt
         if ! command -v curlftpfs >/dev/null 2>&1; then

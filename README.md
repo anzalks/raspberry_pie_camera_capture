@@ -126,7 +126,42 @@ rpi-lsl-stream --stream-name MyExperimentCam --source-id Cam01_Session02
 
 # Explicitly use PiCamera, default settings, custom LSL stream name
 rpi-lsl-stream --camera-index pi --stream-name PiCam_Test_Stream
-```
+
+### Saving Directly to a Network Mount Point (Advanced / Experimental)
+
+While saving locally (to SD card or preferably USB drive) and uploading afterwards is the most reliable method, it is technically possible to save directly to a network location if you mount it to your Raspberry Pi's local filesystem first. **This method is highly discouraged for FTP due to performance limitations.**
+
+**Using NFS or Samba/CIFS (Recommended Network Approach):**
+
+1.  Set up an NFS or Samba share on your network server.
+2.  Mount the share on your Raspberry Pi (e.g., to `/mnt/server_share`). Refer to NFS/Samba client setup guides for Raspberry Pi.
+3.  Run the script using the mount point:
+    ```bash
+    rpi-lsl-stream [...] --output-path /mnt/server_share
+    ```
+    *Performance will depend heavily on network speed and stability. Use `--threaded-writer`.* 
+
+**Using FTP via `curlftpfs` (Not Recommended for Video):**
+
+The `setup_pi.sh` script attempts to install `curlftpfs`. If successful, you can mount an FTP location, but **expect poor performance and potentially corrupted/choppy video**.
+
+1.  **Create a local mount point:** `mkdir ~/my_ftp_mount`
+2.  **Mount the FTP directory** (ensure the FTP path is writable):
+    ```bash
+    # For anonymous FTP (replace server IP/path):
+    curlftpfs ftp://anonymous:guest@YOUR_SERVER_IP/path/to/writable_dir ~/my_ftp_mount -o allow_other
+    
+    # For authenticated FTP (replace user, pass, server IP/path - insecure pass):
+    # curlftpfs ftp://YOUR_USER:YOUR_PASS@YOUR_SERVER_IP/path/to/writable_dir ~/my_ftp_mount -o allow_other
+    ```
+3.  **Run the script:**
+    ```bash
+    # Activate environment first: source .venv/bin/activate
+    rpi-lsl-stream [...] --output-path ~/my_ftp_mount
+    ```
+4.  **Unmount when finished:** `fusermount -u ~/my_ftp_mount`
+
+**Warning:** Direct video recording over FTP via `curlftpfs` is extremely likely to be too slow and unreliable, leading to significant frame drops and unusable video, especially with higher resolutions/framerates or the MJPG codec. Use local storage or NFS/Samba instead.
 
 ## LSL Stream Details
 
