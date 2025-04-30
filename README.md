@@ -1,5 +1,7 @@
 # Raspberry Pi Camera LSL Streamer
 
+> **Note:** You are currently viewing the `buffercapture_high_fps` branch. This branch implements an experimental optimization for Pi Camera capture using `capture_buffer()` instead of `capture_array()` to potentially achieve higher frame rates by avoiding memory copies. See the "High FPS Buffer Capture (Experimental)" section below.
+
 A Python package to capture video frames from a Raspberry Pi camera and stream them over LabStreamingLayer (LSL).
 
 ## Features
@@ -208,6 +210,15 @@ The `setup_pi.sh` script attempts to install `curlftpfs`. If successful, you can
 4.  **Unmount when finished:** `fusermount -u ~/my_ftp_mount`
 
 **Warning:** Direct video recording over FTP via `curlftpfs` is extremely likely to be too slow and unreliable, leading to significant frame drops and unusable video, especially with higher resolutions/framerates or the MJPG codec. Use local storage or NFS/Samba instead.
+
+## High FPS Buffer Capture (Experimental - `buffercapture_high_fps` Branch)
+
+This branch (`buffercapture_high_fps`) contains a modified capture implementation specifically for the **Pi Camera Module** aimed at achieving higher frame rates.
+
+*   **Technique:** Instead of using `picam2.capture_array()` (which copies frame data), this version uses `picam2.capture_buffer()`. It then accesses the camera's memory buffer directly (via memory mapping, e.g., `picam2.map_buffer()` or `picamera2.helpers.mmap()`) and creates a zero-copy NumPy array view of the frame data.
+*   **Benefit:** By avoiding the memory copy inherent in `capture_array()`, this method reduces CPU overhead per frame and can potentially allow for higher capture frame rates (e.g., > 60 FPS), limited primarily by the camera sensor's capabilities, MIPI bandwidth, and subsequent processing/saving speed.
+*   **Requirement:** This method requires careful handling of the captured buffer, which *must* be released back to the camera system promptly using `picam2.release_buffer()` after the frame data is used (e.g., pushed to the queue or previewed). This is handled within the `capture_frame` method's `finally` block.
+*   **Status:** Consider this an experimental optimization. While it may improve performance, test thoroughly for stability and potential issues, especially regarding buffer management at very high frame rates.
 
 ## Core Technologies Used
 
