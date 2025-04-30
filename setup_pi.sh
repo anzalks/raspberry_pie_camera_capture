@@ -113,8 +113,15 @@ else
         if wget -q -O "curlftpfs.tar.gz" "${CURLFTPFS_URL}"; then
             echo "Download complete. Extracting..."
             if tar -xzf curlftpfs.tar.gz; then
-                echo "Extraction complete. Configuring..."
+                echo "Extraction complete. Updating config scripts..."
                 cd "${CURLFTPFS_SRC_DIR}"
+                
+                # Download latest config.guess and config.sub
+                wget -O config.guess "https://git.savannah.gnu.org/gitweb/?p=config.git;a=blob_plain;f=config.guess;hb=HEAD"
+                wget -O config.sub "https://git.savannah.gnu.org/gitweb/?p=config.git;a=blob_plain;f=config.sub;hb=HEAD"
+                chmod +x config.guess config.sub # Ensure they are executable
+                
+                echo "Running configure script..."
                 if ./configure; then
                     echo "Configuration successful. Compiling (make)..."
                     if make; then
