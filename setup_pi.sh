@@ -77,6 +77,80 @@ apt install -y libcamera-apps
 echo "Installing python3-picamera2 (Recommended method via apt)..."
 apt install -y python3-picamera2
 
+# --- Install curlftpfs (Try apt first, fallback to source) ---
+echo "Checking for curlftpfs..."
+
+# Attempt to install via apt first
+echo "Attempting to install curlftpfs via apt..."
+if apt install -y curlftpfs; then
+    echo "curlftpfs installed successfully via apt."
+else
+    echo "apt install curlftpfs failed or package not available."
+    # Check if command exists anyway (might have been installed previously)
+    if command -v curlftpfs >/dev/null 2>&1; then
+        echo "curlftpfs command found, likely installed previously. Skipping build."
+    else
+        echo "curlftpfs command not found. Attempting to build from source..."
+        
+        # Install build dependencies for curlftpfs
+        echo "Installing build dependencies for curlftpfs (check output for errors)..."
+        apt install -y build-essential pkg-config autoconf automake libtool libfuse-dev libcurl4-openssl-dev
+        # Note: libfuse-dev might be fuse3-dev on newer systems.
+        # Note: libcurl4-openssl-dev might be libcurl4-gnutls-dev.
+        # If the above fails, you may need to find the correct dev package names for FUSE and libcurl.
+
+        # Define source info (Update URL/Version as needed)
+        CURLFTPFS_VERSION="0.9.2"
+        CURLFTPFS_URL="https://downloads.sourceforge.net/project/curlftpfs/curlftpfs/${CURLFTPFS_VERSION}/curlftpfs-${CURLFTPFS_VERSION}.tar.gz"
+        CURLFTPFS_SRC_DIR="curlftpfs-${CURLFTPFS_VERSION}"
+        BUILD_DIR="/tmp/curlftpfs_build"
+
+        echo "Creating temporary build directory: ${BUILD_DIR}"
+        mkdir -p "${BUILD_DIR}"
+        cd "${BUILD_DIR}"
+
+        echo "Downloading curlftpfs source from ${CURLFTPFS_URL}..."
+        if wget -q -O "curlftpfs.tar.gz" "${CURLFTPFS_URL}"; then
+            echo "Download complete. Extracting..."
+            if tar -xzf curlftpfs.tar.gz; then
+                echo "Extraction complete. Configuring..."
+                cd "${CURLFTPFS_SRC_DIR}"
+                if ./configure; then
+                    echo "Configuration successful. Compiling (make)..."
+                    if make; then
+                        echo "Compilation successful. Installing (sudo make install)..."
+                        if make install; then
+                            echo "curlftpfs successfully built and installed from source."
+                        else
+                            echo "ERROR: 'sudo make install' failed." >&2
+                        fi
+                    else
+                        echo "ERROR: 'make' failed." >&2
+                    fi
+                else
+                    echo "ERROR: './configure' failed. Check dependencies were installed correctly." >&2
+                fi
+                # Go back to parent for cleanup regardless of success/failure inside
+                cd .. 
+            else
+                echo "ERROR: Failed to extract downloaded archive." >&2
+            fi
+        else
+            echo "ERROR: Failed to download curlftpfs source." >&2
+        fi
+        
+        # Cleanup build directory
+        echo "Cleaning up build directory: ${BUILD_DIR}"
+        rm -rf "${BUILD_DIR}"
+        cd $OLDPWD # Go back to the original directory script was run from
+
+        # Final check if command exists after build attempt
+        if ! command -v curlftpfs >/dev/null 2>&1; then
+            echo "WARNING: curlftpfs build attempt finished, but command is still not found." >&2
+        fi
+    fi
+fi
+
 # --- Python Virtual Environment and Project Installation ---
 
 echo "Attempting to set up Python virtual environment and install project..."
