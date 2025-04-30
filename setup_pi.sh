@@ -21,9 +21,31 @@ fi
 echo "Updating package list..."
 apt update
 
-echo "Installing essential tools (python3-pip, python3-venv, git)..."
-# Ensure git is installed early as it might be needed for liblsl build
-apt install -y python3-pip python3-venv git
+echo "Installing required system packages (including build tools, python3-dev, picamera2, and potentially useful extras)..."
+# Add filesystem utils and hardware encoding deps here
+apt install -y --no-install-recommends \
+    build-essential \
+    python3-dev \
+    python3-pip \
+    python3-venv \
+    python3-opencv \
+    python3-picamera2 \
+    libatlas-base-dev \
+    libhdf5-dev \
+    libhdf5-serial-dev \
+    libopenjp2-7 \
+    exfat-fuse \
+    exfatprogs \
+    ntfs-3g \
+    libcamera-dev \
+    gstreamer1.0-plugins-good \
+    gstreamer1.0-plugins-bad \
+    gstreamer1.0-libav \
+    curl \
+    autoconf \
+    libtool \
+    pkg-config \
+    libbsd-dev # <- Keep libbsd-dev for curlftpfs if still needed, harmless otherwise
 
 echo "Attempting to install liblsl-dev (LabStreamingLayer library) via apt..."
 if apt install -y liblsl-dev; then
@@ -72,10 +94,6 @@ apt install -y libcap-dev
 
 echo "Installing libcamera-apps (useful for testing and ensuring libcamera stack is present)..."
 apt install -y libcamera-apps
-
-# --- Install python3-picamera2 using APT (Recommended Method) --- 
-echo "Installing python3-picamera2 (Recommended method via apt)..."
-apt install -y python3-picamera2
 
 # --- Install curlftpfs (Try apt first, fallback to source) ---
 echo "Checking for curlftpfs..."

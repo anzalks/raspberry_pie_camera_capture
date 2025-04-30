@@ -127,6 +127,52 @@ rpi-lsl-stream --stream-name MyExperimentCam --source-id Cam01_Session02
 # Explicitly use PiCamera, default settings, custom LSL stream name
 rpi-lsl-stream --camera-index pi --stream-name PiCam_Test_Stream
 
+### Saving to an External USB Drive (Recommended for Performance)
+
+Saving high-resolution or high-framerate video can be demanding on the Raspberry Pi's microSD card, potentially leading to dropped frames. For better performance and reliability, it is highly recommended to save the video output directly to an external USB drive (SSD or fast flash drive) connected to one of the Pi's USB 3.0 ports.
+
+1.  **Connect and Format the USB Drive:**
+    *   Connect your USB drive to the Raspberry Pi.
+    *   If the drive is not already formatted with a compatible filesystem, you may need to format it. `exFAT` is a good choice for compatibility between Linux, Windows, and macOS. `NTFS` is also usable (tools installed by `setup_pi.sh`). Use tools like `gparted` (install with `sudo apt install gparted`) or command-line tools (`mkfs.exfat`, `mkfs.ntfs`) carefully.
+    *   **Example formatting as exFAT (WARNING: Destroys all data on the drive! Replace `/dev/sdX1` with the correct partition for your USB drive - check with `lsblk`):**
+        ```bash
+        sudo mkfs.exfat /dev/sdX1 
+        ```
+
+2.  **Create a Mount Point:** Create a directory where the USB drive will be mounted.
+    ```bash
+    sudo mkdir /media/usb_drive 
+    # Optional: Change ownership to your user if needed (replace 'pi' with your username)
+    # sudo chown pi:pi /media/usb_drive 
+    ```
+
+3.  **Mount the USB Drive:** Mount the drive's partition to the created mount point. You might need to identify the correct partition name (e.g., `/dev/sda1`, `/dev/sdb1`) using `lsblk`.
+    *   **For exFAT:**
+        ```bash
+        # Replace /dev/sdX1 with your drive's partition
+        sudo mount -t exfat /dev/sdX1 /media/usb_drive 
+        ```
+    *   **For NTFS:**
+        ```bash
+        # Replace /dev/sdX1 with your drive's partition
+        sudo mount -t ntfs-3g /dev/sdX1 /media/usb_drive 
+        ```
+    *   **(Optional) Auto-Mounting:** To automatically mount the drive on boot, you can add an entry to `/etc/fstab`. This is recommended for permanent setups. Search online for guides on editing `/etc/fstab` for USB drives on Raspberry Pi.
+
+4.  **Run the Streamer with `--output-path`:** Use the mount point directory as the output path.
+    ```bash
+    # Activate environment first: source .venv/bin/activate
+    rpi-lsl-stream --width 1920 --height 1080 --fps 30 --output-path /media/usb_drive
+    ```
+    The video file (`lsl_capture_...mkv`) will now be saved directly to the USB drive.
+
+5.  **Unmount When Finished (If not using fstab):** Before physically disconnecting the drive, it's important to unmount it to ensure all data is written.
+    ```bash
+    sudo umount /media/usb_drive
+    ```
+
+Using a USB drive significantly reduces the chance of dropped frames caused by slow storage write speeds.
+
 ### Saving Directly to a Network Mount Point (Advanced / Experimental)
 
 While saving locally (to SD card or preferably USB drive) and uploading afterwards is the most reliable method, it is technically possible to save directly to a network location if you mount it to your Raspberry Pi's local filesystem first. **This method is highly discouraged for FTP due to performance limitations.**
@@ -163,6 +209,30 @@ The `setup_pi.sh` script attempts to install `curlftpfs`. If successful, you can
 
 **Warning:** Direct video recording over FTP via `curlftpfs` is extremely likely to be too slow and unreliable, leading to significant frame drops and unusable video, especially with higher resolutions/framerates or the MJPG codec. Use local storage or NFS/Samba instead.
 
+## Core Technologies Used
+
+Understanding the libraries and system components involved:
+
+*   **Pi Camera Module Access:**
+    *   **Library:** `picamera2`
+    *   **Backend:** Uses the modern `libcamera` stack provided by Raspberry Pi OS. This is the standard way to interact with Pi Camera Modules on recent systems (Bookworm+).
+    *   **Usage:** Selected via `--camera-index pi` or automatically if detected and no specific index is given.
+
+*   **USB Webcam Access:**
+    *   **Library:** OpenCV (`cv2.VideoCapture`)
+    *   **Backend:** On Linux, OpenCV typically uses the **V4L2 (Video4Linux2)** kernel subsystem to communicate with standard USB video devices (UVC).
+    *   **Usage:** Selected by providing an integer `--camera-index` (e.g., `0`, `1`) or automatically if a Pi Camera is not found/used.
+
+*   **Video Saving (Encoding):**
+    *   **Library:** OpenCV (`cv2.VideoWriter`)
+    *   **Backend:** `cv2.VideoWriter` acts as a frontend. It relies on underlying multimedia frameworks installed on the system (like FFmpeg or GStreamer, if available with appropriate plugins) to perform the actual video encoding.
+    *   **Codec Selection:** The script attempts to use hardware-accelerated codecs (H.264/AVC, H.265/HEVC) first for efficiency. If these are unavailable or fail to initialize (often due to missing GStreamer plugins or incompatible hardware/drivers), it falls back to `MJPG` (Motion JPEG), which is less efficient but more broadly compatible.
+    *   **Format:** Saved video files use the `.mkv` (Matroska) container format.
+
+*   **LSL Streaming:**
+    *   **Library:** `pylsl` (Python bindings for `liblsl`).
+    *   **Functionality:** Used to create the LSL stream outlet and push `[frame_number, timestamp]` pairs.
+
 ## LSL Stream Details
 
 **Note:** The current implementation streams only the frame number, not the full video frame data. The video is saved locally to a file.
@@ -182,9 +252,9 @@ The `setup_pi.sh` script attempts to install `curlftpfs`. If successful, you can
 **Timestamp Information:**
 
 *   **Source:** Timestamps are generated using `pylsl.local_clock()`.
-*   **Timing:** The timestamp associated with a specific frame number is captured *immediately before* the corresponding frame data is requested from the camera (`capture_array()` or `read()`).
+*   **Timing:** For each frame, the LSL timestamp is captured *immediately before* the call to acquire the frame data from the camera (i.e., before `picamera2.capture_array()` or `cv2.VideoCapture.read()`). This timestamp is then paired with the corresponding frame number and pushed to LSL.
 *   **Clock:** `pylsl.local_clock()` provides high-resolution, monotonic time based on the underlying LSL library (`liblsl`). It aims to use the best monotonic clock source available on the OS (e.g., `CLOCK_MONOTONIC` on Linux). This clock is designed for accurate interval measurement and event ordering within LSL and is not generally affected by system wall-clock changes (e.g., NTP updates) after the stream starts.
-*   **Synchronization:** The timestamps represent the time on the local machine running the script. They will automatically become synchronized with other LSL streams on the network **if** LSL time synchronization is active on the network (e.g., via LabRecorder or another synchronization tool). This script itself does not initiate network time synchronization.
+*   **Synchronization:** The timestamps represent the time on the local Raspberry Pi running the script. They will automatically become synchronized with other LSL streams on the network **if** LSL time synchronization is active on the network (e.g., via LabRecorder or another synchronization tool). This script itself does not initiate network time synchronization.
 
 ## Troubleshooting
 

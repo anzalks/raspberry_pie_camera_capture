@@ -17,10 +17,13 @@ def _status_updater_loop(start_time, stop_event):
     while not stop_event.is_set():
         current_time = time.time()
         elapsed_total_seconds = current_time - start_time
-        minutes = int(elapsed_total_seconds // 60)
+        # Calculate hours, minutes, seconds
+        hours = int(elapsed_total_seconds // 3600)
+        minutes = int((elapsed_total_seconds % 3600) // 60)
         seconds = int(elapsed_total_seconds % 60)
         
-        status_text = f"Running for: {minutes:02d}:{seconds:02d}"
+        # Format to HH:MM:SS
+        status_text = f"Running for: {hours:02d}:{minutes:02d}:{seconds:02d}"
         # Print status, padding with spaces to overwrite previous line, use \r
         print(f"{status_text:<70}", end='\r') 
         
@@ -65,6 +68,11 @@ def main():
     # Add the flag back
     parser.add_argument('--threaded-writer', action='store_true', 
                         help='Use a separate thread for writing video frames (recommended for high resolution/fps).')
+    # Add flag to disable saving for max FPS testing
+    parser.add_argument('--no-save', action='store_true', 
+                        help='Disable saving video to file (keeps LSL).')
+    parser.add_argument('--no-lsl', action='store_true', 
+                        help='Disable pushing frame numbers to LSL.')
     # Other arguments
     parser.add_argument('--version', action='version', version=f'%(prog)s {__version__}')
 

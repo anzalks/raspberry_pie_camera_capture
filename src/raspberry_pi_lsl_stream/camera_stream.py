@@ -40,7 +40,8 @@ class LSLCameraStreamer:
                  use_max_settings=False,
                  queue_size_seconds=5,
                  output_path=None,
-                 camera_index='auto'):
+                 camera_index='auto',
+                 save_video=True):
         """
         Initializes the streamer configuration and sets up camera and LSL.
 
@@ -57,6 +58,7 @@ class LSLCameraStreamer:
             queue_size_seconds (int): Approximate buffer size in seconds for the video writer queue.
             output_path (str, optional): Directory path to save the video file. Defaults to current directory if None.
             camera_index (str | int): Specific camera to use ('auto', 'pi', or int index). Default 'auto'.
+            save_video (bool): Whether to save the video to a file. Default True.
         """
         
         # Store configuration parameters
@@ -76,6 +78,7 @@ class LSLCameraStreamer:
         self.video_writer = None
         self.output_path = output_path # Store the output path
         self.requested_camera_index = camera_index # Store requested index
+        self.save_video = save_video # <<< Store flag
 
         # Internal state variables that get set during init
         self.width = width # Actual width used
@@ -103,7 +106,8 @@ class LSLCameraStreamer:
         try:
             self._initialize_camera()
             self._setup_lsl()
-            self._initialize_video_writer() # Handles conditional frame queue init
+            if self.save_video:
+                self._initialize_video_writer() # Only init writer if saving
             
             # Create preview window if requested (do this after knowing dimensions)
             if self.show_preview:
@@ -415,10 +419,8 @@ class LSLCameraStreamer:
             return False
 
     def _initialize_video_writer(self):
-        """Initializes the OpenCV VideoWriter and, if threaded, the frame queue.
-           Attempts H.265, H.264 codecs first, falling back to MJPG, saving in an MKV container for better resilience.
-        """
-        
+        """Initializes the OpenCV VideoWriter and the frame queue."""
+        # <<< THIS WHOLE FUNCTION IS NOW CONDITIONALLY CALLED
         timestamp_str = time.strftime("%Y%m%d_%H%M%S")
         base_filename = f"lsl_capture_{timestamp_str}.mkv" # Reverted extension to .mkv
 
@@ -490,10 +492,9 @@ class LSLCameraStreamer:
         # ---
 
         # --- FPS Validation and Queue Setup --- 
-        # Use the actual fps for the final writer and queue
         fps = self.actual_fps 
-        queue_max_size = max(10, int(fps * self.queue_size_seconds)) # Use validated fps here
-        print(f"Initializing frame queue for threaded writer (max size: {queue_max_size})")
+        queue_max_size = max(10, int(fps * self.queue_size_seconds))
+        print(f"Initializing frame queue (max size: {queue_max_size})") # Always threaded now
         self.frame_queue = Queue(maxsize=queue_max_size)
         # ---
 
@@ -587,8 +588,8 @@ class LSLCameraStreamer:
             print("Streamer already running.")
             return
             
-        # --- Start Writer Thread (Conditional again) ---
-        if self.threaded_writer:
+        # --- Start Writer Thread (Conditional) ---
+        if self.save_video:
             if self.video_writer is not None and self.video_writer.isOpened():
                 if self.writer_thread is None:
                     print("Starting writer thread...")
@@ -621,7 +622,7 @@ class LSLCameraStreamer:
         else:
             print("Error: Camera hardware could not be started. Stopping dependent threads.")
             # Stop writer thread if it was started
-            if self.threaded_writer and self.writer_thread is not None:
+            if self.save_video and self.writer_thread is not None:
                 self.stop_writer_event.set()
                 self.writer_thread.join(timeout=1.0)
                 self.writer_thread = None
@@ -629,8 +630,11 @@ class LSLCameraStreamer:
 
 
     def stop(self):
-        """Stops the camera capture, optionally the writer thread, and releases resources."""
-        if not self._is_running and (not self.threaded_writer or self.writer_thread is None):
+        """Stops the camera capture, writer thread (if active), and releases resources."""
+        # <<< Need to adjust the initial check slightly if writer isn't always used >>>
+        # if not self._is_running and (not self.save_video or self.writer_thread is None):
+        # Simplified: Just check if running, handle components individually
+        if not self._is_running:
              return 
              
         print("Stopping stream and cleaning up resources...")
@@ -670,7 +674,7 @@ class LSLCameraStreamer:
                 print(f"Error releasing OpenCV webcam: {e}")
         
         # --- Stop Writer Thread Gracefully (Conditional) ---
-        if self.threaded_writer and self.writer_thread is not None:
+        if self.save_video and self.writer_thread is not None:
             print("Signaling writer thread to stop and waiting for queue to flush...")
             self.stop_writer_event.set()
             try:
@@ -685,29 +689,30 @@ class LSLCameraStreamer:
             except Exception as e:
                  print(f"Error waiting for writer thread: {e}")
             self.writer_thread = None # Set to None even if it didn't join cleanly
-        elif self.threaded_writer and self.writer_thread is None:
-             print("Warning: Threaded writer was enabled but thread object is None during stop.")
+        elif self.save_video and self.writer_thread is None:
+             # Only warn if saving was intended but thread is missing
+             print("Warning: Video saving enabled but writer thread object is None during stop.")
 
-        # --- Release VideoWriter (AFTER writer thread finishes or times out) ---
-        if self.video_writer is not None:
-            # Check if it's still considered open by OpenCV before releasing
-            # Note: This check might not be foolproof if the object is corrupted internally
-            is_opened = False
-            try:
-                 is_opened = self.video_writer.isOpened()
-            except Exception as e_check:
-                 print(f"Warning: Error checking if VideoWriter is open before release: {e_check}")
+        # --- Release VideoWriter (Conditional) ---
+        if self.save_video and self.video_writer is not None:
+             # Check if it's still considered open by OpenCV before releasing
+             # Note: This check might not be foolproof if the object is corrupted internally
+             is_opened = False
+             try:
+                  is_opened = self.video_writer.isOpened()
+             except Exception as e_check:
+                  print(f"Warning: Error checking if VideoWriter is open before release: {e_check}")
             
-            if is_opened:
-                print(f"Releasing video writer ('{self.auto_output_filename}')...")
-                try:
-                    self.video_writer.release()
-                    print("Video writer released.")
-                except Exception as e:
-                    print(f"Error releasing video writer: {e}") # Still might segfault here if internal state is bad
-            else:
-                 print(f"Video writer ('{self.auto_output_filename}') was not considered open. Skipping release call.")
-            self.video_writer = None # Set to None regardless
+             if is_opened:
+                 print(f"Releasing video writer ('{self.auto_output_filename}')...")
+                 try:
+                     self.video_writer.release()
+                     print("Video writer released.")
+                 except Exception as e:
+                     print(f"Error releasing video writer: {e}") # Still might segfault here if internal state is bad
+             else:
+                  print(f"Video writer ('{self.auto_output_filename}') was not considered open. Skipping release call.")
+             self.video_writer = None # Set to None regardless
             
         # --- Destroy Preview Window ---
         if self.show_preview:
@@ -730,7 +735,7 @@ class LSLCameraStreamer:
 
 
     def capture_frame(self):
-        """Captures a single frame, puts it in the queue (if threaded) or writes directly (if not threaded), displays preview, and pushes LSL."""
+        """Captures a single frame, puts it in the queue (if saving), displays preview, and pushes LSL."""
         if not self._is_running:
              return None, None
              
@@ -753,50 +758,35 @@ class LSLCameraStreamer:
                 return None, None # Don't proceed if camera is not ready
             
             # --- Assign frame index *after* successful capture ---
-            # This ensures we only count/push frames that were actually read
             current_frame_index = self.frame_count
             self.frame_count += 1
 
-            # --- Write Frame (Conditional: Queue or Direct) ---
-            if self.video_writer is not None:
-                 if self.threaded_writer:
+            # --- Write Frame (Conditional: Queue Only) ---
+            if self.save_video:
+                 if self.video_writer is not None:
                      if self.frame_queue is not None:
                           try:
-                              # Frame count incremented above
-                              # current_frame_index = self.frame_count
-                              # self.frame_count += 1 
                               self.frame_queue.put_nowait(frame_data)
                           except Full:
-                              print("Warning: Frame queue full (threaded writer). Dropping frame.")
-                              self.frames_dropped_count += 1 # Increment dropped counter
+                              print("Warning: Frame queue full. Dropping frame.")
+                              self.frames_dropped_count += 1 
                           except Exception as e:
                                print(f"Error putting frame into queue: {e}")
                      else:
-                          print("Error: Threaded writer enabled but queue is None.")
-                 else:
-                     # --- Write frame directly (Non-Threaded) ---
-                     try:
-                         # Frame count incremented above
-                         # current_frame_index = self.frame_count
-                         # self.frame_count += 1
-                         self.video_writer.write(frame_data)
-                         self.frames_written_count += 1 # Increment sync write count
-                     except Exception as e:
-                         print(f"Error writing frame directly: {e}")
-            # else: # Optional: Log if video writer is None, though it should be logged during init
-            #     print("Debug: Video writer is None, skipping frame write.")
+                          # This shouldn't happen if save_video is True now
+                          print("Error: Video saving enabled but queue is None.")
+                 # else: # Log if writer is none? Redundant if init fails cleanly.
 
-            # --- Push Frame Number to LSL (Always Direct Now) ---
+            # --- Push Frame Number to LSL (Always done if outlet exists) ---
             if self.outlet is not None:
                  try:
-                     # Use the frame index assigned after successful capture
                      self.outlet.push_sample([current_frame_index], timestamp)
                  except Exception as e:
                      print(f"Error pushing frame number ({current_frame_index}) to LSL directly: {e}")
-            else:
-                  print("Warning: LSL Outlet is None. Cannot push sample.")
+            # else:
+            #      print("Warning: LSL Outlet is None. Cannot push sample.") # Logged during setup
             
-            # --- Show Preview Frame --- (Use the converted frame_data for preview too)
+            # --- Show Preview Frame ---
             if self.show_preview and hasattr(self, 'preview_window_name'):
                  try:
                      if cv2.getWindowProperty(self.preview_window_name, cv2.WND_PROP_VISIBLE) >= 1:
@@ -804,8 +794,6 @@ class LSLCameraStreamer:
                           key = cv2.waitKey(1)
                  except Exception as e:
                       pass
-            
-            # Frame count is now incremented earlier
             
             return frame_data, timestamp
 
@@ -819,7 +807,7 @@ class LSLCameraStreamer:
     def get_info(self):
         """Returns a dictionary containing the current stream configuration and status."""
         qsize = -1 # Indicate queue not applicable if not threaded
-        if self.threaded_writer and self.frame_queue is not None:
+        if self.save_video and self.frame_queue is not None:
             qsize = self.frame_queue.qsize()
         
         return {
@@ -834,7 +822,7 @@ class LSLCameraStreamer:
             "source_type": "PiCamera" if self.is_picamera else "Webcam",
             "is_running": self._is_running,
             "auto_output_filename": self.auto_output_filename,
-            "threaded_writer_enabled": self.threaded_writer,
+            "threaded_writer_enabled": self.save_video,
             "frame_queue_size": qsize
         }
 
