@@ -95,7 +95,8 @@ else
         # Install build dependencies for curlftpfs
         echo "Installing build dependencies for curlftpfs (check output for errors)..."
         # Added libglib2.0-dev as required by the fork's README/configure checks
-        apt install -y build-essential pkg-config autoconf automake libtool libfuse-dev libcurl4-openssl-dev libglib2.0-dev
+        # Added libbsd-dev based on configure error
+        apt install -y build-essential pkg-config autoconf automake libtool libfuse-dev libcurl4-openssl-dev libglib2.0-dev libbsd-dev
         # Note: libfuse-dev might be fuse3-dev on newer systems.
         # Note: libcurl4-openssl-dev might be libcurl4-gnutls-dev.
         # If the above fails, you may need to find the correct dev package names.
