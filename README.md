@@ -25,7 +25,7 @@ This project utilizes a `src` layout for better packaging. Installation involves
 
 1.  **Clone the Repository:**
     ```bash
-    git clone https://github.com/Dognosis/raspberry_pie_camera_capture.git # Replace with your actual repo URL if different
+    git clone https://github.com/anzalks/raspberry_pie_camera_capture.git
     cd raspberry_pie_camera_capture
     ```
 2.  **Run Setup Script (Requires `sudo`):** This script performs the following actions:
