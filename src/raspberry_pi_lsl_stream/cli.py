@@ -9,6 +9,7 @@ import os # Import os for file existence check
 import threading # <<< Import threading
 # from .camera_stream import stream_camera # Relative import <- Remove old import
 from .camera_stream import LSLCameraStreamer # <-- Import the class
+from .audio_stream import LSLAudioStreamer # <-- Import audio streamer
 from ._version import __version__
 from .verify_video import verify_video # <<< Import the verification function
 
@@ -41,38 +42,100 @@ def main():
         description=f'Stream Raspberry Pi camera data via LSL (v{__version__}).',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-    # Camera/Stream configuration arguments
-    parser.add_argument('--width', type=int, default=640, help='Video width')
-    parser.add_argument('--height', type=int, default=480, help='Video height')
-    parser.add_argument('--fps', type=int, default=30, help='Frames per second')
-    parser.add_argument('--format', type=str, default='RGB888',
+    
+    # Camera/Video configuration arguments
+    video_group = parser.add_argument_group('Video Capture Options')
+    video_group.add_argument('--width', type=int, default=400, help='Video width')
+    video_group.add_argument('--height', type=int, default=400, help='Video height')
+    video_group.add_argument('--fps', type=int, default=100, help='Frames per second')
+    video_group.add_argument('--format', type=str, default='RGB888',
                         help='Camera pixel format (e.g., RGB888, XBGR8888, YUV420) - PiCam only')
     # Explicit camera selection
-    parser.add_argument('--camera-index', type=str, default='auto',
+    video_group.add_argument('--camera-index', type=str, default='auto',
                         help="Camera to use: 'auto' (default: PiCam then Webcams), 'pi' (PiCam only), or an integer index (e.g., 0, 1) for a specific webcam.")
-    # Output configuration
-    parser.add_argument('--output-path', type=str, default=None,
-                        help='Directory path to save the output video file. Defaults to the current directory.')
-    # LSL configuration arguments
-    parser.add_argument('--stream-name', type=str, default='RaspberryPiCamera',
-                        help='LSL stream name')
-    parser.add_argument('--source-id', type=str, default='RPiCam_UniqueID',
-                        help='Unique LSL source ID')
-    # Video saving is automatic now
-    parser.add_argument('--show-preview', action='store_true',
+    # Add encoding options
+    video_group.add_argument('--codec', type=str, default='auto',
+                       help="Preferred video codec ('h264', 'h265', 'mjpg', 'auto'). Default 'auto' attempts hardware-accelerated codecs first.")
+    video_group.add_argument('--bitrate', type=int, default=0,
+                       help="Constant bitrate in Kbps (0=codec default). Setting this enables CBR mode.")
+    video_group.add_argument('--quality-preset', type=str, default='medium',
+                       choices=['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow'],
+                       help="Encoding quality preset (trade-off between speed and compression efficiency).")
+    # Video preview and max settings
+    video_group.add_argument('--show-preview', action='store_true',
                         help='Show a live preview window (using OpenCV). Requires graphical environment.')
-    parser.add_argument('--use-max-settings', action='store_true',
+    video_group.add_argument('--use-max-settings', action='store_true',
                         help='[Webcam Only] Attempt to use the highest resolution and FPS reported by the webcam. Overrides --width, --height, --fps.')
-    parser.add_argument('--duration', type=int, default=None,
-                        help='Record for a fixed duration (in seconds) then stop automatically.')
-    # Add the flag back
-    parser.add_argument('--threaded-writer', action='store_true', 
+    video_group.add_argument('--threaded-writer', action='store_true', 
                         help='Use a separate thread for writing video frames (recommended for high resolution/fps).')
-    # Add flag to disable saving for max FPS testing
-    parser.add_argument('--no-save', action='store_true', 
+    video_group.add_argument('--no-save-video', action='store_true', 
                         help='Disable saving video to file (keeps LSL).')
-    parser.add_argument('--no-lsl', action='store_true', 
-                        help='Disable pushing frame numbers to LSL.')
+    
+    # Audio capture options
+    audio_group = parser.add_argument_group('Audio Capture Options')
+    audio_group.add_argument('--enable-audio', action='store_true',
+                         help='Enable audio capture from USB microphone.')
+    audio_group.add_argument('--audio-device', type=str, default=None,
+                         help='Audio device index or name (default: auto-detect first input device).')
+    audio_group.add_argument('--sample-rate', type=int, default=48000,
+                         help='Audio sampling rate in Hz.')
+    audio_group.add_argument('--channels', type=int, default=1,
+                         help='Number of audio channels (1=mono, 2=stereo).')
+    audio_group.add_argument('--bit-depth', type=int, default=16, choices=[16, 24, 32],
+                         help='Audio bit depth (16, 24, or 32 bits).')
+    audio_group.add_argument('--chunk-size', type=int, default=1024,
+                         help='Audio processing chunk size.')
+    audio_group.add_argument('--no-save-audio', action='store_true',
+                         help='Disable saving audio to file (keeps LSL).')
+    audio_group.add_argument('--threaded-audio-writer', action='store_true', default=True,
+                         help='Use a separate thread for writing audio chunks.')
+    audio_group.add_argument('--show-audio-preview', action='store_true',
+                         help='Show audio visualization window with waveform and spectrum display.')
+    
+    # Output configuration
+    output_group = parser.add_argument_group('Output Options')
+    output_group.add_argument('--output-path', type=str, default=None,
+                        help='Directory path to save the output files. Defaults to the current directory.')
+    output_group.add_argument('--duration', type=int, default=None,
+                        help='Record for a fixed duration (in seconds) then stop automatically.')
+    
+    # LSL configuration arguments
+    lsl_group = parser.add_argument_group('LSL Options')
+    lsl_group.add_argument('--video-stream-name', type=str, default='RaspieVideo',
+                        help='LSL stream name for video frames')
+    lsl_group.add_argument('--audio-stream-name', type=str, default='RaspieAudio',
+                        help='LSL stream name for audio chunks')
+    lsl_group.add_argument('--source-id', type=str, default='RaspieCapture',
+                        help='Base LSL source ID (will be suffixed with _Video or _Audio)')
+    lsl_group.add_argument('--no-lsl', action='store_true', 
+                        help='Disable pushing data to LSL.')
+    
+    # Add buffer and trigger options
+    buffer_group = parser.add_argument_group('Buffer and Trigger Options')
+    buffer_group.add_argument('--use-buffer', action='store_true', default=True,
+                             help='Enable rolling buffer mode to capture frames before trigger.')
+    buffer_group.add_argument('--buffer-size', type=int, default=20,
+                             help='Size of the rolling buffer in seconds (default: 20).')
+    buffer_group.add_argument('--ntfy-topic', type=str, default="rpi_camera_trigger",
+                             help='The ntfy.sh topic to subscribe to for recording triggers (default: rpi_camera_trigger).')
+    buffer_group.add_argument('--no-ntfy', action='store_true',
+                             help='Disable ntfy notifications and use manual triggering only.')
+    
+    # Add CPU core options under a new argument group
+    core_group = parser.add_argument_group('CPU Core Affinity Options')
+    core_group.add_argument('--video-capture-core', type=int, default=None,
+                        help='Specific CPU core for video capture operations (requires psutil).')
+    core_group.add_argument('--video-writer-core', type=int, default=None,
+                        help='Specific CPU core for video writer thread (requires psutil).')
+    core_group.add_argument('--video-vis-core', type=int, default=None,
+                        help='Specific CPU core for video visualization (requires psutil).')
+    core_group.add_argument('--audio-capture-core', type=int, default=None,
+                        help='Specific CPU core for audio capture operations (requires psutil).')
+    core_group.add_argument('--audio-writer-core', type=int, default=None,
+                        help='Specific CPU core for audio writer thread (requires psutil).')
+    core_group.add_argument('--audio-vis-core', type=int, default=None,
+                        help='Specific CPU core for audio visualization (requires psutil).')
+    
     # Other arguments
     parser.add_argument('--version', action='version', version=f'%(prog)s {__version__}')
 
@@ -80,198 +143,245 @@ def main():
     args = parser.parse_args()
 
     # --- Initial Information Output ---
-    print(f"Starting LSL stream '{args.stream_name}'...")
+    print(f"Starting capture with LSL streaming...")
 
-    streamer = None # Initialize streamer variable for cleanup in finally block
-    status_thread = None # Initialize status thread variable
-    stop_event = threading.Event() # Event to signal threads to stop
+    # Initialize objects to None for cleanup
+    video_streamer = None
+    audio_streamer = None
+    status_thread = None
+    stop_event = threading.Event()
 
-    # Define a signal handler for graceful shutdown on Ctrl+C (SIGINT) or termination (SIGTERM).
+    # Define a signal handler for graceful shutdown
     def signal_handler(sig, frame):
         print(f'\nCaught signal {sig}, initiating shutdown...')
-        stop_event.set() # <<< Signal status thread to stop
-        # Let the finally block handle streamer.stop() and thread join
-        # if streamer: 
-        #     streamer.stop() 
-        # sys.exit(0) # Let the main thread exit naturally after the loop breaks
+        stop_event.set()
 
-    # Register the signal handler for SIGINT and SIGTERM.
+    # Register the signal handler for SIGINT and SIGTERM
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
     try:
-        # Instantiate the LSLCameraStreamer with parsed arguments.
-        # This will initialize the camera and LSL stream.
-        streamer = LSLCameraStreamer(
+        # Initialize video streamer
+        video_streamer = LSLCameraStreamer(
             width=args.width,
             height=args.height,
             fps=args.fps,
-            pixel_format=args.format, # Note: format is mostly relevant for PiCamera
-            stream_name=args.stream_name,
-            source_id=args.source_id,
+            pixel_format=args.format,
+            stream_name=args.video_stream_name,
+            source_id=f"{args.source_id}_Video",
             show_preview=args.show_preview,
             use_max_settings=args.use_max_settings,
             output_path=args.output_path,
-            camera_index=args.camera_index # <<< Pass the camera index
+            camera_index=args.camera_index,
+            save_video=not args.no_save_video,
+            codec=args.codec,
+            bitrate=args.bitrate,
+            quality_preset=args.quality_preset,
+            buffer_size_seconds=args.buffer_size,
+            use_buffer=args.use_buffer,
+            ntfy_topic=None if args.no_ntfy else args.ntfy_topic,
+            push_to_lsl=not args.no_lsl,
+            threaded_writer=args.threaded_writer,
+            capture_cpu_core=args.video_capture_core,
+            writer_cpu_core=args.video_writer_core,
+            visualizer_cpu_core=args.video_vis_core
         )
         
-        # Register the streamer stop method to be called on normal/exception exit
-        # This provides an extra layer of cleanup attempts.
-        # Note: Does NOT handle abrupt external kills (SIGKILL, power loss).
-        atexit.register(streamer.stop)
+        # Register the video streamer stop method to be called on exit
+        atexit.register(video_streamer.stop)
 
-        # Get and print the actual configuration reported by the streamer
-        # (camera might have adjusted width, height, fps).
-        stream_info = streamer.get_info()
-        print(f"Actual Stream Config: {stream_info['width']}x{stream_info['height']} @ {stream_info['actual_fps']:.2f}fps")
-        print(f"LSL Info: Name='{stream_info['stream_name']}', SourceID='{stream_info['source_id']}'")
-        print(f"Camera Model: {stream_info['camera_model']}")
+        # Initialize audio streamer if enabled
+        if args.enable_audio:
+            try:
+                audio_streamer = LSLAudioStreamer(
+                    sample_rate=args.sample_rate,
+                    channels=args.channels,
+                    device_index=args.audio_device,
+                    stream_name=args.audio_stream_name,
+                    source_id=f"{args.source_id}_Audio",
+                    output_path=args.output_path,
+                    bit_depth=args.bit_depth,
+                    buffer_size_seconds=args.buffer_size,
+                    use_buffer=args.use_buffer,
+                    chunk_size=args.chunk_size,
+                    threaded_writer=args.threaded_audio_writer,
+                    save_audio=not args.no_save_audio,
+                    show_preview=args.show_audio_preview,
+                    capture_cpu_core=args.audio_capture_core,
+                    writer_cpu_core=args.audio_writer_core,
+                    visualizer_cpu_core=args.audio_vis_core
+                )
+                
+                # Register the audio streamer stop method to be called on exit
+                atexit.register(audio_streamer.stop)
+            except Exception as e:
+                print(f"Audio initialization error: {e}")
+                print("Continuing with video only")
+                audio_streamer = None
 
-        # Start the camera capture process (e.g., picam2.start()).
-        streamer.start()
+        # Print configuration information
+        video_info = video_streamer.get_info()
+        print(f"\nVideo Configuration:")
+        print(f"  Resolution: {video_info['width']}x{video_info['height']}")
+        print(f"  Frame Rate: {video_info['actual_fps']:.2f} fps")
+        print(f"  Camera: {video_info['camera_model']}")
+        print(f"  Buffer Mode: {'Enabled' if args.use_buffer else 'Disabled'}")
         
-        # --- Start Status Updater Thread ---
-        start_time = time.time() # Record start time
+        if audio_streamer:
+            audio_info = audio_streamer.get_info()
+            print(f"\nAudio Configuration:")
+            print(f"  Device: {audio_info['device_name']}")
+            print(f"  Sample Rate: {audio_info['sample_rate']} Hz")
+            print(f"  Channels: {audio_info['channels']}")
+            print(f"  Bit Depth: {audio_info['bit_depth']} bits")
+        
+        if args.use_buffer:
+            if args.ntfy_topic and not args.no_ntfy:
+                print(f"\nTrigger Configuration:")
+                print(f"  Notification Topic: {args.ntfy_topic}")
+                print(f"  Buffer Size: {args.buffer_size} seconds")
+                print("  Manual Trigger: Press 't' in preview window")
+                print("  Manual Stop: Press 's' in preview window")
+            else:
+                print(f"\nTrigger Configuration:")
+                print(f"  Mode: Manual only")
+                print(f"  Buffer Size: {args.buffer_size} seconds")
+                print("  Trigger: Press 't' in preview window")
+                print("  Stop: Press 's' in preview window")
+
+        # Start the capture processes
+        print("\nStarting capture...")
+        video_streamer.start()
+        if audio_streamer:
+            audio_streamer.start()
+        
+        # Start status updater thread
+        start_time = time.time()
         status_thread = threading.Thread(
             target=_status_updater_loop, 
             args=(start_time, stop_event)
         )
         status_thread.start()
-        # ---
 
-        print("\nStreaming frames... Press Ctrl+C to stop (or wait for duration if set).")
+        print("\nCapture active. Press Ctrl+C to stop (or wait for duration if set).")
 
-        # --- Main Capture Loop ---
-        # Continuously capture frames and push them to LSL until interrupted or duration expires.
-        # REMOVED: start_time = time.time()
-        # REMOVED: last_status_update_time = start_time
-        # REMOVED: frames_in_last_second = 0
-        # REMOVED: current_loop_fps = 0.0
-        
-        while not stop_event.is_set(): # <<< Check stop_event here
-            # --- Duration Check --- 
+        # Define a function to handle synchronized start/stop for both streamers
+        def handle_trigger_start():
+            """Handle synchronized start of video and audio recording."""
+            print("\nTriggered recording START")
+            video_streamer.start_recording()
+            if audio_streamer:
+                audio_streamer.start_recording()
+
+        def handle_trigger_stop():
+            """Handle synchronized stop of video and audio recording."""
+            print("\nTriggered recording STOP")
+            video_streamer.stop_recording()
+            if audio_streamer:
+                audio_streamer.stop_recording()
+
+        # Install the handler for video triggers to also control audio
+        # Override the original handlers in the video streamer
+        video_streamer._handle_trigger_callback = handle_trigger_start
+        video_streamer._handle_stop_callback = handle_trigger_stop
+
+        # Main capture loop
+        while not stop_event.is_set():
+            # Check for duration limit
             if args.duration is not None:
-                current_time_for_duration = time.time() # Need current time here
-                elapsed_time = current_time_for_duration - start_time
+                current_time = time.time()
+                elapsed_time = current_time - start_time
                 if elapsed_time >= args.duration:
                     print(f"\nDuration of {args.duration} seconds reached. Stopping...")
-                    stop_event.set() # <<< Signal stop
-                    break # Exit the loop
-            # ---
+                    stop_event.set()
+                    break
             
-            # Capture a frame and get its LSL timestamp.
-            # Add timeout to capture_frame call if possible? Or handle blocking differently?
-            # For now, assume capture_frame might block, but check stop_event frequently.
-            frame, timestamp = streamer.capture_frame()
+            # Capture video frame
+            frame, timestamp = video_streamer.capture_frame()
             
-            # Check if capture failed (e.g., stream stopped, error)
-            if frame is None and not stop_event.is_set(): # Only print if not already stopping
-                print() 
-                print("Capture frame returned None, stream might have stopped or errored. Exiting loop.")
-                stop_event.set() # <<< Signal stop
-                break # Exit the loop cleanly
+            # Check if capture failed
+            if frame is None and not stop_event.is_set():
+                print("\nCapture frame returned None, stream might have stopped or errored.")
+                stop_event.set()
+                break
             elif frame is None and stop_event.is_set():
-                 # Expected if stopping, just break
-                 break
-                 
-            # --- Status Update REMOVED from here --- 
-
-            # Optional: A small sleep could be added if the main loop is too tight 
-            #           when capture_frame doesn't block sufficiently.
-            # time.sleep(0.001) 
+                break
 
     except KeyboardInterrupt:
-        # Signal handler should catch this first and set the event
-        print("\nKeyboardInterrupt caught (main loop), ensuring stop.") 
+        print("\nKeyboardInterrupt caught, stopping...")
         stop_event.set()
     except RuntimeError as e:
-        # Catch specific errors raised during streamer initialization or runtime 
-        # (e.g., camera not found, OS incompatibility).
         print(f"Runtime Error: {e}", file=sys.stderr)
-        sys.exit(1) # Exit with a non-zero code to indicate error
+        sys.exit(1)
     except Exception as e:
-        # Catch any other unexpected errors during the process.
         print(f"An unexpected error occurred: {e}", file=sys.stderr)
         import traceback
-        traceback.print_exc() # Print the full traceback for debugging
-        sys.exit(1) # Exit with error code
+        traceback.print_exc()
+        sys.exit(1)
     finally:
-        # --- Cleanup ---
-        print() # Ensure newline before final messages
-        end_time = time.time() # <<< Record end time
+        # Cleanup
+        print()  # Ensure newline before final messages
+        end_time = time.time()
         
-        # Ensure stop_event is set for threads
+        # Set stop event for threads
         stop_event.set()
         
-        # Stop and join the status thread
-        if status_thread is not None:
+        # Stop status thread
+        if status_thread and status_thread.is_alive():
             print("Stopping status updater thread...")
-            status_thread.join(timeout=1.5) # Wait for thread to finish
+            status_thread.join(timeout=1.5)
             if status_thread.is_alive():
                 print("Warning: Status thread did not exit cleanly.")
         
-        output_filename = None # Store filename for verification later
-        if streamer:
-            print("\nStopping stream and cleaning up resources...")
-            # Get stats *before* calling stop, as stop might alter them or cleanup objects
-            # Note: frame_count includes frames attempted, not necessarily written/pushed
-            output_filename = streamer.auto_output_filename # Get filename before stop potentially clears it
-            total_frames_processed = streamer.get_frame_count()
-            frames_written = streamer.get_frames_written()
-            frames_dropped = streamer.get_frames_dropped()
-            threaded = streamer.threaded_writer # Store threading state
+        # Stop video streamer and report stats
+        if video_streamer:
+            print("\nStopping video stream...")
+            video_filename = video_streamer.auto_output_filename
+            video_frames_processed = video_streamer.get_frame_count()
+            video_frames_written = video_streamer.get_frames_written()
+            video_frames_dropped = video_streamer.get_frames_dropped()
+            video_threaded = video_streamer.threaded_writer
             
-            # Ensure the streamer's stop method is called to release resources.
-            streamer.stop() 
+            video_streamer.stop()
             
-            # Report statistics
-            print("\n--- Stream Statistics ---")
-            
-            # Timing Info
-            total_run_duration = end_time - start_time
-            minutes = int(total_run_duration // 60)
-            seconds = total_run_duration % 60
-            print(f"Total Run Time: {minutes}m {seconds:.2f}s") # <<< Add Total Run Time
-            print("-") # Separator
-            
-            # Threading Info
-            if threaded:
-                print("Threading: Enabled (Main thread: Capture/LSL/Queue, Writer thread: Video Save)")
-                print(f"Application Threads Primarily Used: 2")
-            else:
-                print("Threading: Disabled (Main thread: Capture/LSL/Video Save)")
-                print(f"Application Threads Primarily Used: 1")
-                
-            print("-") # Separator
-            
-            # Frame Counts
-            print(f"Frames processed by capture loop (Main Thread): {total_frames_processed}")
-            if threaded:
-                print(f"Frames successfully written to file (Writer Thread): {frames_written}")
-                print(f"Frames dropped due to full queue (Main Thread): {frames_dropped}")
-                if total_frames_processed > 0:
-                    dropped_percentage = (frames_dropped / total_frames_processed) * 100
+            print("\n--- Video Statistics ---")
+            print(f"Frames processed: {video_frames_processed}")
+            print(f"Frames written: {video_frames_written}")
+            if video_threaded:
+                print(f"Frames dropped: {video_frames_dropped}")
+                if video_frames_processed > 0:
+                    dropped_percentage = (video_frames_dropped / video_frames_processed) * 100
                     print(f"Dropped percentage: {dropped_percentage:.2f}%")
-                else:
-                    print("Dropped percentage: N/A")
-            else: # Non-threaded
-                print(f"Frames successfully written to file (Main Thread): {frames_written}")
-                # Drop count is not applicable/tracked in non-threaded mode
-                
-            print("------------------------")
             
-            # --- Automatic Video Verification ---
-            if output_filename and os.path.exists(output_filename):
+            # Verify video file if it exists
+            if video_filename and os.path.exists(video_filename):
                 print("\nVerifying saved video file...")
-                verify_video(output_filename) # Call the verification function
-            elif output_filename:
-                print(f"\nWarning: Output file '{output_filename}' not found. Skipping verification.")
-            # ---
+                verify_video(video_filename)
+        
+        # Stop audio streamer and report stats
+        if audio_streamer:
+            print("\nStopping audio stream...")
+            audio_filename = audio_streamer.auto_output_filename
+            audio_chunks_processed = audio_streamer.get_frame_count()
+            audio_chunks_written = audio_streamer.get_frames_written()
+            audio_chunks_dropped = audio_streamer.get_frames_dropped()
             
-        else:
-            # Handle cases where the streamer object wasn't successfully created.
-            print("Stream process finished (streamer was not initialized).")
+            audio_streamer.stop()
+            
+            print("\n--- Audio Statistics ---")
+            print(f"Audio chunks processed: {audio_chunks_processed}")
+            print(f"Audio chunks written: {audio_chunks_written}")
+            print(f"Audio chunks dropped: {audio_chunks_dropped}")
+            if audio_filename:
+                print(f"Audio saved to: {audio_filename}")
+        
+        # Print total run time
+        total_run_duration = end_time - start_time
+        minutes = int(total_run_duration // 60)
+        seconds = total_run_duration % 60
+        print(f"\nTotal Run Time: {minutes}m {seconds:.2f}s")
+        print("Capture completed.")
 
-# Standard Python entry point check: ensures main() runs only when script is executed directly.
+# Standard Python entry point check
 if __name__ == '__main__':
     main() 

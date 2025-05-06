@@ -45,7 +45,11 @@ apt install -y --no-install-recommends \
     autoconf \
     libtool \
     pkg-config \
-    libbsd-dev # <- Keep libbsd-dev for curlftpfs if still needed, harmless otherwise
+    libbsd-dev \
+    libasound2-dev \
+    portaudio19-dev \
+    python3-numpy \
+    python3-scipy # Added audio-related packages
 
 echo "Attempting to install liblsl-dev (LabStreamingLayer library) via apt..."
 if apt install -y liblsl-dev; then

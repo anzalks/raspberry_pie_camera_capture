@@ -1,5 +1,6 @@
 pylsl
 numpy
 opencv-python
+requests
 # Optional, for Raspberry Pi Camera module:
 picamera2 

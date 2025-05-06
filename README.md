@@ -7,10 +7,24 @@ A Python package to capture video frames from a Raspberry Pi camera and stream t
 ## Features
 
 *   Captures frames using `picamera2` or a standard webcam (`OpenCV`).
-*   Saves captured video to a local file (`.mp4` or `.avi`).
-*   Streams **frame numbers** and timestamps via LSL.
+*   Captures audio from USB microphones using `sounddevice`.
+*   Saves captured video to a local file (`.mkv`).
+*   Saves captured audio to a separate local file (`.wav`).
+*   Streams **frame numbers** and timestamps via LSL for video.
+*   Streams **audio chunk markers** and timestamps via LSL for audio.
 *   Configurable resolution, frame rate, and LSL stream parameters.
+*   Configurable audio sampling rate, bit depth, and channels.
 *   Includes optional live preview and threaded video writing.
+*   Supports rolling buffer mode to capture footage before a trigger event.
+*   Integrates with ntfy.sh for remote trigger notifications.
+*   Synchronized start/stop for both audio and video using the same triggers.
+*   Real-time visualization of audio waveforms and spectrum.
+*   CPU core affinity management for optimized performance.
+*   Auto-start at boot with systemd service.
+
+## Quick Start
+
+See [QUICKSTART.md](QUICKSTART.md) for a quick guide to setting up auto-start and remote triggering via ntfy.sh.
 
 ## Prerequisites
 
@@ -79,18 +93,43 @@ rpi-lsl-stream [OPTIONS]
 
 **Command-Line Options:**
 
-*   `--width`: Video width (default: 640).
-*   `--height`: Video height (default: 480).
-*   `--fps`: Frames per second (default: 30).
+*   `--width`: Video width (default: 400).
+*   `--height`: Video height (default: 400).
+*   `--fps`: Frames per second (default: 100).
 *   `--format`: Camera pixel format (default: 'RGB888') - used by PiCamera backend.
 *   `--camera-index`: Camera to use: 'auto' (default: PiCam then Webcams), 'pi' (PiCam only), or an integer index (e.g., 0, 1) for a specific webcam. (default: auto).
-*   `--output-path`: Directory path to save the output video file (default: current directory).
-*   `--stream-name`: LSL stream name (default: 'RaspberryPiCamera').
-*   `--source-id`: Unique LSL source ID (default: 'RPiCam_UniqueID').
+*   `--output-path`: Directory path to save the output files (default: current directory).
+*   `--codec`: Preferred video codec ('h264', 'h265', 'mjpg', 'auto'). Default 'auto' attempts hardware-accelerated codecs first.
+*   `--bitrate`: Constant bitrate in Kbps (0=codec default). Setting this enables CBR mode.
+*   `--quality-preset`: Encoding quality preset (trade-off between speed and compression efficiency). Options: 'ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow'. Default: 'medium'.
+*   `--video-stream-name`: LSL stream name for video frames (default: 'RaspieVideo').
+*   `--audio-stream-name`: LSL stream name for audio chunks (default: 'RaspieAudio').
+*   `--source-id`: Base LSL source ID (default: 'RaspieCapture') - will be suffixed with _Video or _Audio.
 *   `--show-preview`: Show a live preview window (requires graphical environment).
+*   `--show-audio-preview`: Show audio visualization window with waveform and spectrum display.
 *   `--use-max-settings`: [Webcam Only] Attempt to use the highest resolution and FPS reported by the webcam. Overrides `--width`, `--height`, `--fps`.
 *   `--duration DURATION`: Record for a fixed duration (in seconds) then stop automatically.
 *   `--threaded-writer`: Use a separate thread for writing video frames (recommended for high resolution/fps).
+*   `--use-buffer`: Enable rolling buffer mode to capture frames before trigger (enabled by default).
+*   `--buffer-size`: Size of the rolling buffer in seconds (default: 20).
+*   `--ntfy-topic`: The ntfy.sh topic to subscribe to for recording triggers (default: "raspie_trigger").
+*   `--no-ntfy`: Disable ntfy notifications and use manual triggering only.
+*   `--enable-audio`: Enable audio capture from USB microphone.
+*   `--audio-device`: Audio device index or name (default: auto-detect first input device).
+*   `--sample-rate`: Audio sampling rate in Hz (default: 48000).
+*   `--channels`: Number of audio channels (1=mono, 2=stereo) (default: 1).
+*   `--bit-depth`: Audio bit depth (16, 24, or 32 bits) (default: 16).
+*   `--chunk-size`: Audio processing chunk size (default: 1024).
+*   `--no-save-video`: Disable saving video to file (keeps LSL).
+*   `--no-save-audio`: Disable saving audio to file (keeps LSL).
+*   `--threaded-audio-writer`: Use a separate thread for writing audio chunks (default: enabled).
+*   `--no-lsl`: Disable pushing data to LSL.
+*   `--video-capture-core`: Specific CPU core for video capture operations (requires psutil).
+*   `--video-writer-core`: Specific CPU core for video writer thread (requires psutil).
+*   `--video-vis-core`: Specific CPU core for video visualization (requires psutil).
+*   `--audio-capture-core`: Specific CPU core for audio capture operations (requires psutil).
+*   `--audio-writer-core`: Specific CPU core for audio writer thread (requires psutil).
+*   `--audio-vis-core`: Specific CPU core for audio visualization (requires psutil).
 *   `--version`: Show program's version number and exit.
 *   `-h`, `--help`: Show help message and exit.
 
@@ -126,8 +165,163 @@ rpi-lsl-stream --camera-index 1 --use-max-settings --duration 120 --output-path 
 # Auto-detect camera, default settings, custom LSL stream name and source ID
 rpi-lsl-stream --stream-name MyExperimentCam --source-id Cam01_Session02
 
-# Explicitly use PiCamera, default settings, custom LSL stream name
-rpi-lsl-stream --camera-index pi --stream-name PiCam_Test_Stream
+# Force use of H.264 codec with constant bitrate of 2Mbps and fast preset for higher frame rates
+rpi-lsl-stream --width 1280 --height 720 --fps 60 --codec h264 --bitrate 2000 --quality-preset veryfast
+
+# Use MJPG codec for maximum compatibility (if H.264/H.265 not working)
+rpi-lsl-stream --width 1280 --height 720 --fps 30 --codec mjpg
+
+# Optimize for high performance with lower latency using H.264, CBR, and ultrafast preset
+rpi-lsl-stream --width 640 --height 480 --fps 60 --codec h264 --bitrate 1500 --quality-preset ultrafast
+
+# Default mode: 400x400 at 100fps, rolling buffer with ntfy start/stop control
+rpi-lsl-stream
+
+### Audio Capture Examples
+
+These examples demonstrate how to use the audio capture functionality alongside video:
+
+```bash
+# Enable audio capture with default settings (48kHz, 16-bit, mono)
+rpi-lsl-stream --enable-audio
+
+# High-quality audio capture (48kHz, 24-bit, stereo)
+rpi-lsl-stream --enable-audio --sample-rate 48000 --bit-depth 24 --channels 2
+
+# Audio-only capture (no video)
+rpi-lsl-stream --enable-audio --no-save-video
+
+# Specify a particular audio device by name (partial match)
+rpi-lsl-stream --enable-audio --audio-device "USB Audio"
+
+# Specify a particular audio device by index
+rpi-lsl-stream --enable-audio --audio-device 1
+
+# Custom buffer size (30 seconds) for both video and audio
+rpi-lsl-stream --enable-audio --buffer-size 30
+
+# Custom stream names for better organization in LSL recordings
+rpi-lsl-stream --enable-audio --video-stream-name "DogCam" --audio-stream-name "DogMic"
+```
+
+For optimal performance, audio capture processes run on a separate core when possible. Both audio and video use the same triggering mechanism (ntfy.sh notifications or manual keyboard triggers) and buffer settings, ensuring perfect synchronization.
+
+### Auto-Start and Remote Control Examples
+
+These examples show how to use the auto-start service and remote control functionality:
+
+```bash
+# Install the service for auto-start on boot
+sudo bash raspi-capture-service.sh
+
+# Apply performance optimizations (optional)
+sudo bash raspie-optimize.sh
+
+# Start the service immediately (without waiting for reboot)
+sudo systemctl start raspie-capture.service
+
+# Check service status and see if it's running correctly
+./raspie-service.sh status
+
+# Start recording remotely using curl
+curl -d "start recording" ntfy.sh/raspie_trigger
+
+# Stop recording remotely using curl
+curl -d "stop recording" ntfy.sh/raspie_trigger
+
+# Use the convenience script to trigger recording
+./raspie-service.sh trigger
+
+# Use the convenience script to stop recording
+./raspie-service.sh stop-recording
+
+# View the service logs to troubleshoot issues
+./raspie-service.sh logs
+
+# Run with visualizers for testing
+source .venv/bin/activate
+bash examples/run_visualizers.sh
+```
+
+These examples use the default `raspie_trigger` ntfy.sh topic. You can customize this by editing the service file or specifying a different topic with the `--ntfy-topic` option.
+
+### Visualization and Performance Optimization
+
+The system provides real-time visualization for both video and audio streams, allowing you to monitor capture quality during experiments.
+
+#### Audio and Video Visualization
+
+To enable visualization:
+
+```bash
+# Show video preview window
+rpi-lsl-stream --show-preview
+
+# Show audio visualization (waveform, spectrum analyzer, and level meter)
+rpi-lsl-stream --enable-audio --show-audio-preview
+
+# Show both video and audio visualizations together
+rpi-lsl-stream --enable-audio --show-preview --show-audio-preview
+```
+
+The audio visualizer provides:
+- A real-time waveform display of the incoming audio
+- A spectrum analyzer showing frequency content as a waterfall display
+- A level meter with color indicators (green=normal, yellow=approaching peak, red=clipping)
+
+#### CPU Core Affinity Management
+
+For optimal performance, especially on Raspberry Pi, you can assign different processing tasks to specific CPU cores using the `--*-core` options. This prevents resource contention between critical operations like video encoding and visualization.
+
+```bash
+# Assign video capture to core 0, writer to core 1, audio to core 2
+rpi-lsl-stream --enable-audio --video-capture-core 0 --video-writer-core 1 --audio-capture-core 2
+
+# Include visualization on different cores
+rpi-lsl-stream --enable-audio --show-preview --show-audio-preview \
+  --video-capture-core 0 --video-writer-core 1 --video-vis-core 2 \
+  --audio-capture-core 3 --audio-writer-core 1 --audio-vis-core 2
+```
+
+All core assignment options:
+- `--video-capture-core`: Core for video capture operations
+- `--video-writer-core`: Core for video encoding/writing thread
+- `--video-vis-core`: Core for video visualization
+- `--audio-capture-core`: Core for audio capture operations
+- `--audio-writer-core`: Core for audio writing thread
+- `--audio-vis-core`: Core for audio visualization
+
+Core affinity management requires the `psutil` package to be installed (`pip install psutil`).
+
+#### Automatic Performance Optimization
+
+For Raspberry Pi users, we provide an optimization script that automatically configures the system for better performance:
+
+```bash
+sudo bash raspie-optimize.sh
+```
+
+This script applies several optimizations:
+1. Sets CPU governor to performance mode
+2. Increases GPU memory allocation
+3. Enables maximum USB bus power (for better microphone stability)
+4. Disables unnecessary services (bluetooth, printing, etc.)
+5. Sets high process priority for capture processes
+6. Creates a RAM disk for temporary files
+
+#### Example Scripts
+
+The `examples` directory contains ready-to-use scripts demonstrating these features:
+
+```bash
+# Run visualizers with automatic core assignment
+bash examples/run_visualizers.sh
+
+# Run using Python with manual core control
+python examples/run_with_visualizers.py
+```
+
+For more details about visualization options and CPU affinity management, see the examples README: `examples/README.md`
 
 ### Saving to an External USB Drive (Recommended for Performance)
 
@@ -244,6 +438,200 @@ Understanding the libraries and system components involved:
     *   **Library:** `pylsl` (Python bindings for `liblsl`).
     *   **Functionality:** Used to create the LSL stream outlet and push `[frame_number, timestamp]` pairs.
 
+## Optimizing Performance and Frame Rates
+
+To achieve the highest possible frame rates on Raspberry Pi, you can adjust several encoding parameters:
+
+### Encoding Options for High Performance
+
+1. **Codec Selection (`--codec`):**
+   * `h264` - Hardware-accelerated H.264 encoding is available on Raspberry Pi and typically offers the best balance of quality and performance
+   * `mjpg` - A highly compatible codec that works when H.264/H.265 fails, but typically results in larger file sizes
+
+2. **Constant Bitrate Mode (`--bitrate`):**
+   * Setting a specific bitrate (in Kbps) enables constant bitrate (CBR) mode
+   * Lower bitrates reduce I/O bottlenecks but may affect quality
+   * Recommended values: 1500-4000 Kbps for 720p, 4000-8000 Kbps for 1080p
+   * Example: `--bitrate 2000` for 2 Mbps constant bitrate
+
+3. **Quality Presets (`--quality-preset`):**
+   * Faster presets use less CPU but produce larger files at the same bitrate
+   * For maximum frame rates, use `ultrafast` or `superfast`
+   * For balanced performance, use `fast` or `medium` (default)
+   * Example: `--quality-preset veryfast` for better performance
+
+### Example Configurations for High Frame Rates
+
+For maximum frame rates on Raspberry Pi 4/5:
+```bash
+# Maximum performance at 720p60
+rpi-lsl-stream --width 1280 --height 720 --fps 60 --codec h264 --bitrate 2000 --quality-preset ultrafast --threaded-writer
+
+# Good performance at 1080p30
+rpi-lsl-stream --width 1920 --height 1080 --fps 30 --codec h264 --bitrate 4000 --quality-preset veryfast --threaded-writer
+```
+
+If hardware-accelerated encoding is not working on your system:
+```bash
+# Fallback to MJPG for compatibility
+rpi-lsl-stream --width 1280 --height 720 --fps 30 --codec mjpg --threaded-writer
+```
+
+### Performance Considerations:
+
+* **Resolution vs. Frame Rate:** Lower resolutions (640x480, 1280x720) allow for higher frame rates
+* **Saving to USB SSD/Flash Drive:** Use the `--output-path` option to save to a fast external drive
+* **Memory/CPU Impact:** Lower resolutions, faster presets, and CBR mode all reduce CPU usage
+* **Monitor Actual FPS:** Check the console output for the actual frame rate being achieved
+* **Advanced:** Edit the video writer queue size with `queue_size_seconds` if you experience drops
+
+## Rolling Buffer and Trigger Functionality
+
+This package includes a rolling buffer system that can be used to capture footage before a trigger event occurs, ensuring you don't miss important events that happened just before recording was initiated.
+
+### How the Rolling Buffer Works
+
+1. When enabled (`--use-buffer`, on by default), the system continuously captures frames but only stores them in a temporary rolling buffer in RAM instead of saving to disk
+2. The buffer maintains a fixed duration of recent frames (e.g., 15 seconds)
+3. When a trigger event occurs, the system:
+   - Saves all frames currently in the buffer (the pre-trigger footage)
+   - Continues recording new frames directly to disk
+4. When a stop command is received, the system:
+   - Finalizes and closes the current video file
+   - Returns to buffer mode, waiting for the next start trigger
+
+### Trigger Methods
+
+There are two ways to trigger recording when in buffer mode:
+
+1. **Manual Trigger:**
+   - Press the 't' key while the preview window is active to START recording
+   - Press the 's' key while the preview window is active to STOP recording
+   - Useful for testing or when monitoring the camera directly
+
+2. **Remote Trigger via ntfy.sh:**
+   - The system monitors the ntfy.sh topic "rpi_camera_trigger" by default
+   - Use the `--ntfy-topic` parameter to specify a different topic
+   - Send notifications with keywords to control recording:
+     - **Start recording**: Include words like "start", "begin", "record", "trigger", or "capture"
+     - **Stop recording**: Include words like "stop", "end", "halt", "finish", or "terminate"
+   - If no keywords are detected, the message is treated as a start command by default
+
+### Example Usage
+
+**Using default settings (400x400, 100fps, ntfy topic "rpi_camera_trigger"):**
+```bash
+rpi-lsl-stream
+```
+
+**Set up a custom buffer size and ntfy topic:**
+```bash
+rpi-lsl-stream --width 1280 --height 720 --fps 30 --buffer-size 20 --ntfy-topic "my_camera_topic"
+```
+
+**Start recording remotely using curl:**
+```bash
+curl -d "start recording" ntfy.sh/raspie_trigger
+```
+
+**Stop recording remotely using curl:**
+```bash
+curl -d "stop recording" ntfy.sh/raspie_trigger
+```
+
+**Trigger with additional details:**
+```bash
+# Start with high priority notification
+curl -H "Title: Motion Detected" -H "Tags: warning,camera" -H "Priority: high" -d "start recording" ntfy.sh/raspie_trigger
+
+# Stop recording
+curl -H "Title: Recording Complete" -d "stop recording" ntfy.sh/raspie_trigger
+```
+
+**Using only manual triggers (disable ntfy):**
+```bash
+rpi-lsl-stream --no-ntfy --show-preview
+```
+Then use 't' to start and 's' to stop recording in the preview window.
+
+### Default Configuration
+
+By default, the system is configured to:
+- Capture at 400x400 resolution and 100fps
+- Use a 20-second rolling buffer
+- Listen for triggers on the "raspie_trigger" ntfy.sh topic
+- Create a new video file each time recording is started/stopped
+- Save files with names like `raspie_video_TIMESTAMP.mkv` and `raspie_audio_TIMESTAMP.wav`
+
+### Buffer Size Considerations
+
+- Higher resolution and frame rate will consume more memory in buffer mode
+- The default buffer size (15 seconds) works well for most setups
+- For high-resolution/high-fps recordings, you may need to reduce the buffer size
+- For Raspberry Pi 4 with 8GB RAM, a 1080p30 buffer can typically hold 20-30 seconds
+- For Raspberry Pi 4 with 4GB RAM, consider using 720p for longer buffers
+
+## Auto-Start Service
+
+The package includes scripts to set up Raspie Capture as a systemd service that starts automatically at boot and can be controlled remotely.
+
+### Setting Up Auto-Start
+
+1. Install the service (requires sudo):
+   ```bash
+   sudo bash raspi-capture-service.sh
+   ```
+   This creates:
+   - A systemd service that starts Raspie Capture on boot
+   - A management script (`raspie-service.sh`) for controlling the service
+   - Uses a 20-second rolling buffer with ntfy.sh triggering
+
+2. (Optional) Apply performance optimizations:
+   ```bash
+   sudo bash raspie-optimize.sh
+   ```
+   This script:
+   - Sets CPU to performance mode
+   - Allocates more memory to the GPU
+   - Creates a RAM disk for temporary files
+   - Disables unnecessary services
+   - Sets process priorities
+
+3. Reboot to start the service:
+   ```bash
+   sudo reboot
+   ```
+
+### Remote Control via ntfy.sh
+
+Once the service is running, you can control recordings from any internet-connected device:
+
+```bash
+# Start recording
+curl -d "start recording" ntfy.sh/raspie_trigger
+
+# Stop recording
+curl -d "stop recording" ntfy.sh/raspie_trigger
+```
+
+You can also use the management script:
+
+```bash
+# Start recording
+./raspie-service.sh trigger
+
+# Stop recording
+./raspie-service.sh stop-recording
+
+# View service status
+./raspie-service.sh status
+
+# View service logs
+./raspie-service.sh logs
+```
+
+For more details, see [QUICKSTART.md](QUICKSTART.md).
+
 ## LSL Stream Details
 
 **Note:** The current implementation streams only the frame number, not the full video frame data. The video is saved locally to a file.
@@ -320,5 +708,85 @@ To convert a video:
     # Example: Specify output filename
     convert-video-rgb input.mkv -o output_rgb_video.mkv 
     ```
+
+## Automatic Startup on Boot
+
+For unattended operation, you can configure the Raspberry Pi to automatically start the camera capture service when it boots up. This allows you to run the system headless and control it solely via ntfy notifications from any internet-connected device.
+
+### Setup Instructions
+
+1. **Install the Service:**
+   Run the provided setup script with sudo:
+   ```bash
+   sudo ./rpi-camera-service.sh
+   ```
+   This script:
+   - Creates a systemd service that runs at startup
+   - Sets up the camera with 400x400 resolution at 100fps
+   - Configures ntfy notifications for start/stop control
+   - Creates a management script for convenient service control
+
+2. **Management:**
+   After installation, you can control the service using the management script:
+   ```bash
+   # Check service status
+   ./camera-service.sh status
+   
+   # Start the service manually
+   ./camera-service.sh start
+   
+   # Stop the service
+   ./camera-service.sh stop
+   
+   # View logs
+   ./camera-service.sh logs
+   
+   # Trigger recording
+   ./camera-service.sh trigger
+   
+   # Stop recording
+   ./camera-service.sh stop-recording
+   ```
+
+3. **Remote Control:**
+   Control recording from any internet-connected device:
+   ```bash
+   # To start recording:
+   curl -d "start recording" ntfy.sh/rpi_camera_trigger
+   
+   # To stop recording:
+   curl -d "stop recording" ntfy.sh/rpi_camera_trigger
+   ```
+   You can also use any ntfy.sh client app on your smartphone or tablet.
+
+4. **Customization:**
+   If you need to change the default parameters (resolution, fps, etc.),
+   edit the service file:
+   ```bash
+   sudo nano /etc/systemd/system/rpi-camera.service
+   ```
+   After making changes, reload and restart the service:
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl restart rpi-camera.service
+   ```
+
+### Monitoring and Troubleshooting
+
+1. **Check Status:**
+   ```bash
+   ./camera-service.sh status
+   ```
+
+2. **View Logs:**
+   ```bash
+   ./camera-service.sh logs
+   ```
+   Press Ctrl+C to exit the log viewer.
+
+3. **Common Issues:**
+   - **Service fails to start:** Check logs for error messages
+   - **Camera not detected:** Ensure camera is connected properly and enabled
+   - **No response to ntfy triggers:** Check internet connection and verify the correct topic name
 
 ## Contributing

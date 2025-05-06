@@ -9,6 +9,7 @@ import os # Added for checking device existence
 import threading # Added for writer thread
 from queue import Queue, Empty, Full # Added for frame buffer queue
 import glob # Added for device detection
+import datetime # Added for timestamp generation
 
 # Attempt to import Picamera2 and set a flag indicating its availability.
 # This allows the code to run on non-Pi systems (using a webcam)
@@ -27,21 +28,39 @@ except ImportError as e:
 # Import pylsl for LabStreamingLayer communication
 from pylsl import StreamInfo, StreamOutlet, local_clock
 
+# Import the buffer trigger system
+from .buffer_trigger import BufferTriggerManager, RollingBuffer, NtfySubscriber
+
+# Try to import psutil for CPU affinity management
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+    print("DEBUG: psutil imported successfully.")
+except ImportError:
+    PSUTIL_AVAILABLE = False
+    print("Warning: psutil library not found. CPU core affinity will not be managed.")
+
 class LSLCameraStreamer:
-    """
-    Handles the initialization of either a Raspberry Pi camera (via picamera2)
-    or a standard USB webcam (via OpenCV), sets up an LSL stream, captures
-    frames continuously, and pushes them with timestamps to the LSL outlet.
-    Video is automatically saved to a timestamped file using a separate thread.
-    """
+    """Captures frames from a Raspberry Pi camera or webcam and streams via LSL."""
     def __init__(self, width=640, height=480, fps=30, pixel_format='RGB888',
-                 stream_name='RaspberryPiCamera', source_id='RPiCam_UniqueID',
+                 stream_name='RaspieVideo', source_id='RaspieCapture_Video',
                  show_preview=False,
                  use_max_settings=False,
                  queue_size_seconds=5,
                  output_path=None,
                  camera_index='auto',
-                 save_video=True):
+                 save_video=True,
+                 codec='auto',
+                 bitrate=0,
+                 quality_preset='medium',
+                 buffer_size_seconds=20,
+                 use_buffer=False,
+                 ntfy_topic=None,
+                 push_to_lsl=True,
+                 threaded_writer=False,
+                 capture_cpu_core=None,
+                 writer_cpu_core=None,
+                 visualizer_cpu_core=None):
         """
         Initializes the streamer configuration and sets up camera and LSL.
 
@@ -59,6 +78,17 @@ class LSLCameraStreamer:
             output_path (str, optional): Directory path to save the video file. Defaults to current directory if None.
             camera_index (str | int): Specific camera to use ('auto', 'pi', or int index). Default 'auto'.
             save_video (bool): Whether to save the video to a file. Default True.
+            codec (str): Preferred video codec ('h264', 'h265', 'mjpg', 'auto'). Default 'auto'.
+            bitrate (int): Constant bitrate in Kbps (0=codec default). Default 0.
+            quality_preset (str): Encoding quality preset (e.g., 'medium', 'fast'). Default 'medium'.
+            buffer_size_seconds (int): Size of the rolling buffer in seconds for pre-trigger recording.
+            use_buffer (bool): Whether to use the rolling buffer for pre-trigger recording.
+            ntfy_topic (str): The ntfy topic to subscribe to for recording triggers.
+            push_to_lsl (bool): Whether to push frames to LSL. Default True.
+            threaded_writer (bool): Whether to use a separate thread for writing frames. Default False.
+            capture_cpu_core (int): Specific CPU core for capture operations. Default None.
+            writer_cpu_core (int): Specific CPU core for writer thread. Default None.
+            visualizer_cpu_core (int): Specific CPU core for visualization. Default None.
         """
         
         # Store configuration parameters
@@ -73,12 +103,28 @@ class LSLCameraStreamer:
         self.show_preview = show_preview 
         self.use_max_settings = use_max_settings
         self.queue_size_seconds = queue_size_seconds
-        self.threaded_writer = True # <<< ALWAYS True now
+        self.threaded_writer = threaded_writer # <<< ALWAYS True now
         self.auto_output_filename = None
         self.video_writer = None
         self.output_path = output_path # Store the output path
         self.requested_camera_index = camera_index # Store requested index
         self.save_video = save_video # <<< Store flag
+        self.codec = codec.lower()  # Store preferred codec
+        self.bitrate = bitrate      # Store bitrate setting
+        self.quality_preset = quality_preset  # Store quality preset
+        
+        # CPU core assignments for threads
+        self.capture_cpu_core = capture_cpu_core
+        self.writer_cpu_core = writer_cpu_core
+        self.visualizer_cpu_core = visualizer_cpu_core
+        
+        # Buffer and trigger configuration
+        self.buffer_size_seconds = buffer_size_seconds
+        self.use_buffer = use_buffer
+        self.ntfy_topic = ntfy_topic
+        self.buffer_trigger_manager = None
+        self.waiting_for_trigger = use_buffer  # Start in waiting mode if buffer enabled
+        self.recording_triggered = False       # Flag to track if recording was triggered
 
         # Internal state variables that get set during init
         self.width = width # Actual width used
@@ -106,8 +152,14 @@ class LSLCameraStreamer:
         try:
             self._initialize_camera()
             self._setup_lsl()
-            if self.save_video:
-                self._initialize_video_writer() # Only init writer if saving
+            
+            # Initialize buffer trigger manager if enabled
+            if self.use_buffer:
+                self._initialize_buffer_trigger()
+            
+            if self.save_video and not self.use_buffer:
+                # If using a buffer, we'll initialize video writer only after trigger
+                self._initialize_video_writer()
             
             # Create preview window if requested (do this after knowing dimensions)
             if self.show_preview:
@@ -419,99 +471,23 @@ class LSLCameraStreamer:
             return False
 
     def _initialize_video_writer(self):
-        """Initializes the OpenCV VideoWriter and the frame queue."""
-        # <<< THIS WHOLE FUNCTION IS NOW CONDITIONALLY CALLED
-        timestamp_str = time.strftime("%Y%m%d_%H%M%S")
-        base_filename = f"lsl_capture_{timestamp_str}.mkv" # Reverted extension to .mkv
-
-        # Construct the full output path
-        if self.output_path and os.path.isdir(self.output_path):
-            self.auto_output_filename = os.path.join(self.output_path, base_filename)
-            print(f"Video will be saved to: {self.auto_output_filename}")
+        """Initialize the OpenCV VideoWriter for saving frames to a file."""
+        if not self.save_video:
+            print("Video saving is disabled.")
+            return
+            
+        # Create output directory if it doesn't exist
+        if self.output_path:
+            os.makedirs(self.output_path, exist_ok=True)
+            
+        # Generate a timestamped filename for the video file
+        timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        video_file = f"raspie_video_{timestamp_str}.mkv"
+        
+        if self.output_path:
+            self.output_file = os.path.join(self.output_path, video_file)
         else:
-            if self.output_path:
-                print(f"Warning: Provided output path '{self.output_path}' is not a valid directory. Saving to current directory instead.")
-            self.auto_output_filename = base_filename # Save in current directory
-            print(f"Video will be saved to current directory: {self.auto_output_filename}")
-
-        frame_size = (self.width, self.height)
-
-        # --- Define Codecs to Try (Priority Order) ---
-        codecs_to_try = [
-            ("H.265 (HEVC)", 'h265'),
-            ("H.265 (HEVC)", 'hevc'),
-            ("H.264 (AVC)",  'h264'),
-            ("H.264 (AVC)",  'X264'),
-            ("H.264 (AVC)",  'avc1')
-        ]
-        fallback_codec = ("MJPG", 'MJPG')
-        container_name = "MKV" # Reverted container name
-        
-        # Variables to store the successfully chosen codec
-        chosen_codec_name = None
-        chosen_fourcc = None
-        
-        # --- Attempt Preferred Codecs --- 
-        print(f"Attempting to find a working codec for {container_name} container...")
-        fps = self.actual_fps # Get fps for the temp writer test
-        if fps <= 0: fps = 30.0 # Use fallback fps for test if needed
-        for name, code in codecs_to_try:
-            print(f"  Trying codec: {name} (FourCC: {code})...")
-            fourcc = cv2.VideoWriter_fourcc(*code)
-            try:
-                # Use a temporary filename for codec testing to avoid zero-byte files if it fails immediately
-                temp_filename = os.path.join(self.output_path if self.output_path and os.path.isdir(self.output_path) else ".", f"_codec_test_{code}.{container_name.lower()}")
-                temp_writer = cv2.VideoWriter(temp_filename, fourcc, float(fps), frame_size)
-                if temp_writer is not None and temp_writer.isOpened():
-                    print(f"    Success! Codec {name} seems available.")
-                    chosen_codec_name = name
-                    chosen_fourcc = fourcc
-                    temp_writer.release()
-                    # Clean up the temp file
-                    try: os.remove(temp_filename) 
-                    except OSError: pass
-                    break 
-                else:
-                    print(f"    Codec {name} failed to open writer.")
-                    if temp_writer: temp_writer.release()
-                    # Clean up the temp file if it exists
-                    try: os.remove(temp_filename) 
-                    except OSError: pass
-            except Exception as e_codec:
-                 print(f"    Error initializing writer with codec {name}: {e_codec}")
-                 # Clean up the temp file if it exists
-                 try: os.remove(temp_filename) 
-                 except OSError: pass
-        
-        # --- Use Fallback if No Preferred Codec Worked ---
-        if chosen_codec_name is None:
-            print(f"No preferred codecs (H.265/H.264) worked. Falling back to {fallback_codec[0]}." )
-            # No warning needed for MJPG in MKV
-            chosen_codec_name = fallback_codec[0]
-            chosen_fourcc = cv2.VideoWriter_fourcc(*fallback_codec[1])
-        # ---
-
-        # --- FPS Validation and Queue Setup --- 
-        fps = self.actual_fps 
-        queue_max_size = max(10, int(fps * self.queue_size_seconds))
-        print(f"Initializing frame queue (max size: {queue_max_size})") # Always threaded now
-        self.frame_queue = Queue(maxsize=queue_max_size)
-        # ---
-
-        # --- Initialize Final Video Writer with Chosen Codec ---
-        print(f"Initializing final video writer: {self.auto_output_filename}, Chosen Codec: {chosen_codec_name} (in {container_name}), Size: {frame_size}, FPS: {fps:.2f}")
-        try:
-            self.video_writer = cv2.VideoWriter(self.auto_output_filename, chosen_fourcc, float(fps), frame_size)
-            if not self.video_writer.isOpened():
-                # This error is less likely now if the fallback worked, but keep it as a safeguard
-                print(f"Error: Could not open final VideoWriter for file '{self.auto_output_filename}' even with chosen codec {chosen_codec_name}.")
-                self.video_writer = None
-            else:
-                print("Final video writer initialized successfully.")
-        except Exception as e:
-            print(f"Error initializing final VideoWriter: {e}")
-            traceback.print_exc()
-            self.video_writer = None
+            self.output_file = video_file
 
     def _setup_lsl(self):
         """Configures and creates the LSL StreamInfo and StreamOutlet for Frame Numbers."""
@@ -535,7 +511,7 @@ class LSLCameraStreamer:
 
         # Add metadata
         desc = self.info.desc()
-        desc.append_child_value("acquisition_software", "RaspberryPiLSLStream")
+        desc.append_child_value("acquisition_software", "RaspieCapture")
         desc.append_child_value("camera_model", self.camera_model)
         desc.append_child_value("source_type", "PiCamera" if self.is_picamera else "Webcam")
         
@@ -556,6 +532,10 @@ class LSLCameraStreamer:
     def _writer_loop(self):
         """Method executed by the writer thread to save frames from the queue."""
         print("Writer thread started.")
+        
+        # Set CPU affinity if requested and available
+        self._set_thread_affinity("writer thread", self.writer_cpu_core)
+        
         frame_write_count = 0
         while not self.stop_writer_event.is_set() or not self.frame_queue.empty():
             try:
@@ -582,6 +562,18 @@ class LSLCameraStreamer:
         self.frames_written_count = frame_write_count
         print(f"Writer thread stopping. Total frames written by this thread: {self.frames_written_count}")
 
+    def _set_thread_affinity(self, thread_name, cpu_core):
+        """Set CPU affinity for the current thread if psutil is available."""
+        if not PSUTIL_AVAILABLE or cpu_core is None:
+            return
+            
+        try:
+            p = psutil.Process()
+            p.cpu_affinity([cpu_core])
+            print(f"Set {thread_name} affinity to core {cpu_core}")
+        except Exception as e:
+            print(f"Failed to set CPU affinity for {thread_name}: {e}")
+
     def start(self):
         """Starts the camera capture process and optionally the writer thread."""
         if self._is_running:
@@ -589,7 +581,8 @@ class LSLCameraStreamer:
             return
             
         # --- Start Writer Thread (Conditional) ---
-        if self.save_video:
+        if self.save_video and not self.use_buffer:
+            # If using buffer, we'll start the writer only after trigger
             if self.video_writer is not None and self.video_writer.isOpened():
                 if self.writer_thread is None:
                     print("Starting writer thread...")
@@ -601,6 +594,11 @@ class LSLCameraStreamer:
             else:
                 print("Warning: Video writer not ready. Cannot start writer thread.")
         # ---
+        
+        # Start the buffer trigger manager if enabled
+        if self.use_buffer and self.buffer_trigger_manager:
+            self.buffer_trigger_manager.start()
+            print("Started buffer trigger manager")
 
         # --- Start Camera ---
         camera_started = False
@@ -618,7 +616,11 @@ class LSLCameraStreamer:
             camera_started = True
         
         if camera_started:
-             self._is_running = True
+            # Set CPU affinity for capture operations if specified
+            if PSUTIL_AVAILABLE and self.capture_cpu_core is not None:
+                self._set_thread_affinity("capture operations", self.capture_cpu_core)
+             
+            self._is_running = True
         else:
             print("Error: Camera hardware could not be started. Stopping dependent threads.")
             # Stop writer thread if it was started
@@ -627,7 +629,6 @@ class LSLCameraStreamer:
                 self.writer_thread.join(timeout=1.0)
                 self.writer_thread = None
             raise RuntimeError("Failed to start camera hardware.")
-
 
     def stop(self):
         """Stops the camera capture, writer thread (if active), and releases resources."""
@@ -638,6 +639,11 @@ class LSLCameraStreamer:
              return 
              
         print("Stopping stream and cleaning up resources...")
+        
+        # Stop the buffer trigger manager if enabled
+        if self.use_buffer and self.buffer_trigger_manager:
+            print("Stopping buffer trigger manager...")
+            self.buffer_trigger_manager.stop()
         
         # --- Stop Camera First ---
         # This prevents more frames being added to the queue while stopping
@@ -704,14 +710,14 @@ class LSLCameraStreamer:
                   print(f"Warning: Error checking if VideoWriter is open before release: {e_check}")
             
              if is_opened:
-                 print(f"Releasing video writer ('{self.auto_output_filename}')...")
+                 print(f"Releasing video writer ('{self.output_file}')...")
                  try:
                      self.video_writer.release()
                      print("Video writer released.")
                  except Exception as e:
                      print(f"Error releasing video writer: {e}") # Still might segfault here if internal state is bad
              else:
-                  print(f"Video writer ('{self.auto_output_filename}') was not considered open. Skipping release call.")
+                  print(f"Video writer ('{self.output_file}') was not considered open. Skipping release call.")
              self.video_writer = None # Set to None regardless
             
         # --- Destroy Preview Window ---
@@ -801,39 +807,94 @@ class LSLCameraStreamer:
             current_frame_index = self.frame_count
             self.frame_count += 1
 
-            # --- Write Frame (Conditional: Queue Only) ---
-            if self.save_video:
-                 if self.video_writer is not None:
-                     if self.frame_queue is not None:
-                          try:
-                              # Important: Using a zero-copy view. Downstream must not modify in-place.
-                              self.frame_queue.put_nowait(frame_data)
-                          except Full:
-                              print("Warning: Frame queue full. Dropping frame.")
-                              self.frames_dropped_count += 1 
-                          except Exception as e:
-                               print(f"Error putting frame into queue: {e}")
-                     else:
-                          print("Error: Video saving enabled but queue is None.")
-                 # else: # Log if writer is none? Redundant if init fails cleanly.
-
-            # --- Push Frame Number to LSL (Always done if outlet exists) ---
-            if self.outlet is not None:
-                 try:
-                     self.outlet.push_sample([current_frame_index], timestamp)
-                 except Exception as e:
-                     print(f"Error pushing frame number ({current_frame_index}) to LSL directly: {e}")
-            # else:
-            #      print("Warning: LSL Outlet is None. Cannot push sample.") # Logged during setup
+            # --- Process Frame Based on Current State ---
             
-            # --- Show Preview Frame ---
-            if self.show_preview and hasattr(self, 'preview_window_name'):
-                 try:
-                     if cv2.getWindowProperty(self.preview_window_name, cv2.WND_PROP_VISIBLE) >= 1:
-                          cv2.imshow(self.preview_window_name, frame_data)
-                          key = cv2.waitKey(1)
-                 except Exception as e:
-                      pass
+            # If using buffer and waiting for trigger, add to buffer only
+            if self.use_buffer and self.waiting_for_trigger:
+                if self.buffer_trigger_manager:
+                    self.buffer_trigger_manager.add_frame(frame_data, timestamp)
+                    
+                # Still show preview even in buffer mode
+                if self.show_preview and hasattr(self, 'preview_window_name'):
+                    try:
+                        # Set visualizer core affinity if showing preview
+                        if PSUTIL_AVAILABLE and self.visualizer_cpu_core is not None and current_frame_index == 0:
+                            self._set_thread_affinity("visualization", self.visualizer_cpu_core)
+                            
+                        if cv2.getWindowProperty(self.preview_window_name, cv2.WND_PROP_VISIBLE) >= 1:
+                            cv2.imshow(self.preview_window_name, frame_data)
+                            key = cv2.waitKey(1)
+                            
+                            # Check if 't' key pressed for manual trigger
+                            if key == ord('t'):
+                                print("Manual trigger activated by 't' key")
+                                if self.buffer_trigger_manager:
+                                    self.buffer_trigger_manager.trigger_manually()
+                            # Check if 's' key pressed for manual stop
+                            elif key == ord('s'):
+                                print("Manual stop activated by 's' key")
+                                if self.buffer_trigger_manager and self.recording_triggered:
+                                    self.buffer_trigger_manager.stop_manually()
+                    except Exception as e:
+                        pass
+                
+                # Still push to LSL even in buffer mode
+                if self.outlet is not None:
+                    try:
+                        self.outlet.push_sample([current_frame_index], timestamp)
+                    except Exception as e:
+                        print(f"Error pushing frame number ({current_frame_index}) to LSL: {e}")
+            
+            # Normal processing if recording active or not using buffer
+            else:
+                # --- Write Frame (Conditional: Queue Only) ---
+                if self.save_video:
+                     if self.video_writer is not None:
+                         if self.frame_queue is not None:
+                              try:
+                                  # Important: Using a zero-copy view. Downstream must not modify in-place.
+                                  self.frame_queue.put_nowait(frame_data)
+                              except Full:
+                                  print("Warning: Frame queue full. Dropping frame.")
+                                  self.frames_dropped_count += 1 
+                              except Exception as e:
+                                   print(f"Error putting frame into queue: {e}")
+                         else:
+                              print("Error: Video saving enabled but queue is None.")
+                     # else: # Log if writer is none? Redundant if init fails cleanly.
+
+                # --- Push Frame Number to LSL (Always done if outlet exists) ---
+                if self.outlet is not None:
+                     try:
+                         self.outlet.push_sample([current_frame_index], timestamp)
+                     except Exception as e:
+                         print(f"Error pushing frame number ({current_frame_index}) to LSL directly: {e}")
+                # else:
+                #      print("Warning: LSL Outlet is None. Cannot push sample.") # Logged during setup
+                
+                # --- Show Preview Frame ---
+                if self.show_preview and hasattr(self, 'preview_window_name'):
+                     try:
+                         # Set visualizer core affinity if showing preview
+                         if PSUTIL_AVAILABLE and self.visualizer_cpu_core is not None and current_frame_index == 0:
+                             self._set_thread_affinity("visualization", self.visualizer_cpu_core)
+                             
+                         if cv2.getWindowProperty(self.preview_window_name, cv2.WND_PROP_VISIBLE) >= 1:
+                              cv2.imshow(self.preview_window_name, frame_data)
+                              key = cv2.waitKey(1)
+                              
+                              # Check if 't' key pressed for manual trigger while in buffer mode
+                              if self.use_buffer and key == ord('t'):
+                                  print("Manual trigger activated by 't' key")
+                                  if self.buffer_trigger_manager:
+                                      self.buffer_trigger_manager.trigger_manually()
+                              # Check if 's' key pressed for manual stop
+                              elif self.use_buffer and key == ord('s'):
+                                  print("Manual stop activated by 's' key")
+                                  if self.buffer_trigger_manager and self.recording_triggered:
+                                      self.buffer_trigger_manager.stop_manually()
+                     except Exception as e:
+                          pass
             
             # Return the numpy array view (not the buffer object)
             return frame_data, timestamp
@@ -855,11 +916,174 @@ class LSLCameraStreamer:
                 except Exception as e_release:
                     print(f"Error releasing picamera2 buffer: {e_release}")
 
+    def _initialize_buffer_trigger(self):
+        """Initialize the buffer trigger system for pre-trigger recording."""
+        print(f"Initializing buffer trigger system with {self.buffer_size_seconds}s buffer")
+        
+        # Create buffer trigger manager with callback to our trigger handler
+        self.buffer_trigger_manager = BufferTriggerManager(
+            buffer_size_seconds=self.buffer_size_seconds,
+            ntfy_topic=self.ntfy_topic,
+            callback=self._handle_recording_trigger,
+            stop_callback=self._handle_recording_stop
+        )
+        
+        print("Buffer trigger system initialized")
+        if self.ntfy_topic:
+            print(f"Waiting for trigger notification on ntfy topic: {self.ntfy_topic}")
+            print(f"To start recording: curl -d \"start recording\" ntfy.sh/{self.ntfy_topic}")
+            print(f"To stop recording: curl -d \"stop recording\" ntfy.sh/{self.ntfy_topic}")
+        else:
+            print("No ntfy topic specified. Use manual triggering.")
+            
+    def _handle_recording_trigger(self, buffer_frames, trigger_message):
+        """
+        Handle recording trigger from ntfy notification.
+        
+        Args:
+            buffer_frames: List of (frame, timestamp) tuples from the rolling buffer
+            trigger_message: The notification message that triggered recording
+        """
+        if self.recording_triggered:
+            print("Recording already triggered - ignoring duplicate trigger")
+            return
+            
+        print(f"Recording triggered by notification: {trigger_message.get('title', 'No title')}")
+        print(f"Writing {len(buffer_frames)} frames from buffer")
+        
+        # Set flag to indicate recording has been triggered
+        self.recording_triggered = True
+        self.waiting_for_trigger = False
+        
+        # Initialize the video writer now that we're recording
+        if self.save_video and self.video_writer is None:
+            self._initialize_video_writer()
+            
+            # Start the writer thread
+            if self.video_writer is not None and self.video_writer.isOpened():
+                if self.writer_thread is None:
+                    print("Starting writer thread...")
+                    self.stop_writer_event.clear()
+                    self.writer_thread = threading.Thread(target=self._writer_loop, daemon=True)
+                    self.writer_thread.start()
+                    
+        # Process the buffer frames (if writer is ready)
+        if self.save_video and self.video_writer is not None:
+            try:
+                # Write the buffer frames to the video file
+                for frame, timestamp in buffer_frames:
+                    try:
+                        self.frame_queue.put_nowait(frame)
+                    except Full:
+                        print("Warning: Frame queue full when writing buffer. Dropping frame.")
+                        self.frames_dropped_count += 1
+                    except Exception as e:
+                        print(f"Error queuing buffer frame: {e}")
+                
+                print(f"Buffer frames added to write queue")
+            except Exception as e:
+                print(f"Error processing buffer frames: {e}")
+
+    def _handle_recording_stop(self, stop_message):
+        """
+        Handle stop recording notification from ntfy.
+        
+        Args:
+            stop_message: The notification message that triggered the stop
+        """
+        if not self.recording_triggered:
+            print("Recording not active - ignoring stop command")
+            return
+            
+        print(f"Recording stop triggered by notification: {stop_message.get('title', 'No title')}")
+        
+        # We'll create a new video file when the next start trigger arrives
+        # by just switching back to waiting mode, but keeping everything running
+        self.recording_triggered = False
+        self.waiting_for_trigger = True
+        
+        # Flush the current video file by releasing the writer
+        if self.save_video and self.video_writer is not None:
+            # First stop the writer thread
+            if self.writer_thread is not None:
+                print("Stopping writer thread...")
+                self.stop_writer_event.set()
+                
+                # Wait for the writer thread to finish with a reasonable timeout
+                print("Waiting for writer thread to finish...")
+                self.writer_thread.join(timeout=10.0)
+                
+                if self.writer_thread.is_alive():
+                    print("Warning: Writer thread did not terminate within timeout")
+                else:
+                    print("Writer thread stopped")
+                    
+                self.writer_thread = None
+                
+            # Now release the video writer
+            if self.video_writer is not None:
+                print(f"Releasing video writer for file: {self.output_file}")
+                try:
+                    self.video_writer.release()
+                    print("Video writer released")
+                except Exception as e:
+                    print(f"Error releasing video writer: {e}")
+                    
+                self.video_writer = None
+                self.auto_output_filename = None
+                
+        print("Waiting for next trigger notification...")
+        
+        # Clear the buffer to start fresh
+        if self.buffer_trigger_manager and self.buffer_trigger_manager.rolling_buffer:
+            self.buffer_trigger_manager.rolling_buffer.clear()
+            print("Rolling buffer cleared")
+            
+    def manual_trigger(self):
+        """Manually trigger recording if using buffer mode."""
+        if not self.use_buffer or not self.buffer_trigger_manager:
+            print("Manual trigger only available in buffer mode")
+            return False
+            
+        if self.recording_triggered:
+            print("Recording already triggered")
+            return False
+            
+        print("Manually triggering recording")
+        self.buffer_trigger_manager.trigger_manually()
+        return True
+        
+    def manual_stop(self):
+        """Manually stop recording if using buffer mode."""
+        if not self.use_buffer or not self.buffer_trigger_manager:
+            print("Manual stop only available in buffer mode")
+            return False
+            
+        if not self.recording_triggered:
+            print("Recording not active")
+            return False
+            
+        print("Manually stopping recording")
+        self.buffer_trigger_manager.stop_manually()
+        return True
+
     def get_info(self):
         """Returns a dictionary containing the current stream configuration and status."""
         qsize = -1 # Indicate queue not applicable if not threaded
         if self.save_video and self.frame_queue is not None:
             qsize = self.frame_queue.qsize()
+        
+        buffer_info = {}
+        if self.use_buffer and self.buffer_trigger_manager:
+            buffer_size = self.buffer_trigger_manager.rolling_buffer.get_buffer_size()
+            buffer_duration = self.buffer_trigger_manager.rolling_buffer.get_buffer_duration()
+            buffer_info = {
+                "buffer_size_frames": buffer_size,
+                "buffer_duration_seconds": buffer_duration,
+                "waiting_for_trigger": self.waiting_for_trigger,
+                "recording_triggered": self.recording_triggered,
+                "ntfy_topic": self.ntfy_topic
+            }
         
         return {
             "width": self.width,
@@ -874,7 +1098,12 @@ class LSLCameraStreamer:
             "is_running": self._is_running,
             "auto_output_filename": self.auto_output_filename,
             "threaded_writer_enabled": self.save_video,
-            "frame_queue_size": qsize
+            "frame_queue_size": qsize,
+            "buffer_mode": self.use_buffer,
+            "capture_cpu_core": self.capture_cpu_core,
+            "writer_cpu_core": self.writer_cpu_core,
+            "visualizer_cpu_core": self.visualizer_cpu_core,
+            **buffer_info
         }
 
     def get_frame_count(self):
