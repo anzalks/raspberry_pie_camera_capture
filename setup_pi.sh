@@ -231,23 +231,170 @@ else
   fi
 fi
 
+# --- Automatic Service Installation ---
+echo "Installing camera capture service to start automatically at boot..."
+
+# Check if the service file already exists
+if [ -f "/etc/systemd/system/raspie-capture.service" ]; then
+    echo "Service file already exists. Reinstalling..."
+    # Stop the service if it's running
+    systemctl stop raspie-capture.service 2>/dev/null || true
+fi
+
+# Use the raspie-capture-service.sh script if it exists
+if [ -f "$PROJECT_DIR/raspie-capture-service.sh" ]; then
+    echo "Running service installation script..."
+    bash "$PROJECT_DIR/raspie-capture-service.sh"
+else
+    echo "WARNING: raspie-capture-service.sh not found. Creating service directly..."
+    
+    # Create the systemd service file
+    cat << EOF > "/etc/systemd/system/raspie-capture.service"
+[Unit]
+Description=Raspberry Pi Audio/Video Capture Service
+After=network.target
+
+[Service]
+Type=simple
+User=$SUDO_USER
+WorkingDirectory=$PROJECT_DIR
+ExecStart=$PROJECT_DIR/$VENV_DIR/bin/rpi-lsl-stream --width 400 --height 400 --fps 100 --codec h264 --bitrate 4000 --quality-preset ultrafast --ntfy-topic raspie_trigger --buffer-size 20 --enable-audio --sample-rate 48000 --bit-depth 16 --channels 1
+Environment="PATH=$PROJECT_DIR/$VENV_DIR/bin:/usr/local/bin:/usr/bin:/bin"
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # Set appropriate permissions
+    chmod 644 "/etc/systemd/system/raspie-capture.service"
+
+    # Create management script
+    cat << 'EOF' > "$PROJECT_DIR/raspie-service.sh"
+#!/bin/bash
+
+# Define colors for output
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m' # No Color
+
+# Function to check if the service is running
+check_status() {
+    status=$(systemctl is-active raspie-capture.service)
+    if [ "$status" = "active" ]; then
+        echo -e "${GREEN}Capture service is running.${NC}"
+    else
+        echo -e "${RED}Capture service is not running.${NC}"
+    fi
+    
+    # Show detailed status
+    echo -e "${YELLOW}Detailed status:${NC}"
+    systemctl status raspie-capture.service
+}
+
+# Main command processing
+case "$1" in
+    start)
+        echo -e "${GREEN}Starting capture service...${NC}"
+        sudo systemctl start raspie-capture.service
+        check_status
+        ;;
+    stop)
+        echo -e "${YELLOW}Stopping capture service...${NC}"
+        sudo systemctl stop raspie-capture.service
+        check_status
+        ;;
+    restart)
+        echo -e "${YELLOW}Restarting capture service...${NC}"
+        sudo systemctl restart raspie-capture.service
+        check_status
+        ;;
+    status)
+        check_status
+        ;;
+    logs)
+        echo -e "${GREEN}Showing logs:${NC}"
+        sudo journalctl -u raspie-capture.service -f
+        ;;
+    enable)
+        echo -e "${GREEN}Enabling capture service to start on boot...${NC}"
+        sudo systemctl enable raspie-capture.service
+        echo -e "${GREEN}Service will now start automatically on boot.${NC}"
+        ;;
+    disable)
+        echo -e "${YELLOW}Disabling capture service from starting on boot...${NC}"
+        sudo systemctl disable raspie-capture.service
+        echo -e "${YELLOW}Service will no longer start automatically on boot.${NC}"
+        ;;
+    trigger)
+        echo -e "${GREEN}Sending start trigger notification...${NC}"
+        ntfy_topic="raspie_trigger"
+        curl -d "start recording" ntfy.sh/$ntfy_topic
+        echo -e "${GREEN}Trigger sent. Audio/video capture should start recording.${NC}"
+        ;;
+    stop-recording)
+        echo -e "${YELLOW}Sending stop recording notification...${NC}"
+        ntfy_topic="raspie_trigger"
+        curl -d "stop recording" ntfy.sh/$ntfy_topic
+        echo -e "${YELLOW}Stop signal sent. Audio/video capture should stop recording.${NC}"
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status|logs|enable|disable|trigger|stop-recording}"
+        exit 1
+        ;;
+esac
+
+exit 0
+EOF
+
+    # Make management script executable
+    chmod +x "$PROJECT_DIR/raspie-service.sh"
+    chown $SUDO_USER:$SUDO_USER "$PROJECT_DIR/raspie-service.sh"
+    
+    # Enable and start the service
+    echo "Enabling the service to start at boot..."
+    systemctl daemon-reload
+    systemctl enable raspie-capture.service
+fi
+
+# Start the service immediately
+echo "Starting the service now..."
+systemctl start raspie-capture.service
+
+# Apply optional performance optimizations
+echo "Applying performance optimizations..."
+if [ -f "$PROJECT_DIR/raspie-optimize.sh" ]; then
+    bash "$PROJECT_DIR/raspie-optimize.sh"
+else
+    echo "WARNING: Performance optimization script not found. Skipping optimizations."
+fi
+
 # --- Camera Enablement Reminder --- 
-# Enabling the camera interface via script is complex and depends on OS version.
-# It's often SAFER to do this manually via 'sudo raspi-config' -> Interface Options -> Camera.
-# Ensure the LEGACY camera interface is DISABLED if using picamera2/libcamera.
-
-
 echo "-----------------------------------------------------" 
-echo "System dependency installation process finished."
+echo "Installation Complete! System is now configured to:"
 echo ""
-echo "Next Steps:"
-echo "1. Ensure the camera is ENABLED using 'sudo raspi-config'" 
-echo "   (Interface Options -> Camera -> Enable, and ensure Legacy Camera is DISABLED)."
-echo "2. REBOOT the Raspberry Pi if you changed camera settings: sudo reboot"
-echo "3. Activate the Python virtual environment created in this directory:"
-echo "   source .venv/bin/activate"
-echo "4. You can now run the command:"
-echo "   rpi-lsl-stream --help"
-echo "-----------------------------------------------------"
-
-exit 0 
+echo "1. Stream video from your Raspberry Pi camera"
+echo "2. Start automatically on boot"
+echo "3. Accept recording triggers via ntfy.sh"
+echo ""
+echo "Current Service Status:"
+systemctl status raspie-capture.service --no-pager
+echo ""
+echo "IMPORTANT: Ensure the camera is ENABLED using 'sudo raspi-config'" 
+echo "(Interface Options -> Camera -> Enable, and ensure Legacy Camera is DISABLED)."
+echo ""
+echo "Control Commands:"
+echo "- Start recording:   ./raspie-service.sh trigger"
+echo "- Stop recording:    ./raspie-service.sh stop-recording"
+echo "- Check status:      ./raspie-service.sh status"
+echo "- View logs:         ./raspie-service.sh logs"
+echo ""
+echo "Remote Trigger (from any device):"
+echo "curl -d \"start recording\" ntfy.sh/raspie_trigger"
+echo "curl -d \"stop recording\" ntfy.sh/raspie_trigger"
+echo ""
+echo "A system reboot is recommended if you changed camera settings:"
+echo "sudo reboot"
+echo "-----------------------------------------------------" 
