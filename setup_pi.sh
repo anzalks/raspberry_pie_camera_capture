@@ -12,7 +12,7 @@
 # --- Error Handling --- 
 set -e # Exit immediately if a command exits with a non-zero status.
 
-# --- Check if running as root --- 
+# --- Check if running as root ---
 if [ "$(id -u)" -ne 0 ]; then
   echo "This script must be run as root (use sudo). Exiting." >&2
   exit 1
