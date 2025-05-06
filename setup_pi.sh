@@ -258,8 +258,10 @@ After=network.target
 Type=simple
 User=$SUDO_USER
 WorkingDirectory=$PROJECT_DIR
-ExecStart=$PROJECT_DIR/$VENV_DIR/bin/rpi-lsl-stream --width 400 --height 400 --fps 100 --codec h264 --bitrate 4000 --quality-preset ultrafast --ntfy-topic raspie_trigger --buffer-size 20 --enable-audio --sample-rate 48000 --bit-depth 16 --channels 1
+ExecStart=$PROJECT_DIR/$VENV_DIR/bin/rpi-lsl-stream --width 400 --height 400 --fps 100 --codec h264 --bitrate 4000 --quality-preset ultrafast --ntfy-topic raspie_trigger --buffer-size 20 --enable-audio --sample-rate 48000 --bit-depth 16 --channels 1 --verbose --output-path /home/$SUDO_USER/raspie_recordings/\$(date +\%Y-\%m-\%d) --video-folder videos --audio-folder audio
 Environment="PATH=$PROJECT_DIR/$VENV_DIR/bin:/usr/local/bin:/usr/bin:/bin"
+StandardOutput=journal+console
+StandardError=journal+console
 Restart=on-failure
 RestartSec=5s
 
@@ -361,6 +363,14 @@ fi
 
 # Start the service immediately
 echo "Starting the service now..."
+
+# Create the base recordings directory
+echo "Creating base recordings directory..."
+RECORDINGS_DIR="/home/$SUDO_USER/raspie_recordings"
+mkdir -p "$RECORDINGS_DIR"
+chown $SUDO_USER:$SUDO_USER "$RECORDINGS_DIR"
+echo "Recordings will be saved to $RECORDINGS_DIR/YYYY-MM-DD/{videos|audio}/"
+
 systemctl start raspie-capture.service
 
 # Apply optional performance optimizations
@@ -390,6 +400,12 @@ echo "- Start recording:   ./raspie-service.sh trigger"
 echo "- Stop recording:    ./raspie-service.sh stop-recording"
 echo "- Check status:      ./raspie-service.sh status"
 echo "- View logs:         ./raspie-service.sh logs"
+echo "- Live monitoring:   ./watch-raspie.sh"
+echo ""
+echo "File Storage:"
+echo "- All recordings are automatically organized by date"
+echo "- Videos saved to: ~/raspie_recordings/YYYY-MM-DD/videos/"
+echo "- Audio saved to:  ~/raspie_recordings/YYYY-MM-DD/audio/"
 echo ""
 echo "Remote Trigger (from any device):"
 echo "curl -d \"start recording\" ntfy.sh/raspie_trigger"
@@ -398,3 +414,39 @@ echo ""
 echo "A system reboot is recommended if you changed camera settings:"
 echo "sudo reboot"
 echo "-----------------------------------------------------" 
+
+# Create a convenience script for viewing live output
+cat << 'EOF' > "$PROJECT_DIR/watch-raspie.sh"
+#!/bin/bash
+# Script to monitor Raspie Capture service in real-time
+
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+echo -e "${GREEN}=== Raspie Capture Live Monitor ===${NC}"
+echo -e "${YELLOW}Press Ctrl+C to exit${NC}"
+echo
+
+# Show current recording folders
+TODAY=$(date +%Y-%m-%d)
+RECORDINGS_DIR="$HOME/raspie_recordings/$TODAY"
+if [ -d "$RECORDINGS_DIR" ]; then
+    echo -e "${CYAN}Today's recordings (${TODAY}):${NC}"
+    find "$RECORDINGS_DIR" -type f | sort
+    echo
+else
+    echo -e "${YELLOW}No recordings yet today.${NC}"
+    echo
+fi
+
+# Start showing live logs with timestamps
+echo -e "${GREEN}Live service output:${NC}"
+sudo journalctl -u raspie-capture.service -f -o cat --output-fields=MESSAGE
+
+EOF
+
+# Make the script executable
+chmod +x "$PROJECT_DIR/watch-raspie.sh"
+chown $SUDO_USER:$SUDO_USER "$PROJECT_DIR/watch-raspie.sh" 

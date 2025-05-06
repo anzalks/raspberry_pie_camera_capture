@@ -199,8 +199,8 @@ class LSLCameraStreamer:
             print("Explicitly trying PiCamera...")
             if not picam2_usable:
                  raise RuntimeError("PiCamera requested ('--camera-index pi') but picamera2 library not available or not on Linux.")
-            if self._initialize_picamera():
-                initialized = True
+                if self._initialize_picamera():
+                    initialized = True
             else:
                  raise RuntimeError("Failed to initialize explicitly requested PiCamera.")
 
@@ -209,22 +209,22 @@ class LSLCameraStreamer:
             print("Using automatic camera detection ('auto')...")
             if picam2_usable:
                 print("picamera2 library available. Prioritizing PiCamera...")
-                if self._initialize_picamera():
-                    initialized = True
-                else:
+            if self._initialize_picamera():
+                initialized = True
+            else:
                     print("PiCamera initialization failed. Falling back to detecting and trying Webcams...")
                     # Try webcams only if PiCamera fails
                     webcam_indices_to_try = self._detect_webcam_indices(is_linux)
                     for index in webcam_indices_to_try:
                         if self._initialize_webcam(index):
-                            initialized = True
+                    initialized = True
                             break # Stop on first success
             else:
                 print("picamera2 library not available or not Linux. Detecting and trying Webcams...")
                 webcam_indices_to_try = self._detect_webcam_indices(is_linux)
-                for index in webcam_indices_to_try:
-                    if self._initialize_webcam(index):
-                        initialized = True
+            for index in webcam_indices_to_try:
+                if self._initialize_webcam(index):
+                    initialized = True
                         break # Stop on first success
         else:
              # Invalid string for requested_index
@@ -436,7 +436,7 @@ class LSLCameraStreamer:
                 main={"size": (self.requested_width, self.requested_height), "format": target_format}
             )
             self.picam2.configure(config)
-            
+
             # Now attempt to set controls AFTER configuration, if needed
             try:
                  print(f"Setting FrameRate control to {self.requested_fps}...")
@@ -463,7 +463,7 @@ class LSLCameraStreamer:
             if self.picam2:
                  try: self.picam2.close()
                  except: pass
-                 self.picam2 = None
+            self.picam2 = None
             elif temp_picam2: # If error happened before assignment to self.picam2
                  try: temp_picam2.close()
                  except: pass
@@ -477,16 +477,16 @@ class LSLCameraStreamer:
             return
             
         # Create output directory if it doesn't exist
-        if self.output_path:
+            if self.output_path:
             os.makedirs(self.output_path, exist_ok=True)
-            
+
         # Generate a timestamped filename for the video file
         timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         video_file = f"raspie_video_{timestamp_str}.mkv"
         
         if self.output_path:
             self.output_file = os.path.join(self.output_path, video_file)
-        else:
+                else:
             self.output_file = video_file
 
     def _setup_lsl(self):
@@ -620,7 +620,7 @@ class LSLCameraStreamer:
             if PSUTIL_AVAILABLE and self.capture_cpu_core is not None:
                 self._set_thread_affinity("capture operations", self.capture_cpu_core)
              
-            self._is_running = True
+             self._is_running = True
         else:
             print("Error: Camera hardware could not be started. Stopping dependent threads.")
             # Stop writer thread if it was started
@@ -701,24 +701,24 @@ class LSLCameraStreamer:
 
         # --- Release VideoWriter (Conditional) ---
         if self.save_video and self.video_writer is not None:
-             # Check if it's still considered open by OpenCV before releasing
-             # Note: This check might not be foolproof if the object is corrupted internally
-             is_opened = False
-             try:
-                  is_opened = self.video_writer.isOpened()
-             except Exception as e_check:
-                  print(f"Warning: Error checking if VideoWriter is open before release: {e_check}")
+            # Check if it's still considered open by OpenCV before releasing
+            # Note: This check might not be foolproof if the object is corrupted internally
+            is_opened = False
+            try:
+                 is_opened = self.video_writer.isOpened()
+            except Exception as e_check:
+                 print(f"Warning: Error checking if VideoWriter is open before release: {e_check}")
             
-             if is_opened:
+            if is_opened:
                  print(f"Releasing video writer ('{self.output_file}')...")
-                 try:
-                     self.video_writer.release()
-                     print("Video writer released.")
-                 except Exception as e:
-                     print(f"Error releasing video writer: {e}") # Still might segfault here if internal state is bad
-             else:
+                try:
+                    self.video_writer.release()
+                    print("Video writer released.")
+                except Exception as e:
+                    print(f"Error releasing video writer: {e}") # Still might segfault here if internal state is bad
+            else:
                   print(f"Video writer ('{self.output_file}') was not considered open. Skipping release call.")
-             self.video_writer = None # Set to None regardless
+            self.video_writer = None # Set to None regardless
             
         # --- Destroy Preview Window ---
         if self.show_preview:
@@ -849,39 +849,39 @@ class LSLCameraStreamer:
             else:
                 # --- Write Frame (Conditional: Queue Only) ---
                 if self.save_video:
-                     if self.video_writer is not None:
-                         if self.frame_queue is not None:
-                              try:
+            if self.video_writer is not None:
+                     if self.frame_queue is not None:
+                          try:
                                   # Important: Using a zero-copy view. Downstream must not modify in-place.
-                                  self.frame_queue.put_nowait(frame_data)
-                              except Full:
+                              self.frame_queue.put_nowait(frame_data)
+                          except Full:
                                   print("Warning: Frame queue full. Dropping frame.")
                                   self.frames_dropped_count += 1 
-                              except Exception as e:
-                                   print(f"Error putting frame into queue: {e}")
-                         else:
+                          except Exception as e:
+                               print(f"Error putting frame into queue: {e}")
+                     else:
                               print("Error: Video saving enabled but queue is None.")
                      # else: # Log if writer is none? Redundant if init fails cleanly.
 
                 # --- Push Frame Number to LSL (Always done if outlet exists) ---
-                if self.outlet is not None:
-                     try:
-                         self.outlet.push_sample([current_frame_index], timestamp)
-                     except Exception as e:
-                         print(f"Error pushing frame number ({current_frame_index}) to LSL directly: {e}")
+            if self.outlet is not None:
+                 try:
+                     self.outlet.push_sample([current_frame_index], timestamp)
+                 except Exception as e:
+                     print(f"Error pushing frame number ({current_frame_index}) to LSL directly: {e}")
                 # else:
                 #      print("Warning: LSL Outlet is None. Cannot push sample.") # Logged during setup
-                
+            
                 # --- Show Preview Frame ---
-                if self.show_preview and hasattr(self, 'preview_window_name'):
-                     try:
+            if self.show_preview and hasattr(self, 'preview_window_name'):
+                 try:
                          # Set visualizer core affinity if showing preview
                          if PSUTIL_AVAILABLE and self.visualizer_cpu_core is not None and current_frame_index == 0:
                              self._set_thread_affinity("visualization", self.visualizer_cpu_core)
                              
-                         if cv2.getWindowProperty(self.preview_window_name, cv2.WND_PROP_VISIBLE) >= 1:
-                              cv2.imshow(self.preview_window_name, frame_data)
-                              key = cv2.waitKey(1)
+                     if cv2.getWindowProperty(self.preview_window_name, cv2.WND_PROP_VISIBLE) >= 1:
+                          cv2.imshow(self.preview_window_name, frame_data)
+                          key = cv2.waitKey(1)
                               
                               # Check if 't' key pressed for manual trigger while in buffer mode
                               if self.use_buffer and key == ord('t'):
@@ -893,8 +893,8 @@ class LSLCameraStreamer:
                                   print("Manual stop activated by 's' key")
                                   if self.buffer_trigger_manager and self.recording_triggered:
                                       self.buffer_trigger_manager.stop_manually()
-                     except Exception as e:
-                          pass
+                 except Exception as e:
+                      pass
             
             # Return the numpy array view (not the buffer object)
             return frame_data, timestamp

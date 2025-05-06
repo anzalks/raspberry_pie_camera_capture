@@ -43,14 +43,14 @@ This project is installed using a single all-in-one setup script that handles ev
 
 **One-Step Installation:**
 
-```bash
+    ```bash
 # Clone the repository
 git clone https://github.com/anzalks/raspberry_pie_camera_capture.git
-cd raspberry_pie_camera_capture
+    cd raspberry_pie_camera_capture
 
 # Run the setup script (requires sudo)
-sudo bash setup_pi.sh
-```
+    sudo bash setup_pi.sh
+    ```
 
 The setup script automatically:
 - Installs all required system packages via apt
@@ -62,21 +62,21 @@ The setup script automatically:
 After installation completes, you only need to:
 
 1. **Enable Camera Interface (If not already done):**
-   ```bash
-   sudo raspi-config
-   ```
+    ```bash
+    sudo raspi-config
+    ```
    Navigate to `Interface Options` -> `Camera`. Ensure the camera is **Enabled** and **Legacy Camera** is **Disabled**.
 
 2. **Reboot your Raspberry Pi:**
-   ```bash
-   sudo reboot
-   ```
+    ```bash
+    sudo reboot
+    ```
 
 **Running the Streamer:**
 
 After reboot, the installation is complete. To use the streamer:
 
-```bash
+    ```bash
 # Navigate to project directory
 cd raspberry_pie_camera_capture
 

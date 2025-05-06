@@ -211,7 +211,7 @@ def main():
                     writer_cpu_core=args.audio_writer_core,
                     visualizer_cpu_core=args.audio_vis_core
                 )
-                
+
                 # Register the audio streamer stop method to be called on exit
                 atexit.register(audio_streamer.stop)
             except Exception as e:
