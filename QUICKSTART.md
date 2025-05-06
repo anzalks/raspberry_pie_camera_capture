@@ -2,9 +2,9 @@
 
 This guide provides a quick overview of how to set up Raspie Capture to start automatically at boot and control recordings remotely using ntfy.sh notifications.
 
-## 1. Installation
+## 1. One-Step Installation
 
-First, install the package and its dependencies:
+Raspie Capture uses a single script that handles the entire installation process:
 
 ```bash
 # Clone the repository
@@ -14,9 +14,15 @@ cd raspberry_pie_camera_capture
 # Run the setup script (requires sudo)
 sudo bash setup_pi.sh
 
-# Activate the virtual environment
-source .venv/bin/activate
+# Enable camera in raspi-config
+sudo raspi-config
+# Navigate to: Interface Options -> Camera -> Enable (ensure Legacy Camera is Disabled)
+
+# Reboot to apply camera settings
+sudo reboot
 ```
+
+The setup script automatically installs all system dependencies, builds libraries from source when needed, creates the Python virtual environment, and installs all Python packages.
 
 ## 2. Auto-Start on Boot
 
@@ -24,7 +30,7 @@ To configure Raspie Capture to start automatically when your Raspberry Pi boots:
 
 ```bash
 # Install the service (requires sudo)
-sudo bash raspi-capture-service.sh
+sudo bash raspie-capture-service.sh
 
 # (Optional) Optimize Raspberry Pi performance
 sudo bash raspie-optimize.sh

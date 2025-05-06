@@ -83,7 +83,7 @@ if [ -f /etc/systemd/system/raspie-capture.service ]; then
     systemctl daemon-reload
     echo "Service updated to use RAM disk"
 else
-    echo "Warning: raspie-capture service not found. Run raspi-capture-service.sh first."
+    echo "Warning: raspie-capture service not found. Run raspie-capture-service.sh first."
 fi
 
 echo "Performance optimizations applied. A reboot is recommended."

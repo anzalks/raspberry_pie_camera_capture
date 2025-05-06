@@ -15,7 +15,7 @@ def main():
         description='View LSL stream frame numbers and timestamps.',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-    parser.add_argument('--stream-name', type=str, default='RaspberryPiCamera', 
+    parser.add_argument('--stream-name', type=str, default='RaspieVideo', 
                         help='Name of the LSL stream to connect to.')
     parser.add_argument('--timeout', type=float, default=5.0, 
                         help='Timeout in seconds to search for the stream.')

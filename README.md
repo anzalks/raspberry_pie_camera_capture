@@ -4,6 +4,9 @@
 
 A Python package to capture video frames from a Raspberry Pi camera and stream them over LabStreamingLayer (LSL).
 
+**Author:** Anzal  
+**Contact:** anzal.ks@gmail.com
+
 ## Features
 
 *   Captures frames using `picamera2` or a standard webcam (`OpenCV`).
@@ -21,6 +24,7 @@ A Python package to capture video frames from a Raspberry Pi camera and stream t
 *   Real-time visualization of audio waveforms and spectrum.
 *   CPU core affinity management for optimized performance.
 *   Auto-start at boot with systemd service.
+*   Standardized "Raspie" naming convention throughout (filenames, services, LSL streams, ntfy topics).
 
 ## Quick Start
 
@@ -35,51 +39,54 @@ See [QUICKSTART.md](QUICKSTART.md) for a quick guide to setting up auto-start an
 
 ## Installation on Raspberry Pi
 
-This project utilizes a `src` layout for better packaging. Installation involves running a single setup script.
+This project is installed using a single all-in-one setup script that handles everything automatically.
 
-**Setup Steps:**
+**One-Step Installation:**
 
-1.  **Clone the Repository:**
-    ```bash
-    git clone https://github.com/Dognosis/raspberry_pie_camera_capture.git # Replace with your actual repo URL if different
-    cd raspberry_pie_camera_capture
-    ```
-2.  **Run Setup Script (Requires `sudo`):** This script performs the following actions:
-    *   Installs essential system libraries (`liblsl-dev`, `libcap-dev`, `libcamera-apps`, etc.) using `apt`.
-    *   Installs `python3-picamera2` using `apt` (the recommended way).
-    *   Creates a Python virtual environment named `.venv` within the project directory (using `--system-site-packages` to access the system `picamera2`).
-    *   Installs the project (`raspberry-pi-lsl-stream`) and its Python dependencies (`pylsl`, `numpy`, `opencv-python`) into the `.venv` using `pip`.
-    
-    ```bash
-    sudo bash setup_pi.sh
-    ```
-    *Review the script (`setup_pi.sh`) beforehand to see exactly what it does. Ensure you run it from the project's root directory.*
-3.  **Enable Camera Interface (If not already done):** If you haven't already, use the Raspberry Pi configuration tool:
-    ```bash
-    sudo raspi-config
-    ```
-    Navigate to `Interface Options` -> `Camera`. Ensure the camera is **Enabled**. Make sure the **Legacy Camera** option is **Disabled**.
-4.  **Reboot (Recommended):** Especially if you changed camera settings in `raspi-config`.
-    ```bash
-    sudo reboot
-    ```
+```bash
+# Clone the repository
+git clone https://github.com/anzalks/raspberry_pie_camera_capture.git
+cd raspberry_pie_camera_capture
+
+# Run the setup script (requires sudo)
+sudo bash setup_pi.sh
+```
+
+The setup script automatically:
+- Installs all required system packages via apt
+- Builds critical libraries from source when not available in repositories (liblsl, curlftpfs)
+- Creates a Python virtual environment (.venv)
+- Installs all Python dependencies inside the virtual environment
+- Installs the project itself in development mode
+
+After installation completes, you only need to:
+
+1. **Enable Camera Interface (If not already done):**
+   ```bash
+   sudo raspi-config
+   ```
+   Navigate to `Interface Options` -> `Camera`. Ensure the camera is **Enabled** and **Legacy Camera** is **Disabled**.
+
+2. **Reboot your Raspberry Pi:**
+   ```bash
+   sudo reboot
+   ```
 
 **Running the Streamer:**
 
-1.  **Navigate to Project Directory:** 
-    ```bash
-    cd /path/to/your/raspberry_pie_camera_capture 
-    ```
-2.  **Activate Virtual Environment:** Activate the environment created by the setup script.
-    ```bash
-    source .venv/bin/activate
-    ```
-    *(Your terminal prompt should now start with `(.venv)`)*
-3.  **Run Command:** The `rpi-lsl-stream` command is now available.
-    ```bash
-    rpi-lsl-stream --help
-    rpi-lsl-stream --width 1920 --height 1080 # Example run
-    ```
+After reboot, the installation is complete. To use the streamer:
+
+```bash
+# Navigate to project directory
+cd raspberry_pie_camera_capture
+
+# Activate the virtual environment
+source .venv/bin/activate
+
+# Run the streamer with your desired options
+rpi-lsl-stream --help
+rpi-lsl-stream --width 1920 --height 1080
+```
 
 ## Usage
 
@@ -163,7 +170,7 @@ rpi-lsl-stream --camera-index 0 --width 1920 --height 1080 --fps 30 --show-previ
 rpi-lsl-stream --camera-index 1 --use-max-settings --duration 120 --output-path /path/to/save/videos
 
 # Auto-detect camera, default settings, custom LSL stream name and source ID
-rpi-lsl-stream --stream-name MyExperimentCam --source-id Cam01_Session02
+rpi-lsl-stream --video-stream-name MyExperimentCam --audio-stream-name MyExperimentMic --source-id Cam01_Session02
 
 # Force use of H.264 codec with constant bitrate of 2Mbps and fast preset for higher frame rates
 rpi-lsl-stream --width 1280 --height 720 --fps 60 --codec h264 --bitrate 2000 --quality-preset veryfast
@@ -212,7 +219,7 @@ These examples show how to use the auto-start service and remote control functio
 
 ```bash
 # Install the service for auto-start on boot
-sudo bash raspi-capture-service.sh
+sudo bash raspie-capture-service.sh
 
 # Apply performance optimizations (optional)
 sudo bash raspie-optimize.sh
@@ -360,7 +367,7 @@ Saving high-resolution or high-framerate video can be demanding on the Raspberry
     # Activate environment first: source .venv/bin/activate
     rpi-lsl-stream --width 1920 --height 1080 --fps 30 --output-path /media/usb_drive
     ```
-    The video file (`lsl_capture_...mkv`) will now be saved directly to the USB drive.
+    The video file (`raspie_video_TIMESTAMP.mkv`) will now be saved directly to the USB drive.
 
 5.  **Unmount When Finished (If not using fstab):** Before physically disconnecting the drive, it's important to unmount it to ensure all data is written.
     ```bash
@@ -368,6 +375,144 @@ Saving high-resolution or high-framerate video can be demanding on the Raspberry
     ```
 
 Using a USB drive significantly reduces the chance of dropped frames caused by slow storage write speeds.
+
+## Auto-Start Service
+
+The package includes scripts to set up Raspie Capture as a systemd service that starts automatically at boot and can be controlled remotely.
+
+### Setting Up Auto-Start
+
+1. Install the service (requires sudo):
+   ```bash
+   sudo bash raspie-capture-service.sh
+   ```
+   This creates:
+   - A systemd service that starts Raspie Capture on boot
+   - A management script (`raspie-service.sh`) for controlling the service
+   - Uses a 20-second rolling buffer with ntfy.sh triggering
+
+2. (Optional) Apply performance optimizations:
+   ```bash
+   sudo bash raspie-optimize.sh
+   ```
+   This script:
+   - Sets CPU to performance mode
+   - Allocates more memory to the GPU
+   - Creates a RAM disk for temporary files
+   - Disables unnecessary services
+   - Sets process priorities
+
+3. Reboot to start the service:
+   ```bash
+   sudo reboot
+   ```
+
+### Remote Control via ntfy.sh
+
+Once the service is running, you can control recordings from any internet-connected device:
+
+```bash
+# Start recording
+curl -d "start recording" ntfy.sh/raspie_trigger
+
+# Stop recording
+curl -d "stop recording" ntfy.sh/raspie_trigger
+```
+
+You can also use the management script:
+
+```bash
+# Start recording
+./raspie-service.sh trigger
+
+# Stop recording
+./raspie-service.sh stop-recording
+
+# View service status
+./raspie-service.sh status
+
+# View service logs
+./raspie-service.sh logs
+```
+
+For more details, see [QUICKSTART.md](QUICKSTART.md).
+
+## LSL Stream Details
+
+**Note:** The current implementation streams only the frame number, not the full video frame data. The video is saved locally to a file.
+
+*   **Name:** As specified by `--video-stream-name` (for video) or `--audio-stream-name` (for audio).
+*   **Type:** 'FrameCounter' (Indicates only frame numbers are streamed)
+*   **Channels:** 1 (for the frame number).
+*   **Format:** `cf_int32` (32-bit integer for the frame number).
+*   **Nominal Rate:** As specified by `--fps` (or the actual rate achieved by the camera).
+*   **Source ID:** As specified by `--source-id`.
+*   **Metadata:** Includes:
+    *   Camera Model (`camera_model`)
+    *   Source Type (`source_type`: PiCamera or Webcam)
+    *   Acquisition Software (`acquisition_software`)
+    *   Channel Label (`label`: FrameNumber)
+
+**Timestamp Information:**
+
+*   **Source:** Timestamps are generated using `pylsl.local_clock()`.
+*   **Timing:** For each frame, the LSL timestamp is captured *immediately before* the call to acquire the frame data from the camera (i.e., before `picamera2.capture_array()` or `cv2.VideoCapture.read()`). This timestamp is then paired with the corresponding frame number and pushed to LSL.
+*   **Clock:** `pylsl.local_clock()` provides high-resolution, monotonic time based on the underlying LSL library (`liblsl`). It aims to use the best monotonic clock source available on the OS (e.g., `CLOCK_MONOTONIC` on Linux). This clock is designed for accurate interval measurement and event ordering within LSL and is not generally affected by system wall-clock changes (e.g., NTP updates) after the stream starts.
+*   **Synchronization:** The timestamps represent the time on the local Raspberry Pi running the script. They will automatically become synchronized with other LSL streams on the network **if** LSL time synchronization is active on the network (e.g., via LabRecorder or another synchronization tool). This script itself does not initiate network time synchronization.
+
+## Troubleshooting
+
+*   **Camera not detected:** Ensure the camera is securely connected and enabled via `raspi-config`. Also check the output of `libcamera-hello --list-cameras`.
+*   **`picamera2` not found (after running setup):** Make sure you activated the correct virtual environment (`source .venv/bin/activate`) created by the setup script. This environment uses `--system-site-packages` to link to the system-installed `picamera2`.
+*   **Video Frame Rate Issues:** If the saved video doesn't seem to have the expected frame rate, use the verification tool (see below).
+*   **`liblsl` not found:** Verify `liblsl-dev` is installed (the `setup_pi.sh` script handles this).
+*   **Permission errors:** Check permissions for accessing camera devices (`/dev/video*`). Running the main stream command usually doesn't require `sudo` if setup was done correctly.
+*   **Performance issues:** Lower resolution or frame rate might be necessary depending on the Pi model and workload. Using `--threaded-writer` is recommended for high-resolution/FPS streams.
+
+## Verifying Saved Video Files
+
+The metadata (resolution, FPS, frame count, duration) of the video file saved during a run is automatically printed to the console when the `rpi-lsl-stream` command finishes.
+
+If you need to check a video file manually at a later time, a separate utility script is also available:
+
+1.  **Activate Environment:** Make sure your virtual environment is active (`source .venv/bin/activate`).
+2.  **Run Verification:**
+    ```bash
+    verify-lsl-video /path/to/your/video/raspie_video_YYYYMMDD_HHMMSS.mkv
+    ```
+
+This will print the resolution, frame rate (as stored in the file metadata), frame count, and calculated duration.
+
+## Viewing Live Frame Numbers (LSL Client)
+
+A separate command is available to connect to the LSL stream created by `rpi-lsl-stream` and view the frame numbers and timestamps being broadcast in real-time. This can be useful for monitoring the stream or synchronizing with other LSL-aware applications without needing the saved video file.
+
+1.  **Start the Streamer:** In one terminal (with the `.venv` activated), run `rpi-lsl-stream` with your desired options.
+2.  **Start the Viewer:** In another terminal (with the `.venv` activated):
+    ```bash
+    view-lsl-framenumbers
+    ```
+    *Optional arguments: `--stream-name YourStreamName` and `--timeout N` if you changed the defaults on the streamer.*
+
+This viewer will print the received frame number and LSL timestamp to the console until you stop it with `Ctrl+C`.
+
+## Converting Saved Videos to RGB
+
+The videos saved by `rpi-lsl-stream` are in BGR format, which is standard for OpenCV. If you specifically need a video file with the RGB color order, a conversion utility is provided. 
+
+**Warning:** Converting to RGB and saving with common codecs (like MJPG used here) can lead to larger file sizes and potential color/playback issues in some video players. It's often better to perform BGR-to-RGB conversion during analysis if needed.
+
+To convert a video:
+
+1.  **Activate Environment:** Make sure your virtual environment is active (`source .venv/bin/activate`).
+2.  **Run Conversion:**
+    ```bash
+    # Example: Convert input.mkv to input_RGB.mkv (default output name)
+    convert-video-rgb input.mkv
+    
+    # Example: Specify output filename
+    convert-video-rgb input.mkv -o output_rgb_video.mkv 
+    ```
 
 ### Saving Directly to a Network Mount Point (Advanced / Experimental)
 
@@ -510,7 +655,7 @@ There are two ways to trigger recording when in buffer mode:
    - Useful for testing or when monitoring the camera directly
 
 2. **Remote Trigger via ntfy.sh:**
-   - The system monitors the ntfy.sh topic "rpi_camera_trigger" by default
+   - The system monitors the ntfy.sh topic "raspie_trigger" by default
    - Use the `--ntfy-topic` parameter to specify a different topic
    - Send notifications with keywords to control recording:
      - **Start recording**: Include words like "start", "begin", "record", "trigger", or "capture"
@@ -519,7 +664,7 @@ There are two ways to trigger recording when in buffer mode:
 
 ### Example Usage
 
-**Using default settings (400x400, 100fps, ntfy topic "rpi_camera_trigger"):**
+**Using default settings (400x400, 100fps, ntfy topic "raspie_trigger"):**
 ```bash
 rpi-lsl-stream
 ```
@@ -571,222 +716,15 @@ By default, the system is configured to:
 - For Raspberry Pi 4 with 8GB RAM, a 1080p30 buffer can typically hold 20-30 seconds
 - For Raspberry Pi 4 with 4GB RAM, consider using 720p for longer buffers
 
-## Auto-Start Service
-
-The package includes scripts to set up Raspie Capture as a systemd service that starts automatically at boot and can be controlled remotely.
-
-### Setting Up Auto-Start
-
-1. Install the service (requires sudo):
-   ```bash
-   sudo bash raspi-capture-service.sh
-   ```
-   This creates:
-   - A systemd service that starts Raspie Capture on boot
-   - A management script (`raspie-service.sh`) for controlling the service
-   - Uses a 20-second rolling buffer with ntfy.sh triggering
-
-2. (Optional) Apply performance optimizations:
-   ```bash
-   sudo bash raspie-optimize.sh
-   ```
-   This script:
-   - Sets CPU to performance mode
-   - Allocates more memory to the GPU
-   - Creates a RAM disk for temporary files
-   - Disables unnecessary services
-   - Sets process priorities
-
-3. Reboot to start the service:
-   ```bash
-   sudo reboot
-   ```
-
-### Remote Control via ntfy.sh
-
-Once the service is running, you can control recordings from any internet-connected device:
-
-```bash
-# Start recording
-curl -d "start recording" ntfy.sh/raspie_trigger
-
-# Stop recording
-curl -d "stop recording" ntfy.sh/raspie_trigger
-```
-
-You can also use the management script:
-
-```bash
-# Start recording
-./raspie-service.sh trigger
-
-# Stop recording
-./raspie-service.sh stop-recording
-
-# View service status
-./raspie-service.sh status
-
-# View service logs
-./raspie-service.sh logs
-```
-
-For more details, see [QUICKSTART.md](QUICKSTART.md).
-
-## LSL Stream Details
-
-**Note:** The current implementation streams only the frame number, not the full video frame data. The video is saved locally to a file.
-
-*   **Name:** As specified by `--stream-name`.
-*   **Type:** 'FrameCounter' (Indicates only frame numbers are streamed)
-*   **Channels:** 1 (for the frame number).
-*   **Format:** `cf_int32` (32-bit integer for the frame number).
-*   **Nominal Rate:** As specified by `--fps` (or the actual rate achieved by the camera).
-*   **Source ID:** As specified by `--source-id`.
-*   **Metadata:** Includes:
-    *   Camera Model (`camera_model`)
-    *   Source Type (`source_type`: PiCamera or Webcam)
-    *   Acquisition Software (`acquisition_software`)
-    *   Channel Label (`label`: FrameNumber)
-
-**Timestamp Information:**
-
-*   **Source:** Timestamps are generated using `pylsl.local_clock()`.
-*   **Timing:** For each frame, the LSL timestamp is captured *immediately before* the call to acquire the frame data from the camera (i.e., before `picamera2.capture_array()` or `cv2.VideoCapture.read()`). This timestamp is then paired with the corresponding frame number and pushed to LSL.
-*   **Clock:** `pylsl.local_clock()` provides high-resolution, monotonic time based on the underlying LSL library (`liblsl`). It aims to use the best monotonic clock source available on the OS (e.g., `CLOCK_MONOTONIC` on Linux). This clock is designed for accurate interval measurement and event ordering within LSL and is not generally affected by system wall-clock changes (e.g., NTP updates) after the stream starts.
-*   **Synchronization:** The timestamps represent the time on the local Raspberry Pi running the script. They will automatically become synchronized with other LSL streams on the network **if** LSL time synchronization is active on the network (e.g., via LabRecorder or another synchronization tool). This script itself does not initiate network time synchronization.
-
-## Troubleshooting
-
-*   **Camera not detected:** Ensure the camera is securely connected and enabled via `raspi-config`. Also check the output of `libcamera-hello --list-cameras`.
-*   **`picamera2` not found (after running setup):** Make sure you activated the correct virtual environment (`source .venv/bin/activate`) created by the setup script. This environment uses `--system-site-packages` to link to the system-installed `picamera2`.
-*   **Video Frame Rate Issues:** If the saved video doesn't seem to have the expected frame rate, use the verification tool (see below).
-*   **`liblsl` not found:** Verify `liblsl-dev` is installed (the `setup_pi.sh` script handles this).
-*   **Permission errors:** Check permissions for accessing camera devices (`/dev/video*`). Running the main stream command usually doesn't require `sudo` if setup was done correctly.
-*   **Performance issues:** Lower resolution or frame rate might be necessary depending on the Pi model and workload. Using `--threaded-writer` is recommended for high-resolution/FPS streams.
-
-## Verifying Saved Video Files
-
-The metadata (resolution, FPS, frame count, duration) of the video file saved during a run is automatically printed to the console when the `rpi-lsl-stream` command finishes.
-
-If you need to check a video file manually at a later time, a separate utility script is also available:
-
-1.  **Activate Environment:** Make sure your virtual environment is active (`source .venv/bin/activate`).
-2.  **Run Verification:**
-    ```bash
-    verify-lsl-video /path/to/your/video/lsl_capture_YYYYMMDD_HHMMSS.mkv
-    ```
-
-This will print the resolution, frame rate (as stored in the file metadata), frame count, and calculated duration.
-
-## Viewing Live Frame Numbers (LSL Client)
-
-A separate command is available to connect to the LSL stream created by `rpi-lsl-stream` and view the frame numbers and timestamps being broadcast in real-time. This can be useful for monitoring the stream or synchronizing with other LSL-aware applications without needing the saved video file.
-
-1.  **Start the Streamer:** In one terminal (with the `.venv` activated), run `rpi-lsl-stream` with your desired options.
-2.  **Start the Viewer:** In another terminal (with the `.venv` activated):
-    ```bash
-    view-lsl-framenumbers
-    ```
-    *Optional arguments: `--stream-name YourStreamName` and `--timeout N` if you changed the defaults on the streamer.*
-
-This viewer will print the received frame number and LSL timestamp to the console until you stop it with `Ctrl+C`.
-
-## Converting Saved Videos to RGB
-
-The videos saved by `rpi-lsl-stream` are in BGR format, which is standard for OpenCV. If you specifically need a video file with the RGB color order, a conversion utility is provided. 
-
-**Warning:** Converting to RGB and saving with common codecs (like MJPG used here) can lead to larger file sizes and potential color/playback issues in some video players. It's often better to perform BGR-to-RGB conversion during analysis if needed.
-
-To convert a video:
-
-1.  **Activate Environment:** Make sure your virtual environment is active (`source .venv/bin/activate`).
-2.  **Run Conversion:**
-    ```bash
-    # Example: Convert input.mkv to input_RGB.mkv (default output name)
-    convert-video-rgb input.mkv
-    
-    # Example: Specify output filename
-    convert-video-rgb input.mkv -o output_rgb_video.mkv 
-    ```
-
-## Automatic Startup on Boot
-
-For unattended operation, you can configure the Raspberry Pi to automatically start the camera capture service when it boots up. This allows you to run the system headless and control it solely via ntfy notifications from any internet-connected device.
-
-### Setup Instructions
-
-1. **Install the Service:**
-   Run the provided setup script with sudo:
-   ```bash
-   sudo ./rpi-camera-service.sh
-   ```
-   This script:
-   - Creates a systemd service that runs at startup
-   - Sets up the camera with 400x400 resolution at 100fps
-   - Configures ntfy notifications for start/stop control
-   - Creates a management script for convenient service control
-
-2. **Management:**
-   After installation, you can control the service using the management script:
-   ```bash
-   # Check service status
-   ./camera-service.sh status
-   
-   # Start the service manually
-   ./camera-service.sh start
-   
-   # Stop the service
-   ./camera-service.sh stop
-   
-   # View logs
-   ./camera-service.sh logs
-   
-   # Trigger recording
-   ./camera-service.sh trigger
-   
-   # Stop recording
-   ./camera-service.sh stop-recording
-   ```
-
-3. **Remote Control:**
-   Control recording from any internet-connected device:
-   ```bash
-   # To start recording:
-   curl -d "start recording" ntfy.sh/rpi_camera_trigger
-   
-   # To stop recording:
-   curl -d "stop recording" ntfy.sh/rpi_camera_trigger
-   ```
-   You can also use any ntfy.sh client app on your smartphone or tablet.
-
-4. **Customization:**
-   If you need to change the default parameters (resolution, fps, etc.),
-   edit the service file:
-   ```bash
-   sudo nano /etc/systemd/system/rpi-camera.service
-   ```
-   After making changes, reload and restart the service:
-   ```bash
-   sudo systemctl daemon-reload
-   sudo systemctl restart rpi-camera.service
-   ```
-
-### Monitoring and Troubleshooting
-
-1. **Check Status:**
-   ```bash
-   ./camera-service.sh status
-   ```
-
-2. **View Logs:**
-   ```bash
-   ./camera-service.sh logs
-   ```
-   Press Ctrl+C to exit the log viewer.
-
-3. **Common Issues:**
-   - **Service fails to start:** Check logs for error messages
-   - **Camera not detected:** Ensure camera is connected properly and enabled
-   - **No response to ntfy triggers:** Check internet connection and verify the correct topic name
-
 ## Contributing
+
+This project was developed by Anzal (anzal.ks@gmail.com). Contributions are welcome via pull requests. 
+
+Please ensure any contributions follow these guidelines:
+1. Test thoroughly on actual Raspberry Pi hardware before submitting
+2. Run in the appropriate virtual environment, never on base Python
+3. Follow existing code style conventions
+4. Add proper documentation for new features
+5. Ensure unit tests are created or updated for your changes
+
+For major changes, please open an issue first to discuss the proposed changes.
