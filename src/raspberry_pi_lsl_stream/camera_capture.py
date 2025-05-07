@@ -25,14 +25,14 @@ logger = logging.getLogger('CameraCapture')
 
 try:
     from .camera_lock import CameraLock
-    from .camera_stream import LSLCameraStreamer
+    from .camera_stream_fixed import LSLCameraStreamer
     from .buffer_trigger import BufferTriggerManager
     from .status_display import StatusDisplay
 except ImportError:
     # Handle relative imports if run as script
     sys.path.append(str(Path(__file__).resolve().parent.parent))
     from src.raspberry_pi_lsl_stream.camera_lock import CameraLock
-    from src.raspberry_pi_lsl_stream.camera_stream import LSLCameraStreamer
+    from src.raspberry_pi_lsl_stream.camera_stream_fixed import LSLCameraStreamer
     from src.raspberry_pi_lsl_stream.buffer_trigger import BufferTriggerManager
     from src.raspberry_pi_lsl_stream.status_display import StatusDisplay
 
