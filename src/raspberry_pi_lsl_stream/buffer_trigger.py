@@ -8,6 +8,8 @@ import json
 import numpy as np
 from collections import deque
 import logging
+import datetime
+import os
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
@@ -231,7 +233,7 @@ class NtfySubscriber:
 class BufferTriggerManager:
     """Manages the rolling buffer and notification trigger for camera recording."""
     
-    def __init__(self, buffer_size_seconds=5.0, ntfy_topic=None, on_trigger=None, on_stop=None, ntfy_cpu_core=None):
+    def __init__(self, buffer_size_seconds=20.0, ntfy_topic=None, on_trigger=None, on_stop=None, ntfy_cpu_core=None):
         """
         Initialize the buffer trigger manager.
         
@@ -327,4 +329,60 @@ class BufferTriggerManager:
         
     def get_buffer_duration(self):
         """Get current duration of buffer in seconds."""
-        return self.buffer.get_buffer_duration() 
+        return self.buffer.get_buffer_duration()
+    
+    def get_date_based_directory(self, base_path):
+        """Create and return date-based directory structure.
+        
+        Args:
+            base_path: Base directory path
+            
+        Returns:
+            Path to the date-based directory
+        """
+        # Create date folder structure
+        today = datetime.datetime.now().strftime("%Y_%m_%d")
+        
+        # Check if base_path already ends with a date
+        if os.path.basename(base_path).startswith("20") and "_" in os.path.basename(base_path):
+            # Already a date folder
+            return base_path
+            
+        date_dir = os.path.join(base_path, today)
+        os.makedirs(date_dir, exist_ok=True)
+        
+        return date_dir
+    
+    def get_media_path(self, base_path, media_type="video"):
+        """Get path for media files with proper date structure.
+        
+        Args:
+            base_path: Base directory path
+            media_type: Type of media (video or audio)
+            
+        Returns:
+            Path to the media directory
+        """
+        date_dir = self.get_date_based_directory(base_path)
+        
+        # Create media-specific folder
+        media_dir = os.path.join(date_dir, media_type.lower())
+        os.makedirs(media_dir, exist_ok=True)
+        
+        return media_dir
+    
+    def generate_filename(self, media_type="video", file_ext="mp4"):
+        """Generate filename with date and timestamp.
+        
+        Args:
+            media_type: Type of media (video or audio)
+            file_ext: File extension
+            
+        Returns:
+            Formatted filename
+        """
+        now = datetime.datetime.now()
+        date_str = now.strftime("%Y_%m_%d")
+        time_str = now.strftime("%H%M%S")
+        
+        return f"{date_str}_{media_type}_{time_str}.{file_ext}" 

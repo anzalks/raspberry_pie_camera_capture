@@ -12,6 +12,7 @@ import subprocess
 import platform
 from pathlib import Path
 import logging
+import datetime
 
 # Configure logging
 logging.basicConfig(
@@ -117,18 +118,18 @@ def main():
     
     parser = argparse.ArgumentParser(description='Camera capture and streaming')
     parser.add_argument('--camera-id', type=int, default=0, help='Camera index or ID to use')
-    parser.add_argument('--width', type=int, default=640, help='Frame width')
-    parser.add_argument('--height', type=int, default=480, help='Frame height')
-    parser.add_argument('--fps', type=int, default=30, help='Target frame rate')
+    parser.add_argument('--width', type=int, default=400, help='Frame width')
+    parser.add_argument('--height', type=int, default=400, help='Frame height')
+    parser.add_argument('--fps', type=int, default=100, help='Target frame rate')
     parser.add_argument('--save-video', action='store_true', help='Save video files')
     parser.add_argument('--output-dir', type=str, default='recordings', help='Directory to save recordings')
-    parser.add_argument('--codec', type=str, choices=['auto', 'h264', 'h265', 'mjpg'], default='auto', 
+    parser.add_argument('--codec', type=str, choices=['auto', 'h264', 'h265', 'mjpg'], default='h264', 
                        help='Video codec to use')
     parser.add_argument('--no-preview', action='store_true', help='Disable preview window')
     parser.add_argument('--no-lsl', action='store_true', help='Disable LSL streaming')
     parser.add_argument('--stream-name', type=str, default='VideoStream', help='LSL stream name')
     parser.add_argument('--no-buffer', action='store_true', help='Disable buffer trigger system')
-    parser.add_argument('--buffer-size', type=float, default=5.0, help='Buffer size in seconds')
+    parser.add_argument('--buffer-size', type=float, default=20.0, help='Buffer size in seconds')
     parser.add_argument('--ntfy-topic', type=str, default='raspie-camera-test', 
                        help='Topic for ntfy notifications')
     
@@ -158,10 +159,21 @@ def main():
             
         logger.info("Starting camera capture system...")
         
-        # Create output directory if saving videos
+        # Create output directory with date-based structure
+        output_dir = args.output_dir
         if args.save_video:
-            os.makedirs(args.output_dir, exist_ok=True)
-            logger.info(f"Video recordings will be saved to: {args.output_dir}")
+            # Create date-based directory
+            today = datetime.datetime.now().strftime("%Y_%m_%d")
+            
+            # Check if output_dir already ends with a date
+            if not os.path.basename(output_dir).startswith("20"):
+                output_dir = os.path.join(output_dir, today)
+                
+            # Add video subdirectory
+            video_dir = os.path.join(output_dir, "video")
+            os.makedirs(video_dir, exist_ok=True)
+            logger.info(f"Video recordings will be saved to: {video_dir}")
+            output_dir = video_dir
             
         # Set up buffer trigger manager if enabled
         buffer_manager = None
@@ -182,7 +194,7 @@ def main():
                 height=args.height,
                 target_fps=args.fps,
                 save_video=args.save_video,
-                output_path=args.output_dir if args.save_video else None,
+                output_path=output_dir if args.save_video else None,
                 codec=args.codec,
                 show_preview=not args.no_preview,
                 push_to_lsl=not args.no_lsl,
