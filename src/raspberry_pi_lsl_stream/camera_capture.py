@@ -189,7 +189,6 @@ def main():
         camera = None
         try:
             camera = LSLCameraStreamer(
-                camera_id=args.camera_id,
                 width=args.width,
                 height=args.height,
                 target_fps=args.fps,
