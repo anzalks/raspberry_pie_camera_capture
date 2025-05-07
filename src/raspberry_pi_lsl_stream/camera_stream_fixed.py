@@ -173,11 +173,14 @@ class LSLCameraStreamer:
             print(f"PiCamera frame rate set to: {self.actual_fps} fps")
             print(f"PiCamera color format: BGR888 (native for OpenCV)")
             
-            # Test frame capture
-            frame = np.empty((self.height, self.width, 3), dtype=np.uint8)
-            self.camera.capture(frame, format='bgr', use_video_port=True)
-            if frame is None:
-                raise RuntimeError("Failed to capture test frame")
+            # Test frame capture - using capture_array() which is the correct method for picamera2
+            try:
+                frame = self.camera.capture_array("main")
+                if frame is None or frame.size == 0:
+                    raise RuntimeError("Failed to capture test frame (empty frame)")
+            except Exception as e:
+                print(f"Error during test frame capture: {e}")
+                raise
                 
             print("Successfully initialized PiCamera")
             return True
@@ -410,9 +413,17 @@ class LSLCameraStreamer:
                 
             # Capture frame from PiCamera
             with self.camera_lock:
-                # Create a memory-mapped array to store the frame
-                frame = np.empty((self.height, self.width, 3), dtype=np.uint8)
-                self.camera.capture(frame, format='bgr', use_video_port=True)
+                try:
+                    # Use capture_array() which is the correct method for picamera2
+                    frame = self.camera.capture_array("main")
+                except Exception as e:
+                    print(f"Failed to grab frame from camera: {e}")
+                    return None
+                    
+                # Check if frame is valid
+                if frame is None or frame.size == 0:
+                    print("Failed to capture frame")
+                    return None
                 
                 # BGR format is already compatible with OpenCV - no conversion needed
                 
