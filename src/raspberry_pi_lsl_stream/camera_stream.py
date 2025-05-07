@@ -193,7 +193,7 @@ class LSLCameraStreamer:
                 try:
                     if self.is_picamera:
                         self.camera.stop()
-                        else:
+                    else:
                         self.camera.release()
                 except Exception as e:
                     print(f"Error releasing camera: {e}")
