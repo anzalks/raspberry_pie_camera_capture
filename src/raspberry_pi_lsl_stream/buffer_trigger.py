@@ -111,7 +111,7 @@ class RollingBuffer:
 class NtfySubscriber:
     """Subscribes to ntfy topics and triggers actions on messages."""
     
-    def __init__(self, topic, callback, filter_condition=None):
+    def __init__(self, topic, callback, filter_condition=None, cpu_core=None):
         """
         Initialize the ntfy subscriber.
         
@@ -120,6 +120,7 @@ class NtfySubscriber:
             callback: Function to call when a message is received
             filter_condition: Optional function that takes message dict and returns 
                               True to trigger callback, False to ignore
+            cpu_core: CPU core to pin the subscriber thread to
         """
         self.topic = topic
         self.callback = callback
@@ -127,6 +128,7 @@ class NtfySubscriber:
         self.stop_event = threading.Event()
         self.thread = None
         self.topic_url = f"https://ntfy.sh/{topic}/json"
+        self.cpu_core = cpu_core
         
     def start(self):
         """Start the subscription in a background thread."""
@@ -157,6 +159,18 @@ class NtfySubscriber:
     
     def _subscription_loop(self):
         """Main subscription loop - runs in a background thread."""
+        # Set CPU core affinity if requested and available
+        if hasattr(self, 'cpu_core') and self.cpu_core is not None:
+            try:
+                import psutil
+                p = psutil.Process()
+                p.cpu_affinity([self.cpu_core])
+                logger.info(f"Set ntfy subscription thread affinity to core {self.cpu_core}")
+            except ImportError:
+                logger.warning("psutil not available for CPU affinity control")
+            except Exception as e:
+                logger.error(f"Failed to set CPU affinity for ntfy thread: {e}")
+                
         # Use a session for connection pooling
         session = requests.Session()
         
@@ -217,7 +231,7 @@ class NtfySubscriber:
 class BufferTriggerManager:
     """Manages the rolling buffer and notification trigger for camera recording."""
     
-    def __init__(self, buffer_size_seconds=5.0, ntfy_topic=None, on_trigger=None, on_stop=None):
+    def __init__(self, buffer_size_seconds=5.0, ntfy_topic=None, on_trigger=None, on_stop=None, ntfy_cpu_core=None):
         """
         Initialize the buffer trigger manager.
         
@@ -226,6 +240,7 @@ class BufferTriggerManager:
             ntfy_topic: The ntfy topic to subscribe to for triggers
             on_trigger: Function to call when recording is triggered, receives frames list
             on_stop: Function to call when recording is stopped
+            ntfy_cpu_core: CPU core to pin the ntfy subscriber thread to
         """
         self.buffer = RollingBuffer(buffer_size_seconds)
         self.ntfy_subscriber = None
@@ -233,6 +248,7 @@ class BufferTriggerManager:
         self.on_stop = on_stop
         self.recording_active = False
         self.ntfy_topic = ntfy_topic
+        self.ntfy_cpu_core = ntfy_cpu_core
         
         if ntfy_topic:
             self.setup_ntfy_subscription(ntfy_topic)
@@ -242,7 +258,8 @@ class BufferTriggerManager:
         logger.info(f"Setting up ntfy subscription for topic: {topic}")
         self.ntfy_subscriber = NtfySubscriber(
             topic,
-            self._handle_notification
+            self._handle_notification,
+            cpu_core=self.ntfy_cpu_core
         )
         
     def start(self):

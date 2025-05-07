@@ -19,7 +19,10 @@ fi
 
 # Define variables
 SERVICE_NAME="raspie-camera"
-PROJECT_DIR="$HOME/Downloads/raspberry_pie_camera_capture"
+# Get the actual user's home directory (the one who invoked sudo)
+REAL_USER=$(logname || who am i | awk '{print $1}')
+REAL_HOME=$(eval echo ~$REAL_USER)
+PROJECT_DIR="$REAL_HOME/raspberry_pie_camera_capture"
 VENV_PATH="$PROJECT_DIR/.venv"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 LOG_DIR="/var/log/${SERVICE_NAME}"
@@ -33,6 +36,9 @@ chmod 755 $LOG_DIR
 CURRENT_USER=$(logname || whoami)
 echo "Setting up service for user: $CURRENT_USER"
 
+# Get the system Python path to include in PYTHONPATH
+SYS_PYTHON_PATH=$(python3 -c "import sys; print(':'.join([p for p in sys.path if p]))")
+
 # Create the systemd service file
 echo "Creating systemd service file at $SERVICE_FILE"
 cat > $SERVICE_FILE << EOL
@@ -43,6 +49,10 @@ After=network.target
 [Service]
 User=$CURRENT_USER
 WorkingDirectory=$PROJECT_DIR
+Environment="PATH=$VENV_PATH/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PYTHONPATH=$PROJECT_DIR:$SYS_PYTHON_PATH"
+Environment="PICAMERA2_CONFIG_PATH=/usr/share/picamera2"
+Environment="LD_LIBRARY_PATH=/usr/lib:/usr/local/lib"
 ExecStart=$VENV_PATH/bin/python -m src.raspberry_pi_lsl_stream.camera_capture --save-video --output-dir $PROJECT_DIR/recordings --ntfy-topic raspie-camera-test
 Restart=always
 RestartSec=10

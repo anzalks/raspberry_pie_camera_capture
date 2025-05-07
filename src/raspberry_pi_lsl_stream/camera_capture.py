@@ -35,6 +35,15 @@ except ImportError:
     from src.raspberry_pi_lsl_stream.buffer_trigger import BufferTriggerManager
     from src.raspberry_pi_lsl_stream.status_display import StatusDisplay
 
+# Try to import psutil for CPU affinity management
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+    logger.info("psutil imported successfully for CPU affinity management")
+except ImportError:
+    PSUTIL_AVAILABLE = False
+    logger.warning("psutil library not found. CPU core affinity will not be managed.")
+
 # Global flag to control running state
 running = True
 
@@ -82,6 +91,22 @@ def force_cleanup_previous_instances():
     
     logger.info("Cleanup complete")
 
+def set_cpu_affinity(cpu_core):
+    """Set CPU affinity for the current process if psutil is available.
+    
+    Args:
+        cpu_core: CPU core to pin the process to
+    """
+    if not PSUTIL_AVAILABLE or cpu_core is None:
+        return
+        
+    try:
+        p = psutil.Process()
+        p.cpu_affinity([cpu_core])
+        logger.info(f"Set process affinity to core {cpu_core}")
+    except Exception as e:
+        logger.error(f"Failed to set CPU affinity: {e}")
+
 def main():
     """Main function for camera capture."""
     global running
@@ -107,10 +132,23 @@ def main():
     parser.add_argument('--ntfy-topic', type=str, default='raspie-camera-test', 
                        help='Topic for ntfy notifications')
     
+    # Add CPU core affinity options
+    parser.add_argument('--capture-cpu-core', type=int, default=None, 
+                       help='CPU core to use for capture thread')
+    parser.add_argument('--writer-cpu-core', type=int, default=None, 
+                       help='CPU core to use for writer thread')
+    parser.add_argument('--lsl-cpu-core', type=int, default=None, 
+                       help='CPU core to use for LSL thread')
+    parser.add_argument('--ntfy-cpu-core', type=int, default=None, 
+                       help='CPU core to use for ntfy subscriber thread')
+    
     args = parser.parse_args()
     
     # Force cleanup previous instances
     force_cleanup_previous_instances()
+    
+    # Set CPU affinity for main process if requested
+    set_cpu_affinity(args.capture_cpu_core)
     
     # Try to acquire the camera lock
     with CameraLock() as camera_lock:
@@ -128,41 +166,52 @@ def main():
         # Set up buffer trigger manager if enabled
         buffer_manager = None
         if not args.no_buffer:
-            buffer_frames = int(args.buffer_size * args.fps)
+            # Using the correct parameter names according to BufferTriggerManager.__init__
             buffer_manager = BufferTriggerManager(
-                buffer_size=buffer_frames,
-                ntfy_topic=args.ntfy_topic
+                buffer_size_seconds=args.buffer_size,
+                ntfy_topic=args.ntfy_topic,
+                ntfy_cpu_core=args.ntfy_cpu_core
             )
         
-        # Set up the camera streamer
-        camera = LSLCameraStreamer(
-            camera_id=args.camera_id,
-            width=args.width,
-            height=args.height,
-            fps=args.fps,
-            buffer_manager=buffer_manager,
-            lsl_enabled=not args.no_lsl,
-            stream_name=args.stream_name,
-            output_dir=args.output_dir if args.save_video else None,
-            preview_enabled=not args.no_preview,
-            codec=args.codec
-        )
-        
-        # Set up status display
-        status_display = None
-        if not args.no_preview:
-            status_display = StatusDisplay(
-                camera_streamer=camera,
-                buffer_manager=buffer_manager,
-                ntfy_topic=args.ntfy_topic if buffer_manager else None
-            )
-        
-        # Start the camera
-        if not camera.start():
-            logger.error("Failed to start camera")
-            return 1
-            
+        # Set up the camera streamer - adjust parameters as needed
+        camera = None
         try:
+            camera = LSLCameraStreamer(
+                camera_id=args.camera_id,
+                width=args.width,
+                height=args.height,
+                target_fps=args.fps,
+                save_video=args.save_video,
+                output_path=args.output_dir if args.save_video else None,
+                codec=args.codec,
+                show_preview=not args.no_preview,
+                push_to_lsl=not args.no_lsl,
+                stream_name=args.stream_name,
+                buffer_trigger_manager=buffer_manager,
+                capture_cpu_core=args.capture_cpu_core,
+                writer_cpu_core=args.writer_cpu_core,
+                lsl_cpu_core=args.lsl_cpu_core
+            )
+            
+            # Set up status display
+            status_display = None
+            if not args.no_preview:
+                status_display = StatusDisplay(
+                    camera_streamer=camera,
+                    buffer_manager=buffer_manager,
+                    ntfy_topic=args.ntfy_topic if buffer_manager else None
+                )
+            
+            # Start the camera
+            started = camera.start()
+            if not started:
+                logger.error("Failed to start camera")
+                return 1
+                
+            # Start the buffer manager if it exists
+            if buffer_manager:
+                buffer_manager.start()
+                
             # Main loop
             logger.info("Camera capture started. Press Ctrl+C to stop.")
             
@@ -178,9 +227,10 @@ def main():
             logger.exception(f"Error in main loop: {e}")
         finally:
             # Cleanup resources
-            logger.info("Stopping camera...")
-            camera.stop()
-            
+            if camera:
+                logger.info("Stopping camera...")
+                camera.stop()
+                
             if buffer_manager:
                 logger.info("Stopping buffer manager...")
                 buffer_manager.stop()
