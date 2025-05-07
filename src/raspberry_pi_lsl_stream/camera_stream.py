@@ -636,12 +636,9 @@ class LSLCameraStreamer:
 
     def stop(self):
         """Stops the camera capture, writer thread (if active), and releases resources."""
-        # <<< Need to adjust the initial check slightly if writer isn't always used >>>
-        # if not self._is_running and (not self.save_video or self.writer_thread is None):
-        # Simplified: Just check if running, handle components individually
         if not self._is_running:
-             return 
-             
+            return 
+            
         print("Stopping stream and cleaning up resources...")
         
         # Stop the buffer trigger manager if enabled
@@ -657,9 +654,9 @@ class LSLCameraStreamer:
             try:
                 # Check if picam2 object still exists and has 'stop'
                 if self.picam2 and hasattr(self.picam2, 'is_open') and self.picam2.is_open:
-                     print("Stopping Picamera2...")
-                     self.picam2.stop()
-                     print("Picamera2 stopped.")
+                    print("Stopping Picamera2...")
+                    self.picam2.stop()
+                    print("Picamera2 stopped.")
                 # No else needed, if not open, nothing to stop
             except Exception as e:
                 print(f"Error stopping Picamera2: {e}")
@@ -676,9 +673,9 @@ class LSLCameraStreamer:
         elif not self.is_picamera and self.cap:
             try:
                 if self.cap and self.cap.isOpened():
-                     print("Releasing OpenCV webcam...")
-                     self.cap.release()
-                     print("OpenCV webcam released.")
+                    print("Releasing OpenCV webcam...")
+                    self.cap.release()
+                    print("OpenCV webcam released.")
                 self.cap = None
             except Exception as e:
                 print(f"Error releasing OpenCV webcam: {e}")
@@ -688,20 +685,20 @@ class LSLCameraStreamer:
             print("Signaling writer thread to stop and waiting for queue to flush...")
             self.stop_writer_event.set()
             try:
-                 # Drastically Increased timeout: at least 60s, plus more based on queue size
-                 join_timeout = max(60.0, self.queue_size_seconds * 3.0) # Give it much more time
-                 print(f"Waiting up to {join_timeout:.1f} seconds for writer thread...")
-                 self.writer_thread.join(timeout=join_timeout)
-                 if self.writer_thread.is_alive():
-                       print("ERROR: Writer thread is STILL ALIVE after extended timeout! Video file might be incomplete or corrupted.")
-                 else:
-                       print("Writer thread finished.")
+                # Drastically Increased timeout: at least 60s, plus more based on queue size
+                join_timeout = max(60.0, self.queue_size_seconds * 3.0) # Give it much more time
+                print(f"Waiting up to {join_timeout:.1f} seconds for writer thread...")
+                self.writer_thread.join(timeout=join_timeout)
+                if self.writer_thread.is_alive():
+                    print("ERROR: Writer thread is STILL ALIVE after extended timeout! Video file might be incomplete or corrupted.")
+                else:
+                    print("Writer thread finished.")
             except Exception as e:
-                 print(f"Error waiting for writer thread: {e}")
+                print(f"Error waiting for writer thread: {e}")
             self.writer_thread = None # Set to None even if it didn't join cleanly
         elif self.save_video and self.writer_thread is None:
-             # Only warn if saving was intended but thread is missing
-             print("Warning: Video saving enabled but writer thread object is None during stop.")
+            # Only warn if saving was intended but thread is missing
+            print("Warning: Video saving enabled but writer thread object is None during stop.")
 
         # --- Release VideoWriter (Conditional) ---
         if self.save_video and self.video_writer is not None:
@@ -709,19 +706,19 @@ class LSLCameraStreamer:
             # Note: This check might not be foolproof if the object is corrupted internally
             is_opened = False
             try:
-                 is_opened = self.video_writer.isOpened()
+                is_opened = self.video_writer.isOpened()
             except Exception as e_check:
-                 print(f"Warning: Error checking if VideoWriter is open before release: {e_check}")
+                print(f"Warning: Error checking if VideoWriter is open before release: {e_check}")
             
             if is_opened:
-                 print(f"Releasing video writer ('{self.output_file}')...")
+                print(f"Releasing video writer ('{self.output_file}')...")
                 try:
                     self.video_writer.release()
                     print("Video writer released.")
                 except Exception as e:
                     print(f"Error releasing video writer: {e}") # Still might segfault here if internal state is bad
             else:
-                  print(f"Video writer ('{self.output_file}') was not considered open. Skipping release call.")
+                print(f"Video writer ('{self.output_file}') was not considered open. Skipping release call.")
             self.video_writer = None # Set to None regardless
             
         # --- Destroy Preview Window ---
@@ -730,14 +727,14 @@ class LSLCameraStreamer:
                 print(f"Closing preview window ('{self.preview_window_name}')...")
                 try:
                     if cv2.getWindowProperty(self.preview_window_name, cv2.WND_PROP_VISIBLE) >= 1:
-                         cv2.destroyWindow(self.preview_window_name)
+                        cv2.destroyWindow(self.preview_window_name)
                 except Exception as e:
                     pass
         
         # --- LSL Cleanup (AFTER potential LSL thread join) ---
         if self.outlet is not None:
-             print("Initiating LSL stream outlet cleanup...")
-             self.outlet = None
+            print("Initiating LSL stream outlet cleanup...")
+            self.outlet = None
         self.info = None
         # ---
 
@@ -853,52 +850,49 @@ class LSLCameraStreamer:
             else:
                 # --- Write Frame (Conditional: Queue Only) ---
                 if self.save_video:
-            if self.video_writer is not None:
-                     if self.frame_queue is not None:
-                          try:
-                                  # Important: Using a zero-copy view. Downstream must not modify in-place.
-                              self.frame_queue.put_nowait(frame_data)
-                          except Full:
-                                  print("Warning: Frame queue full. Dropping frame.")
-                                  self.frames_dropped_count += 1 
-                          except Exception as e:
-                               print(f"Error putting frame into queue: {e}")
-                     else:
-                              print("Error: Video saving enabled but queue is None.")
-                     # else: # Log if writer is none? Redundant if init fails cleanly.
-
+                    if self.video_writer is not None:
+                        if self.frame_queue is not None:
+                            try:
+                                # Important: Using a zero-copy view. Downstream must not modify in-place.
+                                self.frame_queue.put_nowait(frame_data)
+                            except Full:
+                                print("Warning: Frame queue full. Dropping frame.")
+                                self.frames_dropped_count += 1 
+                            except Exception as e:
+                                print(f"Error putting frame into queue: {e}")
+                        else:
+                            print("Error: Video saving enabled but queue is None.")
+                    
                 # --- Push Frame Number to LSL (Always done if outlet exists) ---
-            if self.outlet is not None:
-                 try:
-                     self.outlet.push_sample([current_frame_index], timestamp)
-                 except Exception as e:
-                     print(f"Error pushing frame number ({current_frame_index}) to LSL directly: {e}")
-                # else:
-                #      print("Warning: LSL Outlet is None. Cannot push sample.") # Logged during setup
-            
+                if self.outlet is not None:
+                    try:
+                        self.outlet.push_sample([current_frame_index], timestamp)
+                    except Exception as e:
+                        print(f"Error pushing frame number ({current_frame_index}) to LSL directly: {e}")
+                
                 # --- Show Preview Frame ---
-            if self.show_preview and hasattr(self, 'preview_window_name'):
-                 try:
-                         # Set visualizer core affinity if showing preview
-                         if PSUTIL_AVAILABLE and self.visualizer_cpu_core is not None and current_frame_index == 0:
-                             self._set_thread_affinity("visualization", self.visualizer_cpu_core)
-                             
-                     if cv2.getWindowProperty(self.preview_window_name, cv2.WND_PROP_VISIBLE) >= 1:
-                          cv2.imshow(self.preview_window_name, frame_data)
-                          key = cv2.waitKey(1)
-                              
-                              # Check if 't' key pressed for manual trigger while in buffer mode
-                              if self.use_buffer and key == ord('t'):
-                                  print("Manual trigger activated by 't' key")
-                                  if self.buffer_trigger_manager:
-                                      self.buffer_trigger_manager.trigger_manually()
-                              # Check if 's' key pressed for manual stop
-                              elif self.use_buffer and key == ord('s'):
-                                  print("Manual stop activated by 's' key")
-                                  if self.buffer_trigger_manager and self.recording_triggered:
-                                      self.buffer_trigger_manager.stop_manually()
-                 except Exception as e:
-                      pass
+                if self.show_preview and hasattr(self, 'preview_window_name'):
+                    try:
+                        # Set visualizer core affinity if showing preview
+                        if PSUTIL_AVAILABLE and self.visualizer_cpu_core is not None and current_frame_index == 0:
+                            self._set_thread_affinity("visualization", self.visualizer_cpu_core)
+                            
+                        if cv2.getWindowProperty(self.preview_window_name, cv2.WND_PROP_VISIBLE) >= 1:
+                            cv2.imshow(self.preview_window_name, frame_data)
+                            key = cv2.waitKey(1)
+                            
+                            # Check if 't' key pressed for manual trigger while in buffer mode
+                            if self.use_buffer and key == ord('t'):
+                                print("Manual trigger activated by 't' key")
+                                if self.buffer_trigger_manager:
+                                    self.buffer_trigger_manager.trigger_manually()
+                            # Check if 's' key pressed for manual stop
+                            elif self.use_buffer and key == ord('s'):
+                                print("Manual stop activated by 's' key")
+                                if self.buffer_trigger_manager and self.recording_triggered:
+                                    self.buffer_trigger_manager.stop_manually()
+                    except Exception as e:
+                        pass
             
             # Return the numpy array view (not the buffer object)
             return frame_data, timestamp
