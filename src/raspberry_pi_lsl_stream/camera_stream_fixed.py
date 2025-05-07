@@ -149,24 +149,33 @@ class LSLCameraStreamer:
             # Create PiCamera object
             self.camera = Picamera2()
             
-            # Configure camera
+            # Configure camera with explicit H264-friendly settings
+            # Using BGR format directly since that's what the camera provides
             config = self.camera.create_video_configuration(
-                main={"size": (self.width, self.height), "format": "RGB888"},
+                main={"size": (self.width, self.height), "format": "BGR888"},
                 lores={"size": (self.width, self.height), "format": "YUV420"}
             )
+            
+            # Set additional video parameters
+            config["controls"] = {
+                "FrameRate": self.target_fps,
+                "NoiseReductionMode": 1  # Fast noise reduction
+            }
+            
             self.camera.configure(config)
             
             # Start camera
             self.camera.start()
-            print(f"PiCamera initialized with resolution {self.width}x{self.height}")
+            print(f"PiCamera initialized with resolution {self.width}x{self.height} at target {self.target_fps} fps")
             
-            # Set frame rate - picamera2 has fixed frame rates
+            # Set frame rate
             self.actual_fps = self.target_fps
-            print(f"PiCamera frame rate: {self.actual_fps} fps")
+            print(f"PiCamera frame rate set to: {self.actual_fps} fps")
+            print(f"PiCamera color format: BGR888 (native for OpenCV)")
             
             # Test frame capture
             frame = np.empty((self.height, self.width, 3), dtype=np.uint8)
-            self.camera.capture(frame, format='rgb', use_video_port=True)
+            self.camera.capture(frame, format='bgr', use_video_port=True)
             if frame is None:
                 raise RuntimeError("Failed to capture test frame")
                 
@@ -191,7 +200,14 @@ class LSLCameraStreamer:
         try:
             # Generate output filename with timestamp
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            self.auto_output_filename = f"recording_{timestamp}.mp4"
+            
+            # Use mp4 extension only when using h264/h265
+            if self.codec.lower() in ['h264', 'h265']:
+                extension = "mp4"
+            else:
+                extension = "avi"  # Use AVI for MJPG
+                
+            self.auto_output_filename = f"recording_{timestamp}.{extension}"
             
             # Create full output path
             if self.output_path:
@@ -203,11 +219,18 @@ class LSLCameraStreamer:
             
             # Determine codec
             codec_map = {
-                'h264': 'avc1',
-                'h265': 'hev1', 
-                'mjpg': 'MJPG'
+                'h264': 'avc1',  # H.264 codec for MP4
+                'h265': 'hev1',  # H.265/HEVC codec
+                'mjpg': 'MJPG'   # Motion JPEG
             }
-            fourcc = cv2.VideoWriter_fourcc(*codec_map.get(self.codec, 'avc1'))
+            
+            if self.codec.lower() not in codec_map:
+                print(f"Warning: Unsupported codec '{self.codec}'. Falling back to h264/avc1.")
+                fourcc = cv2.VideoWriter_fourcc(*'avc1')
+            else:
+                fourcc = cv2.VideoWriter_fourcc(*codec_map[self.codec.lower()])
+                
+            print(f"Using codec: {self.codec.lower()} with FourCC: {codec_map.get(self.codec.lower(), 'avc1')}")
             
             # Create video writer
             self.video_writer = cv2.VideoWriter(
@@ -218,7 +241,7 @@ class LSLCameraStreamer:
             )
             
             if not self.video_writer.isOpened():
-                raise RuntimeError("Failed to open video writer")
+                raise RuntimeError(f"Failed to open video writer with codec {self.codec}")
                 
             # Initialize frame queue for threaded writing
             self.frame_queue = Queue(maxsize=int(self.queue_size_seconds * self.actual_fps))
@@ -376,11 +399,10 @@ class LSLCameraStreamer:
             with self.camera_lock:
                 # Create a memory-mapped array to store the frame
                 frame = np.empty((self.height, self.width, 3), dtype=np.uint8)
-                self.camera.capture(frame, format='rgb', use_video_port=True)
+                self.camera.capture(frame, format='bgr', use_video_port=True)
                 
-                # Convert RGB to BGR for OpenCV
-                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                    
+                # BGR format is already compatible with OpenCV - no conversion needed
+                
             # Update frame count
             self.frame_count += 1
             
