@@ -229,10 +229,15 @@ def main():
             logger.info("Camera capture started. Press Ctrl+C to stop.")
             
             while running:
+                # Capture a frame
+                frame = camera.capture_frame()
+                
                 # Update status display
                 if status_display:
                     status_display.update()
-                time.sleep(0.1)
+                    
+                # Sleep to maintain desired frame rate
+                time.sleep(0.01)  # Small sleep to prevent CPU overuse
                 
         except KeyboardInterrupt:
             logger.info("Keyboard interrupt received")
