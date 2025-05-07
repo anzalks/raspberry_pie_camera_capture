@@ -187,7 +187,9 @@ def main():
                 show_preview=not args.no_preview,
                 push_to_lsl=not args.no_lsl,
                 stream_name=args.stream_name,
-                buffer_trigger_manager=buffer_manager,
+                use_buffer=not args.no_buffer,
+                buffer_size_seconds=args.buffer_size,
+                ntfy_topic=args.ntfy_topic,
                 capture_cpu_core=args.capture_cpu_core,
                 writer_cpu_core=args.writer_cpu_core,
                 lsl_cpu_core=args.lsl_cpu_core

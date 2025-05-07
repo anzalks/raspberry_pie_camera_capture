@@ -57,7 +57,10 @@ class LSLCameraStreamer:
                  use_buffer=True,
                  buffer_size_seconds=5.0,
                  ntfy_topic='raspie-camera-test',
-                 queue_size_seconds=2.0):
+                 queue_size_seconds=2.0,
+                 capture_cpu_core=None,
+                 writer_cpu_core=None,
+                 lsl_cpu_core=None):
         """Initialize the camera streamer.
 
         Args:
@@ -75,6 +78,9 @@ class LSLCameraStreamer:
             buffer_size_seconds (float): Size of rolling buffer in seconds.
             ntfy_topic (str): Topic for ntfy notifications.
             queue_size_seconds (float): Size of frame queue in seconds.
+            capture_cpu_core (int, optional): CPU core to use for capture thread.
+            writer_cpu_core (int, optional): CPU core to use for writer thread.
+            lsl_cpu_core (int, optional): CPU core to use for LSL thread.
         """
         # Store parameters
         self.camera_id = camera_id
@@ -91,6 +97,9 @@ class LSLCameraStreamer:
         self.buffer_size_seconds = buffer_size_seconds
         self.ntfy_topic = ntfy_topic
         self.queue_size_seconds = queue_size_seconds
+        self.capture_cpu_core = capture_cpu_core
+        self.writer_cpu_core = writer_cpu_core
+        self.lsl_cpu_core = lsl_cpu_core
         
         # Initialize state variables
         self._is_running = False
@@ -369,32 +378,45 @@ class LSLCameraStreamer:
             self.writer_thread = None
             
     def _writer_loop(self):
-        """Writer thread loop for saving frames to video file."""
-        print("Writer thread started")
-        
+        """Writer loop for the video writer thread."""
+        if self.writer_cpu_core is not None:
+            try:
+                self._set_thread_affinity("writer", self.writer_cpu_core)
+            except Exception as e:
+                print(f"Failed to set CPU affinity for writer thread: {e}")
+                
         while not self.stop_writer_event.is_set():
             try:
-                # Get frame from queue with timeout
-                try:
-                    frame = self.frame_queue.get(timeout=0.1)
-                except Empty:
+                # Wait for a frame with a timeout to allow for clean shutdown
+                frame = self.frame_queue.get(timeout=0.5)
+                if frame is None:
                     continue
                     
                 # Write frame to video file
-                if self.video_writer is not None and self.video_writer.isOpened():
-                    self.video_writer.write(frame)
-                    self.frames_written_count += 1
-                    
+                self.video_writer.write(frame)
+                self.frames_written_count += 1
+                
+                # Mark task as done in the queue
+                self.frame_queue.task_done()
+            except queue.Empty:
+                # This is expected when using timeout to allow clean shutdown
+                continue
             except Exception as e:
-                print(f"Error in writer thread: {e}")
+                print(f"Error in writer loop: {e}")
                 time.sleep(0.1)  # Prevent tight loop on error
                 
         print("Writer thread stopped")
 
     def _setup_lsl(self):
-        """Set up the LSL stream for frame data."""
+        """Set up the LSL stream."""
         try:
-            # Create stream info
+            if self.lsl_cpu_core is not None:
+                try:
+                    self._set_thread_affinity("LSL", self.lsl_cpu_core)
+                except Exception as e:
+                    print(f"Failed to set CPU affinity for LSL thread: {e}")
+                    
+            # Create StreamInfo
             self.info = StreamInfo(
                 name=self.stream_name,
                 type='Video',
@@ -428,7 +450,7 @@ class LSLCameraStreamer:
             p = psutil.Process()
             p.cpu_affinity([cpu_core])
             print(f"Set {thread_name} affinity to core {cpu_core}")
-                    except Exception as e:
+        except Exception as e:
             print(f"Failed to set CPU affinity for {thread_name}: {e}")
 
     def start(self):
@@ -448,7 +470,7 @@ class LSLCameraStreamer:
                 self.camera.configure(config)
                 self.camera.start()
                 print(f"PiCamera initialized with resolution {self.width}x{self.height}")
-                else:
+            else:
                 self.camera = cv2.VideoCapture(self.camera_id)
                 if not self.camera.isOpened():
                     raise RuntimeError("Failed to open camera")
@@ -469,7 +491,7 @@ class LSLCameraStreamer:
                 self._initialize_video_writer()
                 
             # Set running flag
-             self._is_running = True
+            self._is_running = True
             print("Camera stream started")
             
             # Main capture loop
@@ -491,8 +513,8 @@ class LSLCameraStreamer:
                             if self.save_video and self.video_writer is not None:
                                 if not self.frame_queue.full():
                                     self.frame_queue.put(frame)
-        else:
-                                    print("Frame queue full, dropping frame")
+                            else:
+                                print("Frame queue full, dropping frame")
                     else:
                         # Normal processing without buffer
                         if self.save_video and self.video_writer is not None:
@@ -516,8 +538,8 @@ class LSLCameraStreamer:
     def stop(self):
         """Stop the camera capture and processing loop."""
         if not self._is_running:
-             return 
-             
+            return 
+            
         print("Stopping camera stream...")
         self._is_running = False
         
@@ -544,7 +566,7 @@ class LSLCameraStreamer:
             if self.camera is not None:
                 try:
                     self.camera.release()
-            except Exception as e:
+                except Exception as e:
                     print(f"Error releasing webcam: {e}")
                     
         # Close preview window
@@ -565,7 +587,7 @@ class LSLCameraStreamer:
                     
                     # Convert RGB to BGR for OpenCV
                     frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                 else:
+            else:
                 # Capture frame from standard webcam
                 ret, frame = self.camera.read()
                 if not ret:
@@ -597,13 +619,11 @@ class LSLCameraStreamer:
                 try:
                     if not self.frame_queue.full():
                         self.frame_queue.put(frame)
-            else:
-                        print("Frame queue full, dropping frame")
                 except Exception as e:
                     print(f"Error adding frame to video queue: {e}")
             
             # Show preview if enabled
-        if self.show_preview:
+            if self.show_preview:
                 try:
                     cv2.imshow('Camera Preview', frame)
                     key = cv2.waitKey(1)
@@ -676,14 +696,14 @@ class LSLCameraStreamer:
                     if not self.frame_queue.full():
                         self.frame_queue.put(frame)
             else:
-                        print("Frame queue full, dropping frame")
+                print("Frame queue full, dropping frame")
                         
             # Update state
             self.waiting_for_trigger = False
             self.recording_triggered = True
             print("Recording started")
             
-                          except Exception as e:
+        except Exception as e:
             print(f"Error handling recording trigger: {e}")
             
     def _handle_recording_stop(self):
@@ -699,7 +719,7 @@ class LSLCameraStreamer:
             if self.video_writer is not None:
                 try:
                     self.video_writer.release()
-                 except Exception as e:
+                except Exception as e:
                     print(f"Error releasing video writer: {e}")
                 finally:
                     self.video_writer = None
@@ -709,7 +729,7 @@ class LSLCameraStreamer:
             self.recording_triggered = False
             print("Recording stopped")
             
-                 except Exception as e:
+        except Exception as e:
             print(f"Error handling recording stop: {e}")
 
     def manual_trigger(self):
@@ -773,9 +793,9 @@ class LSLCameraStreamer:
             "threaded_writer_enabled": self.save_video,
             "frame_queue_size": qsize,
             "buffer_mode": self.use_buffer,
-            "capture_cpu_core": None,
-            "writer_cpu_core": None,
-            "visualizer_cpu_core": None,
+            "capture_cpu_core": self.capture_cpu_core,
+            "writer_cpu_core": self.writer_cpu_core,
+            "lsl_cpu_core": self.lsl_cpu_core,
             **buffer_info
         }
 
