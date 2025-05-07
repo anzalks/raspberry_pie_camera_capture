@@ -13,19 +13,16 @@ import glob # Added for device detection
 import datetime # Added for timestamp generation
 import uuid # Added for UUID generation
 
-# Attempt to import Picamera2 and set a flag indicating its availability.
-# This allows the code to run on non-Pi systems (using a webcam)
-# without crashing on import if picamera2 is not installed or supported.
-print("DEBUG: About to attempt importing picamera2...")
+# Import Picamera2 
+print("DEBUG: Importing picamera2 for Raspberry Pi Camera...")
 try:
     from picamera2 import Picamera2
     PICAMERA2_AVAILABLE = True
     print("DEBUG: picamera2 imported successfully.")
 except ImportError as e:
-    print(f"DEBUG: Failed to import picamera2: {e}")
+    print(f"ERROR: Failed to import picamera2: {e}")
+    print("This application requires picamera2 to be installed.")
     PICAMERA2_AVAILABLE = False
-    # Inform the user if the PiCamera library is missing
-    print("Warning: picamera2 library not found. Raspberry Pi camera functionality disabled.")
 
 # Import pylsl for LabStreamingLayer communication
 from pylsl import StreamInfo, StreamOutlet, local_clock
@@ -43,15 +40,14 @@ except ImportError:
     print("Warning: psutil library not found. CPU core affinity will not be managed.")
 
 class LSLCameraStreamer:
-    """Captures frames from a Raspberry Pi camera or webcam and streams via LSL."""
+    """Captures frames from a Raspberry Pi camera and streams via LSL."""
     def __init__(self, 
-                 camera_id=0,
                  width=640,
                  height=480,
                  target_fps=30.0,
                  save_video=True,
                  output_path=None,
-                 codec='auto',
+                 codec='h264',
                  show_preview=True,
                  push_to_lsl=True,
                  stream_name='camera_stream',
@@ -65,13 +61,12 @@ class LSLCameraStreamer:
         """Initialize the camera streamer.
 
         Args:
-            camera_id (int): Camera index or ID to use.
             width (int): Desired frame width.
             height (int): Desired frame height.
             target_fps (float): Target frame rate.
             save_video (bool): Whether to save video files.
             output_path (str): Path to save video files.
-            codec (str): Video codec to use ('auto', 'h264', 'h265', 'mjpg').
+            codec (str): Video codec to use ('h264', 'h265', 'mjpg').
             show_preview (bool): Whether to show preview window.
             push_to_lsl (bool): Whether to push frames to LSL.
             stream_name (str): Name of the LSL stream.
@@ -84,7 +79,6 @@ class LSLCameraStreamer:
             lsl_cpu_core (int, optional): CPU core to use for LSL thread.
         """
         # Store parameters
-        self.camera_id = camera_id
         self.width = width
         self.height = height
         self.target_fps = target_fps
@@ -108,7 +102,7 @@ class LSLCameraStreamer:
         self.frames_written_count = 0
         self.frames_dropped_count = 0
         self.actual_fps = target_fps
-        self.camera_model = "Unknown"
+        self.camera_model = "Raspberry Pi Camera"
         self.source_id = str(uuid.uuid4())
         self.lsl_pixel_format = "BGR"
         self.num_channels = 3
@@ -120,21 +114,12 @@ class LSLCameraStreamer:
             
         # Initialize camera
         self.camera = None
-        self.is_picamera = False
         self.camera_lock = threading.Lock()
         
-        # Try to detect PiCamera first
-        try:
-            self._initialize_picamera()
-        except Exception as e:
-            print(f"PiCamera initialization failed: {e}")
-            print("Falling back to webcam")
-            try:
-                self._initialize_webcam(self.camera_id)
-            except Exception as e:
-                print(f"Webcam initialization failed: {e}")
-                raise RuntimeError("Failed to initialize any camera")
-                
+        # Check if picamera2 is available
+        if not PICAMERA2_AVAILABLE:
+            raise RuntimeError("Picamera2 is required but not available. Please install picamera2.")
+               
         # Initialize LSL if enabled
         self.info = None
         self.outlet = None
@@ -157,125 +142,9 @@ class LSLCameraStreamer:
             self._initialize_video_writer()
 
     def _initialize_camera(self):
-        """Initialize the camera based on type."""
+        """Initialize the Pi Camera."""
         try:
-            if self.is_picamera:
-                # Initialize PiCamera
-                self.camera = Picamera2()
-                config = self.camera.create_video_configuration(
-                    main={"size": (self.width, self.height), "format": "RGB888"},
-                    lores={"size": (self.width, self.height), "format": "YUV420"}
-                )
-                self.camera.configure(config)
-                self.camera.start()
-                print(f"PiCamera initialized with resolution {self.width}x{self.height}")
-            else:
-                # Initialize webcam
-                self.camera = cv2.VideoCapture(self.camera_id)
-                if not self.camera.isOpened():
-                    raise RuntimeError("Failed to open camera")
-                self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-                self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-                print(f"Webcam initialized with resolution {self.width}x{self.height}")
-                
-            # Get actual frame rate
-            if self.is_picamera:
-                self.actual_fps = 30.0  # PiCamera default
-            else:
-                self.actual_fps = self.camera.get(cv2.CAP_PROP_FPS)
-                if self.actual_fps <= 0:
-                    self.actual_fps = 30.0  # Fallback
-                    
-            print(f"Camera frame rate: {self.actual_fps} fps")
-            
-        except Exception as e:
-            print(f"Error initializing camera: {e}")
-            if self.camera is not None:
-                try:
-                    if self.is_picamera:
-                        self.camera.stop()
-                    else:
-                        self.camera.release()
-                except Exception as e:
-                    print(f"Error releasing camera: {e}")
-            self.camera = None
-            raise
-
-    def _detect_webcam_indices(self):
-        """Detect available webcam indices."""
-        try:
-            # List of potential video device paths
-            device_paths = glob.glob('/dev/video*')
-            print(f"Found video devices: {device_paths}")
-            
-            # Extract indices from device paths
-            indices = []
-            for path in device_paths:
-                try:
-                    index = int(path.replace('/dev/video', ''))
-                    indices.append(index)
-                except ValueError:
-                    continue
-                    
-            # Sort indices for consistent ordering
-            indices.sort()
-            print(f"Available camera indices: {indices}")
-            
-            return indices
-            
-        except Exception as e:
-            print(f"Error detecting webcam indices: {e}")
-            return []
-
-    def _initialize_webcam(self, index):
-        """Initialize webcam with specified index."""
-        try:
-            print(f"Initializing webcam with index {index}")
-            cap = None
-            
-            # Create capture object
-            cap = cv2.VideoCapture(index)
-            if not cap.isOpened():
-                raise RuntimeError(f"Failed to open webcam with index {index}")
-                
-            # Set resolution
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-            
-            # Get actual resolution
-            actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            print(f"Webcam resolution: {actual_width}x{actual_height}")
-            
-            # Get frame rate
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            if fps <= 0:
-                fps = 30.0  # Fallback
-            print(f"Webcam frame rate: {fps} fps")
-            
-            # Test frame capture
-            ret, frame = cap.read()
-            if not ret or frame is None:
-                raise RuntimeError("Failed to capture test frame")
-                
-            # Store camera object
-            self.camera = cap
-            self.is_picamera = False
-            self.actual_fps = fps
-            print(f"Successfully initialized webcam with index {index}")
-            
-            return True
-
-        except Exception as e:
-            print(f"Error initializing webcam with index {index}: {e}")
-            if cap is not None:
-                cap.release()
-            return False
-
-    def _initialize_picamera(self):
-        """Initialize PiCamera."""
-        try:
-            print("Initializing PiCamera")
+            print("Initializing Raspberry Pi Camera...")
             
             # Create PiCamera object
             self.camera = Picamera2()
@@ -291,8 +160,8 @@ class LSLCameraStreamer:
             self.camera.start()
             print(f"PiCamera initialized with resolution {self.width}x{self.height}")
             
-            # Set frame rate
-            self.actual_fps = 30.0  # PiCamera default
+            # Set frame rate - picamera2 has fixed frame rates
+            self.actual_fps = self.target_fps
             print(f"PiCamera frame rate: {self.actual_fps} fps")
             
             # Test frame capture
@@ -301,10 +170,7 @@ class LSLCameraStreamer:
             if frame is None:
                 raise RuntimeError("Failed to capture test frame")
                 
-            # Store camera type
-            self.is_picamera = True
             print("Successfully initialized PiCamera")
-            
             return True
 
         except Exception as e:
@@ -315,7 +181,7 @@ class LSLCameraStreamer:
                 except Exception as e:
                     print(f"Error stopping PiCamera: {e}")
             self.camera = None
-            return False
+            raise RuntimeError(f"Failed to initialize PiCamera: {e}")
 
     def _initialize_video_writer(self):
         """Initialize the video writer for saving frames."""
@@ -336,22 +202,13 @@ class LSLCameraStreamer:
             print(f"Initializing video writer for file: {output_file}")
             
             # Determine codec
-            if self.codec == 'auto':
-                if self.is_picamera:
-                    # Use H.264 for PiCamera
-                    fourcc = cv2.VideoWriter_fourcc(*'avc1')
-                else:
-                    # Use MJPG for webcams
-                    fourcc = cv2.VideoWriter_fourcc(*'MJPG')
-            else:
-                # Use specified codec
-                codec_map = {
-                    'h264': 'avc1',
-                    'h265': 'hev1',
-                    'mjpg': 'MJPG'
-                }
-                fourcc = cv2.VideoWriter_fourcc(*codec_map.get(self.codec, 'avc1'))
-                
+            codec_map = {
+                'h264': 'avc1',
+                'h265': 'hev1', 
+                'mjpg': 'MJPG'
+            }
+            fourcc = cv2.VideoWriter_fourcc(*codec_map.get(self.codec, 'avc1'))
+            
             # Create video writer
             self.video_writer = cv2.VideoWriter(
                 output_file,
@@ -430,7 +287,7 @@ class LSLCameraStreamer:
             
             # Add metadata
             self.info.desc().append_child_value("manufacturer", "Raspberry Pi")
-            self.info.desc().append_child_value("camera_model", "IMX708" if self.is_picamera else "Webcam")
+            self.info.desc().append_child_value("camera_model", "IMX708")
             self.info.desc().append_child_value("resolution", f"{self.width}x{self.height}")
             self.info.desc().append_child_value("fps", str(self.actual_fps))
             
@@ -462,36 +319,10 @@ class LSLCameraStreamer:
             return False
             
         try:
-            # Initialize camera
-            if self.is_picamera:
-                self.camera = Picamera2()
-                config = self.camera.create_video_configuration(
-                    main={"size": (self.width, self.height), "format": "RGB888"},
-                    lores={"size": (self.width, self.height), "format": "YUV420"}
-                )
-                self.camera.configure(config)
-                self.camera.start()
-                print(f"PiCamera initialized with resolution {self.width}x{self.height}")
-            else:
-                self.camera = cv2.VideoCapture(self.camera_id)
-                if not self.camera.isOpened():
-                    raise RuntimeError("Failed to open camera")
-                self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-                self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-                print(f"Webcam initialized with resolution {self.width}x{self.height}")
-                
-            # Initialize LSL stream if enabled
-            if self.push_to_lsl:
-                self._setup_lsl()
-                
-            # Initialize buffer trigger if enabled
-            if self.use_buffer:
-                self._initialize_buffer_trigger()
-                
-            # Initialize video writer if enabled
-            if self.save_video:
-                self._initialize_video_writer()
-                
+            # Initialize camera - we only need to do this once
+            print("Starting Pi camera...")
+            self._initialize_camera()
+            
             # Set running flag
             self._is_running = True
             print("Camera stream started")
@@ -523,18 +354,11 @@ class LSLCameraStreamer:
                 print(f"Error releasing video writer: {e}")
                 
         # Release camera
-        if self.is_picamera:
-            if self.camera is not None:
-                try:
-                    self.camera.stop()
-                except Exception as e:
-                    print(f"Error stopping PiCamera: {e}")
-        else:
-            if self.camera is not None:
-                try:
-                    self.camera.release()
-                except Exception as e:
-                    print(f"Error releasing webcam: {e}")
+        if self.camera is not None:
+            try:
+                self.camera.stop()
+            except Exception as e:
+                print(f"Error stopping PiCamera: {e}")
                     
         # Close preview window
         if self.show_preview:
@@ -548,21 +372,14 @@ class LSLCameraStreamer:
             if not self._is_running:
                 return None
                 
-            if self.is_picamera:
-                # Capture frame from PiCamera
-                with self.camera_lock:
-                    # Create a memory-mapped array to store the frame
-                    frame = np.empty((self.height, self.width, 3), dtype=np.uint8)
-                    self.camera.capture(frame, format='rgb', use_video_port=True)
-                    
-                    # Convert RGB to BGR for OpenCV
-                    frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-            else:
-                # Capture frame from standard webcam
-                ret, frame = self.camera.read()
-                if not ret:
-                    print("Failed to grab frame from camera")
-                    return None
+            # Capture frame from PiCamera
+            with self.camera_lock:
+                # Create a memory-mapped array to store the frame
+                frame = np.empty((self.height, self.width, 3), dtype=np.uint8)
+                self.camera.capture(frame, format='rgb', use_video_port=True)
+                
+                # Convert RGB to BGR for OpenCV
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
                     
             # Update frame count
             self.frame_count += 1
@@ -747,7 +564,7 @@ class LSLCameraStreamer:
             "stream_name": self.stream_name,
             "source_id": self.source_id,
             "camera_model": self.camera_model,
-            "source_type": "PiCamera" if self.is_picamera else "Webcam",
+            "source_type": "PiCamera",
             "is_running": self._is_running,
             "auto_output_filename": self.auto_output_filename if hasattr(self, 'auto_output_filename') else None,
             "threaded_writer_enabled": self.save_video,
