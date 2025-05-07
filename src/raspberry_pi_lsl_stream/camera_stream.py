@@ -193,7 +193,7 @@ class LSLCameraStreamer:
                 try:
                     if self.is_picamera:
                         self.camera.stop()
-                    else:
+                        else:
                         self.camera.release()
                 except Exception as e:
                     print(f"Error releasing camera: {e}")
@@ -450,7 +450,7 @@ class LSLCameraStreamer:
             p = psutil.Process()
             p.cpu_affinity([cpu_core])
             print(f"Set {thread_name} affinity to core {cpu_core}")
-        except Exception as e:
+                    except Exception as e:
             print(f"Failed to set CPU affinity for {thread_name}: {e}")
 
     def start(self):
@@ -470,7 +470,7 @@ class LSLCameraStreamer:
                 self.camera.configure(config)
                 self.camera.start()
                 print(f"PiCamera initialized with resolution {self.width}x{self.height}")
-            else:
+                else:
                 self.camera = cv2.VideoCapture(self.camera_id)
                 if not self.camera.isOpened():
                     raise RuntimeError("Failed to open camera")
@@ -491,7 +491,7 @@ class LSLCameraStreamer:
                 self._initialize_video_writer()
                 
             # Set running flag
-            self._is_running = True
+             self._is_running = True
             print("Camera stream started")
             
             # Main capture loop
@@ -513,7 +513,7 @@ class LSLCameraStreamer:
                             if self.save_video and self.video_writer is not None:
                                 if not self.frame_queue.full():
                                     self.frame_queue.put(frame)
-                            else:
+        else:
                                 print("Frame queue full, dropping frame")
                     else:
                         # Normal processing without buffer
@@ -538,8 +538,8 @@ class LSLCameraStreamer:
     def stop(self):
         """Stop the camera capture and processing loop."""
         if not self._is_running:
-            return 
-            
+             return 
+             
         print("Stopping camera stream...")
         self._is_running = False
         
@@ -566,7 +566,7 @@ class LSLCameraStreamer:
             if self.camera is not None:
                 try:
                     self.camera.release()
-                except Exception as e:
+            except Exception as e:
                     print(f"Error releasing webcam: {e}")
                     
         # Close preview window
@@ -587,7 +587,7 @@ class LSLCameraStreamer:
                     
                     # Convert RGB to BGR for OpenCV
                     frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-            else:
+                 else:
                 # Capture frame from standard webcam
                 ret, frame = self.camera.read()
                 if not ret:
@@ -602,7 +602,7 @@ class LSLCameraStreamer:
                 try:
                     self.buffer.add_frame(frame)
                     print(f"Added frame to buffer. Current size: {self.buffer.get_buffer_size()}")
-                except Exception as e:
+            except Exception as e:
                     print(f"Error adding frame to buffer: {e}")
                     
             # Push frame to LSL if enabled
@@ -623,7 +623,7 @@ class LSLCameraStreamer:
                     print(f"Error adding frame to video queue: {e}")
             
             # Show preview if enabled
-            if self.show_preview:
+        if self.show_preview:
                 try:
                     cv2.imshow('Camera Preview', frame)
                     key = cv2.waitKey(1)
@@ -703,7 +703,7 @@ class LSLCameraStreamer:
             self.recording_triggered = True
             print("Recording started")
             
-        except Exception as e:
+                          except Exception as e:
             print(f"Error handling recording trigger: {e}")
             
     def _handle_recording_stop(self):
@@ -719,7 +719,7 @@ class LSLCameraStreamer:
             if self.video_writer is not None:
                 try:
                     self.video_writer.release()
-                except Exception as e:
+                 except Exception as e:
                     print(f"Error releasing video writer: {e}")
                 finally:
                     self.video_writer = None
@@ -729,7 +729,7 @@ class LSLCameraStreamer:
             self.recording_triggered = False
             print("Recording stopped")
             
-        except Exception as e:
+                 except Exception as e:
             print(f"Error handling recording stop: {e}")
 
     def manual_trigger(self):

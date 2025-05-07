@@ -12,7 +12,7 @@
 # --- Error Handling --- 
 set -e # Exit immediately if a command exits with a non-zero status.
 
-# --- Check if running as root ---
+# --- Check if running as root --- 
 if [ "$(id -u)" -ne 0 ]; then
   echo "This script must be run as root (use sudo). Exiting." >&2
   exit 1
@@ -413,7 +413,7 @@ echo "curl -d \"stop recording\" ntfy.sh/raspie_trigger"
 echo ""
 echo "A system reboot is recommended if you changed camera settings:"
 echo "sudo reboot"
-echo "-----------------------------------------------------" 
+echo "-----------------------------------------------------"
 
 # Create a convenience script for viewing live output
 cat << 'EOF' > "$PROJECT_DIR/watch-raspie.sh"
