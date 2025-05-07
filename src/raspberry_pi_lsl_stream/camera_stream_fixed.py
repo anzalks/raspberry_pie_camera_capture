@@ -7,6 +7,7 @@ import traceback
 import platform # For OS-specific checks
 import os # Added for checking device existence
 import threading # Added for writer thread
+import queue # Added for frame buffer queue
 from queue import Queue, Empty, Full # Added for frame buffer queue
 import glob # Added for device detection
 import datetime # Added for timestamp generation
@@ -230,6 +231,7 @@ class LSLCameraStreamer:
         """Initialize webcam with specified index."""
         try:
             print(f"Initializing webcam with index {index}")
+            cap = None
             
             # Create capture object
             cap = cv2.VideoCapture(index)
@@ -398,7 +400,7 @@ class LSLCameraStreamer:
                 
                 # Mark task as done in the queue
                 self.frame_queue.task_done()
-            except queue.Empty:
+            except Empty:
                 # This is expected when using timeout to allow clean shutdown
                 continue
             except Exception as e:
@@ -457,7 +459,7 @@ class LSLCameraStreamer:
         """Start the camera capture and processing loop."""
         if self._is_running:
             print("Camera stream is already running")
-            return
+            return False
             
         try:
             # Initialize camera
@@ -493,47 +495,12 @@ class LSLCameraStreamer:
             # Set running flag
             self._is_running = True
             print("Camera stream started")
+            return True
             
-            # Main capture loop
-            while self._is_running:
-                try:
-                    # Capture frame
-                    frame = self.capture_frame()
-                    if frame is None:
-                        print("Failed to capture frame")
-                        continue
-                        
-                    # Process frame based on current state
-                    if self.use_buffer:
-                        if self.waiting_for_trigger:
-                            # Add frame to buffer only
-                            self.buffer.add_frame(frame)
-                        elif self.recording_triggered:
-                            # Write frame to video file
-                            if self.save_video and self.video_writer is not None:
-                                if not self.frame_queue.full():
-                                    self.frame_queue.put(frame)
-                            else:
-                                print("Frame queue full, dropping frame")
-                    else:
-                        # Normal processing without buffer
-                        if self.save_video and self.video_writer is not None:
-                            if not self.frame_queue.full():
-                                self.frame_queue.put(frame)
-                            else:
-                                print("Frame queue full, dropping frame")
-                                
-                    # Control frame rate
-                    if self.target_fps > 0:
-                        time.sleep(1.0 / self.target_fps)
-                        
-                except Exception as e:
-                    print(f"Error in main capture loop: {e}")
-                    time.sleep(0.1)  # Prevent tight loop on error
-                    
         except Exception as e:
             print(f"Error starting camera stream: {e}")
             self.stop()
+            return False
 
     def stop(self):
         """Stop the camera capture and processing loop."""
@@ -544,7 +511,7 @@ class LSLCameraStreamer:
         self._is_running = False
         
         # Stop writer thread if running
-        if self.writer_thread is not None:
+        if self.writer_thread is not None and self.stop_writer_event is not None:
             self.stop_writer_event.set()
             self.writer_thread.join(timeout=2.0)
             
@@ -578,6 +545,9 @@ class LSLCameraStreamer:
     def capture_frame(self):
         """Capture a single frame from the camera."""
         try:
+            if not self._is_running:
+                return None
+                
             if self.is_picamera:
                 # Capture frame from PiCamera
                 with self.camera_lock:
@@ -597,14 +567,6 @@ class LSLCameraStreamer:
             # Update frame count
             self.frame_count += 1
             
-            # Add frame to buffer if enabled
-            if self.use_buffer:
-                try:
-                    self.buffer.add_frame(frame)
-                    print(f"Added frame to buffer. Current size: {self.buffer.get_buffer_size()}")
-                except Exception as e:
-                    print(f"Error adding frame to buffer: {e}")
-                    
             # Push frame to LSL if enabled
             if self.push_to_lsl and self.outlet is not None:
                 try:
@@ -614,13 +576,12 @@ class LSLCameraStreamer:
                 except Exception as e:
                     print(f"Error pushing frame to LSL: {e}")
                     
-            # Add frame to video writer queue if saving video
-            if self.save_video and self.video_writer is not None:
+            # Add frame to buffer if enabled
+            if self.use_buffer and self.buffer:
                 try:
-                    if not self.frame_queue.full():
-                        self.frame_queue.put(frame)
+                    self.buffer.add_frame(frame)
                 except Exception as e:
-                    print(f"Error adding frame to video queue: {e}")
+                    print(f"Error adding frame to buffer: {e}")
             
             # Show preview if enabled
             if self.show_preview:
@@ -630,9 +591,9 @@ class LSLCameraStreamer:
                     if key == ord('q'):
                         self.stop()
                     elif key == ord('s'):
-                        self.trigger_manually()
+                        self.manual_trigger()
                     elif key == ord('x'):
-                        self.stop_manually()
+                        self.manual_stop()
                 except Exception as e:
                     print(f"Error showing preview: {e}")
                     
@@ -691,12 +652,12 @@ class LSLCameraStreamer:
                 self._initialize_video_writer()
                 
             # Write buffered frames
-            if self.save_video and self.video_writer is not None:
-                for frame in frames:
+            if self.save_video and self.video_writer is not None and self.frame_queue is not None:
+                for frame, timestamp in frames:
                     if not self.frame_queue.full():
                         self.frame_queue.put(frame)
-            else:
-                print("Frame queue full, dropping frame")
+                    else:
+                        print("Frame queue full, dropping frame")
                         
             # Update state
             self.waiting_for_trigger = False
@@ -719,10 +680,9 @@ class LSLCameraStreamer:
             if self.video_writer is not None:
                 try:
                     self.video_writer.release()
+                    self.video_writer = None
                 except Exception as e:
                     print(f"Error releasing video writer: {e}")
-                finally:
-                    self.video_writer = None
                     
             # Update state
             self.waiting_for_trigger = True
@@ -814,41 +774,32 @@ class LSLCameraStreamer:
     # Ensure cleanup if the object is deleted or goes out of scope
     def __del__(self):
         """Destructor to ensure stop() is called for cleanup."""
-        # print(f"LSLCameraStreamer object ({self.source_id}) being deleted. Ensuring stop().")
         self.stop() # Call stop on deletion
 
 class StatusDisplay:
     """Display real-time status updates in the terminal."""
     
-    def __init__(self, update_interval=1.0):
+    def __init__(self, camera_streamer=None, buffer_manager=None, ntfy_topic=None, update_interval=1.0):
         """Initialize the status display.
         
         Args:
-            update_interval (float): Update interval in seconds.
+            camera_streamer: The LSLCameraStreamer instance to monitor
+            buffer_manager: The BufferTriggerManager instance to monitor
+            ntfy_topic: The ntfy topic for remote control
+            update_interval: Update interval in seconds
         """
         self.update_interval = update_interval
+        self.camera_streamer = camera_streamer
+        self.buffer_manager = buffer_manager
+        self.ntfy_topic = ntfy_topic
         self.stop_event = threading.Event()
         self.display_thread = None
-        self.frame_count = 0
-        self.frames_written = 0
-        self.frames_dropped = 0
-        self.buffer_size = 0
-        self.buffer_duration = 0.0
-        self.recording_active = False
-        self.start_time = None
-        self.fps = 0.0
-        self.camera_model = "Unknown"
-        self.resolution = "0x0"
-        self.ntfy_topic = "Unknown"
-        self.last_message = ""
-        self.last_message_time = 0
         
     def start(self):
         """Start the status display thread."""
         if self.display_thread is not None:
             return
             
-        self.start_time = time.time()
         self.stop_event.clear()
         self.display_thread = threading.Thread(target=self._display_loop, daemon=True)
         self.display_thread.start()
@@ -862,84 +813,42 @@ class StatusDisplay:
         self.display_thread.join(timeout=2.0)
         self.display_thread = None
         
-    def update(self, frame_count, frames_written, frames_dropped, buffer_size, buffer_duration=0.0, 
-               recording_active=False, camera_model="Unknown", resolution="0x0", ntfy_topic="Unknown"):
-        """Update status values."""
-        self.frame_count = frame_count
-        self.frames_written = frames_written
-        self.frames_dropped = frames_dropped
-        self.buffer_size = buffer_size
-        self.buffer_duration = buffer_duration
-        self.recording_active = recording_active
-        self.camera_model = camera_model
-        self.resolution = resolution
-        self.ntfy_topic = ntfy_topic
+    def update(self):
+        """Update the display with current information."""
+        if not self.camera_streamer:
+            return
+            
+        info = self.camera_streamer.get_info()
         
-    def notify(self, message):
-        """Record a notification message to display."""
-        self.last_message = message
-        self.last_message_time = time.time()
+        # Get buffer info
+        buffer_size = 0
+        buffer_duration = 0.0
+        recording_active = False
+        
+        if self.buffer_manager:
+            buffer_size = self.buffer_manager.get_buffer_size()
+            buffer_duration = self.buffer_manager.get_buffer_duration()
+            recording_active = not self.camera_streamer.waiting_for_trigger
+            
+        # Print status
+        print("\033[H\033[J")  # Clear screen
+        print(f"=== Camera Status ===")
+        print(f"Camera: {info['source_type']} ({info['width']}x{info['height']})")
+        print(f"FPS: {info['actual_fps']:.1f}")
+        print(f"Frames captured: {self.camera_streamer.get_frame_count()}")
+        print(f"Frames written: {self.camera_streamer.get_frames_written()}")
+        print(f"Frames dropped: {self.camera_streamer.get_frames_dropped()}")
+        print(f"Buffer size: {buffer_size} frames ({buffer_duration:.1f}s)")
+        print(f"Recording: {'ACTIVE' if recording_active else 'WAITING FOR TRIGGER'}")
+        print(f"NTFY topic: {self.ntfy_topic}")
+        print(f"Press 's' to start recording, 'x' to stop, 'q' to quit")
         
     def _display_loop(self):
-        """Display loop that updates status periodically."""
-        # Print initial blank lines for status display
-        for i in range(15):
-            print("")
-            
+        """Thread function to update the display periodically."""
         while not self.stop_event.is_set():
             try:
-                # Calculate elapsed time and FPS
-                elapsed_time = time.time() - self.start_time
-                self.fps = self.frame_count / elapsed_time if elapsed_time > 0 else 0
-                
-                # Format elapsed time as HH:MM:SS
-                hours = int(elapsed_time // 3600)
-                minutes = int((elapsed_time % 3600) // 60)
-                seconds = int(elapsed_time % 60)
-                elapsed_formatted = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-                
-                # Clear previous display (move up 15 lines and clear each line)
-                print("\033[15A", end="")
-                for i in range(15):
-                    print("\033[K")
-                print("\033[15A", end="")
-                
-                # Print header with timestamp
-                current_time = time.strftime("%Y-%m-%d %H:%M:%S")
-                print(f"┌────────────────────────────────────────────────────────────────┐")
-                print(f"│ RASPBERRY PI CAMERA CAPTURE - {current_time} │")
-                print(f"├────────────────────────────────────────────────────────────────┤")
-                
-                # Print camera info
-                print(f"│ Camera: {self.camera_model:<20} Resolution: {self.resolution:<11} │")
-                print(f"│ Runtime: {elapsed_formatted}                 FPS: {self.fps:.1f}        │")
-                print(f"├────────────────────────────────────────────────────────────────┤")
-                
-                # Print recording status
-                status = "RECORDING" if self.recording_active else "WAITING FOR TRIGGER"
-                print(f"│ Status: {status:<46} │")
-                print(f"├────────────────────────────────────────────────────────────────┤")
-                
-                # Print buffer and frame statistics
-                print(f"│ Buffer size: {self.buffer_size} frames ({self.buffer_duration:.1f}s)                      │")
-                print(f"│ Frames captured: {self.frame_count:<10}                            │")
-                print(f"│ Frames written: {self.frames_written:<10}                           │")
-                print(f"│ Frames dropped: {self.frames_dropped:<10}                           │")
-                print(f"├────────────────────────────────────────────────────────────────┤")
-                
-                # Print notification and control info
-                msg_age = time.time() - self.last_message_time
-                last_msg = self.last_message if msg_age < 10.0 else ""
-                print(f"│ NTFY topic: {self.ntfy_topic:<42} │")
-                print(f"│ Last message: {last_msg:<41} │")
-                print(f"└────────────────────────────────────────────────────────────────┘")
-                
-                # Wait for next update
+                self.update()
                 time.sleep(self.update_interval)
-                
             except Exception as e:
-                print(f"Error in status display: {e}")
-                time.sleep(1.0)
-
-# (Optional: Old standalone function - kept commented out for reference if needed)
-# def stream_camera(...): ... 
+                print(f"Error updating status display: {e}")
+                time.sleep(1.0) 
