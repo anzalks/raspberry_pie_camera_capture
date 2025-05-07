@@ -1,138 +1,120 @@
-# Raspberry Pi Camera and Audio Capture
+# Raspberry Pi Camera Capture
 
-Camera and audio capture system for Raspberry Pi with LSL integration and ntfy notifications.
+A Python package for capturing video from Raspberry Pi cameras and streaming frame data over LabStreamingLayer (LSL).
 
 ## Features
 
-- Camera auto-detection (PiCamera or webcam)
-- Audio capture from USB microphones
-- Real-time preview for both audio and video
-- Video and audio recording with pre-trigger buffer
-- LSL streaming
-- ntfy notifications for remote control
-- Status display in terminal
-- CPU core affinity management for performance optimization
+- **High-Performance Video Capture**: 400x400 resolution at 100fps
+- **Pre-trigger Rolling Buffer**: Capture 20 seconds of footage before a trigger event
+- **Remote Control**: Start/stop recording via ntfy.sh notifications from any device
+- **Date-based Storage**: Organizes recordings by date with separate video and audio folders
+- **Audio Capture**: Support for USB microphones with synchronized recording
+- **LSL Integration**: Stream video and audio data for research applications
+- **Performance Optimization**: CPU core affinity control and threaded writing
+- **Unattended Operation**: Run as a system service or daily initialization script
 
-## Installation
+## Quick Start
 
-1. Clone the repository:
+### Daily Recording Setup
+
+Use the daily initialization script to set up the camera and audio recording system:
+
 ```bash
-git clone https://github.com/anzalks/raspberry_pie_camera_capture.git
-cd raspberry_pie_camera_capture
+./start-daily-recording.sh
 ```
 
-2. Create and activate a virtual environment:
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-```
-
-3. Install the package:
-```bash
-pip install -e .
-```
-
-4. For CPU core affinity management, ensure psutil is installed:
-```bash
-pip install psutil
-```
-
-## Usage
-
-### Combined Camera and Audio Capture
-
-Run the combined camera and audio capture script:
-```bash
-./run-camera-recorder.sh
-```
-
-This script:
-- Activates the virtual environment
-- Cleans up any existing camera/audio processes
-- Runs both camera and audio capture with proper CPU core assignments
-- Handles graceful shutdown
-
-### Camera Capture (Standalone)
-
-Run the camera capture script:
-```bash
-camera-capture [options]
-```
-
-Options:
-- `--camera-id`: Camera index or ID to use (default: 0)
-- `--width`: Frame width (default: 640)
-- `--height`: Frame height (default: 480)
-- `--fps`: Target frame rate (default: 30.0)
-- `--save-video`: Save video files
-- `--output-dir`: Directory to save recordings (default: recordings)
-- `--codec`: Video codec to use (auto, h264, h265, mjpg)
-- `--no-preview`: Disable preview window
-- `--no-lsl`: Disable LSL streaming
-- `--stream-name`: LSL stream name (default: camera_stream)
-- `--no-buffer`: Disable buffer trigger system
-- `--buffer-size`: Buffer size in seconds (default: 5.0)
-- `--ntfy-topic`: Topic for ntfy notifications (default: raspie-camera-test)
-- `--capture-cpu-core`: CPU core to use for capture thread
-- `--writer-cpu-core`: CPU core to use for writer thread
-- `--lsl-cpu-core`: CPU core to use for LSL thread
-- `--ntfy-cpu-core`: CPU core to use for ntfy subscriber thread
-
-### Audio Capture (Standalone)
-
-Run the audio capture script:
-```bash
-audio-stream [options]
-```
-
-Options:
-- `--device-index`: Audio device index or name (default: 0)
-- `--sample-rate`: Sample rate in Hz (default: 48000)
-- `--channels`: Number of audio channels (default: 1)
-- `--save-audio`: Save audio files
-- `--output-dir`: Directory to save recordings (default: recordings)
-- `--no-lsl`: Disable LSL streaming
-- `--stream-name`: LSL stream name (default: RaspieAudio)
-- `--buffer-size`: Buffer size in seconds (default: 5.0)
-- `--ntfy-topic`: Topic for ntfy notifications (default: raspie-camera-test)
-- `--capture-cpu-core`: CPU core to use for capture thread
-- `--writer-cpu-core`: CPU core to use for writer thread
+This will:
+1. Create date-based directories for today (YYYY_MM_DD format)
+2. Set up separate video and audio subdirectories
+3. Start the camera capture with 400x400 resolution at 100fps
+4. Start audio capture from the default USB microphone
+5. Configure remote control via ntfy.sh
 
 ### Remote Control
 
-Start recording:
+Control recording from any device using ntfy.sh:
+
 ```bash
-curl -d "Start Recording" ntfy.sh/raspie-camera-trigger
+# Start recording
+curl -d "Start Recording" ntfy.sh/raspie-camera-test
+
+# Stop recording
+curl -d "Stop Recording" ntfy.sh/raspie-camera-test
 ```
 
-Stop recording:
-```bash
-curl -d "Stop Recording" ntfy.sh/raspie-camera-trigger
+You can also use the ntfy.sh mobile app or web interface to send these commands.
+
+### Configuration
+
+Edit `config.yaml` to customize settings:
+
+```yaml
+camera:
+  resolution:
+    width: 400
+    height: 400
+  fps: 100
+  codec: "h264"
+  quality: "ultrafast"
+  bitrate: 2000000  # 2 Mbps
+
+buffer:
+  enabled: true
+  duration: 20  # seconds of pre-trigger buffer
+
+# ... other settings ...
 ```
 
-## CPU Core Optimization
+## Advanced Usage
 
-For Raspberry Pi 4 (with 4 cores), we recommend:
-- Video capture: Core 0
-- Video writing: Core 1
-- Audio capture: Core 2
-- Audio writing: Core 3
-- LSL streaming and ntfy monitoring: Core 0/3 (less resource-intensive)
+### Manual Camera Control
 
-## Development
-
-1. Create a development environment:
 ```bash
-python3 -m venv .venv
+python -m src.raspberry_pi_lsl_stream.camera_capture \
+  --width 400 \
+  --height 400 \
+  --fps 100 \
+  --save-video \
+  --codec h264 \
+  --buffer-size 20 \
+  --ntfy-topic raspie-camera-test
+```
+
+### Manual Audio Control
+
+```bash
+python -m src.raspberry_pi_lsl_stream.cli audio \
+  --device default \
+  --save-audio \
+  --buffer-size 20 \
+  --ntfy-topic raspie-camera-test
+```
+
+## Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/anzalks/raspberry_pie_camera_capture.git
+cd raspberry_pie_camera_capture
+
+# Create virtual environment
+python -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
+
+# Install dependencies
+pip install -e .
 ```
 
-2. Run tests:
-```bash
-pytest tests/
-```
+## Requirements
 
-## License
+- Raspberry Pi 4 or newer
+- Raspberry Pi Camera Module or USB webcam
+- USB microphone (optional)
+- Python 3.9+
+- Internet connection for ntfy.sh remote control
 
-MIT License
+## Author
+
+- Anzal
+- Email: anzal.ks@gmail.com
+- GitHub: https://github.com/anzalks/
