@@ -8,6 +8,7 @@ Email: anzal.ks@gmail.com
 import sys
 import time
 import logging
+import os
 from raspberry_pi_lsl_stream.camera_stream import LSLCameraStreamer
 from raspberry_pi_lsl_stream.buffer_trigger import BufferTriggerManager
 
@@ -20,12 +21,16 @@ def test_camera_and_trigger():
     """Test camera detection and ntfy integration"""
     logger.info("Starting camera and trigger test...")
     
+    # Check if we're running over SSH
+    is_ssh = 'SSH_CONNECTION' in os.environ
+    show_preview = not is_ssh  # Only show preview if not running over SSH
+    
     # Create camera streamer with debug settings
     streamer = LSLCameraStreamer(
         width=640,
         height=480,
         fps=30,
-        show_preview=True,  # Enable preview for testing
+        show_preview=show_preview,  # Disable preview over SSH
         camera_index='auto',  # Try to auto-detect camera
         save_video=True,
         use_buffer=True,  # Enable buffer for testing
