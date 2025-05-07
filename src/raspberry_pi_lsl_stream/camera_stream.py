@@ -481,7 +481,7 @@ class LSLCameraStreamer:
             return
             
         # Create output directory if it doesn't exist
-            if self.output_path:
+        if self.output_path:
             os.makedirs(self.output_path, exist_ok=True)
 
         # Generate a timestamped filename for the video file
@@ -490,7 +490,7 @@ class LSLCameraStreamer:
         
         if self.output_path:
             self.output_file = os.path.join(self.output_path, video_file)
-                else:
+        else:
             self.output_file = video_file
 
     def _setup_lsl(self):
@@ -623,8 +623,8 @@ class LSLCameraStreamer:
             # Set CPU affinity for capture operations if specified
             if PSUTIL_AVAILABLE and self.capture_cpu_core is not None:
                 self._set_thread_affinity("capture operations", self.capture_cpu_core)
-             
-             self._is_running = True
+            
+            self._is_running = True
         else:
             print("Error: Camera hardware could not be started. Stopping dependent threads.")
             # Stop writer thread if it was started
