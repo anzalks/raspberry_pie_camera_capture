@@ -217,20 +217,20 @@ class LSLCameraStreamer:
                 
             print(f"Initializing video writer for file: {output_file}")
             
-            # Determine codec
+            # Determine codec - using Raspberry Pi compatible FourCC codes
             codec_map = {
-                'h264': 'avc1',  # H.264 codec for MP4
-                'h265': 'hev1',  # H.265/HEVC codec
+                'h264': 'X264',  # X264 is more compatible with Raspberry Pi
+                'h265': 'X265',  # X265 for HEVC codec
                 'mjpg': 'MJPG'   # Motion JPEG
             }
             
             if self.codec.lower() not in codec_map:
-                print(f"Warning: Unsupported codec '{self.codec}'. Falling back to h264/avc1.")
-                fourcc = cv2.VideoWriter_fourcc(*'avc1')
+                print(f"Warning: Unsupported codec '{self.codec}'. Falling back to h264/X264.")
+                fourcc = cv2.VideoWriter_fourcc(*'X264')
             else:
                 fourcc = cv2.VideoWriter_fourcc(*codec_map[self.codec.lower()])
                 
-            print(f"Using codec: {self.codec.lower()} with FourCC: {codec_map.get(self.codec.lower(), 'avc1')}")
+            print(f"Using codec: {self.codec.lower()} with FourCC: {codec_map.get(self.codec.lower(), 'X264')}")
             
             # Create video writer
             self.video_writer = cv2.VideoWriter(
@@ -241,8 +241,21 @@ class LSLCameraStreamer:
             )
             
             if not self.video_writer.isOpened():
-                raise RuntimeError(f"Failed to open video writer with codec {self.codec}")
-                
+                # Try an alternate codec if the first one failed
+                print("Failed to open video writer with primary codec, trying MJPG as fallback...")
+                fallback_file = os.path.join(os.path.dirname(output_file), 
+                                            f"fallback_{os.path.basename(output_file)}.avi")
+                self.video_writer = cv2.VideoWriter(
+                    fallback_file,
+                    cv2.VideoWriter_fourcc(*'MJPG'),
+                    self.actual_fps,
+                    (self.width, self.height)
+                )
+                if not self.video_writer.isOpened():
+                    raise RuntimeError(f"Failed to open video writer with any codec")
+                else:
+                    print(f"Successfully opened video writer with fallback MJPG codec: {fallback_file}")
+                    
             # Initialize frame queue for threaded writing
             self.frame_queue = Queue(maxsize=int(self.queue_size_seconds * self.actual_fps))
             
@@ -251,7 +264,7 @@ class LSLCameraStreamer:
             self.writer_thread = threading.Thread(target=self._writer_loop, daemon=True)
             self.writer_thread.start()
             
-            print(f"Video writer initialized with codec {self.codec} at {self.actual_fps}fps")
+            print(f"Video writer initialized successfully")
             
         except Exception as e:
             print(f"Error initializing video writer: {e}")
