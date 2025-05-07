@@ -461,12 +461,16 @@ class LSLCameraStreamer:
             traceback.print_exc()
             # Clean up potential picam2 object (either temp or self assigned)
             if self.picam2:
-                 try: self.picam2.close()
-                 except: pass
-            self.picam2 = None
+                try: 
+                    self.picam2.close()
+                except: 
+                    pass
+                self.picam2 = None
             elif temp_picam2: # If error happened before assignment to self.picam2
-                 try: temp_picam2.close()
-                 except: pass
+                try: 
+                    temp_picam2.close()
+                except: 
+                    pass
             self.is_picamera = False
             return False
 
