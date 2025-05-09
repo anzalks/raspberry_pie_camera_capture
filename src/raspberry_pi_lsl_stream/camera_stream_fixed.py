@@ -115,6 +115,10 @@ class LSLCameraStreamer:
         self.num_channels = 3
         self.buffer = None  # Initialize buffer reference
         
+        # Initialize LSL outlets
+        self.outlet = None
+        self.status_outlet = None  # New outlet for recording status
+        
         # Create output directory if needed
         if self.output_path:
             os.makedirs(self.output_path, exist_ok=True)
@@ -128,8 +132,6 @@ class LSLCameraStreamer:
             raise RuntimeError("Picamera2 is required but not available. Please install picamera2.")
                
         # Initialize LSL if enabled
-        self.info = None
-        self.outlet = None
         if self.push_to_lsl:
             self._setup_lsl()
             
@@ -147,6 +149,10 @@ class LSLCameraStreamer:
         self.stop_writer_event = None
         if self.save_video:
             self._initialize_video_writer()
+        
+        # Start status thread for LSL status publishing
+        self.stop_status_event = threading.Event()
+        self.status_thread = None
 
     def _get_raspberry_pi_id(self):
         """Get Raspberry Pi's unique serial number from /proc/cpuinfo."""
@@ -388,10 +394,35 @@ class LSLCameraStreamer:
             self.outlet = StreamOutlet(self.info)
             print(f"LSL stream '{self.stream_name}' created for frame numbers only")
             
+            # Create a separate LSL stream for recording status
+            status_info = StreamInfo(
+                name=f"{self.stream_name}_Status",
+                type='RecordingStatus',
+                channel_count=1,  # Single channel for status flag
+                nominal_srate=10.0,  # Update status at 10Hz
+                channel_format='int32',
+                source_id=f"{self.source_id}_Status"
+            )
+            
+            # Add metadata
+            status_info.desc().append_child_value("manufacturer", "Raspberry Pi")
+            status_info.desc().append_child_value("camera_model", "IMX708")
+            status_info.desc().append_child_value("content", "recording_status")
+            status_info.desc().append_child_value("description", "0=not_recording, 1=recording, 2=buffering")
+            
+            # Create status channel label
+            channels = status_info.desc().append_child("channels")
+            channels.append_child("channel").append_child_value("label", "RecordingStatus")
+            
+            # Create status outlet
+            self.status_outlet = StreamOutlet(status_info)
+            print(f"Created LSL status outlet: {self.stream_name}_Status")
+            
         except Exception as e:
             print(f"Error setting up LSL stream: {e}")
             self.info = None
             self.outlet = None
+            self.status_outlet = None
 
     def _set_thread_affinity(self, thread_name, cpu_core):
         """Set CPU affinity for the current thread if psutil is available."""
@@ -418,6 +449,18 @@ class LSLCameraStreamer:
             
             # Set running flag
             self._is_running = True
+            
+            # Start status thread if LSL is enabled
+            if self.push_to_lsl and self.status_outlet:
+                self.stop_status_event.clear()
+                self.status_thread = threading.Thread(
+                    target=self._status_thread,
+                    name="CameraStatusThread",
+                    daemon=True
+                )
+                self.status_thread.start()
+                print("Camera status thread started")
+            
             print("Camera stream started")
             return True
             
@@ -433,6 +476,12 @@ class LSLCameraStreamer:
             
         print("Stopping camera stream...")
         self._is_running = False
+        
+        # Stop status thread if running
+        if self.status_thread is not None and self.stop_status_event is not None:
+            self.stop_status_event.set()
+            self.status_thread.join(timeout=2.0)
+            self.status_thread = None
         
         # Stop writer thread if running
         if self.writer_thread is not None and self.stop_writer_event is not None:
@@ -578,6 +627,11 @@ class LSLCameraStreamer:
             # Update state
             self.waiting_for_trigger = False
             self.recording_triggered = True
+            
+            # Send immediate status update
+            if self.push_to_lsl and self.status_outlet:
+                self.status_outlet.push_sample([1])  # 1 = recording
+                
             print("Recording started")
             
         except Exception as e:
@@ -603,6 +657,11 @@ class LSLCameraStreamer:
             # Update state
             self.waiting_for_trigger = True
             self.recording_triggered = False
+            
+            # Send immediate status update
+            if self.push_to_lsl and self.status_outlet:
+                self.status_outlet.push_sample([2])  # 2 = buffering
+                
             print("Recording stopped")
             
         except Exception as e:
@@ -619,6 +678,8 @@ class LSLCameraStreamer:
             return False
             
         print("Manually triggering recording")
+        if self.push_to_lsl and self.status_outlet:
+            self.status_outlet.push_sample([1])  # 1 = recording
         self.buffer_trigger_manager.trigger_manually()
         return True
         
@@ -633,6 +694,8 @@ class LSLCameraStreamer:
             return False
             
         print("Manually stopping recording")
+        if self.push_to_lsl and self.status_outlet:
+            self.status_outlet.push_sample([2])  # 2 = buffering
         self.buffer_trigger_manager.stop_manually()
         return True
 
@@ -691,6 +754,40 @@ class LSLCameraStreamer:
     def __del__(self):
         """Destructor to ensure stop() is called for cleanup."""
         self.stop() # Call stop on deletion
+
+    def _status_thread(self):
+        """Thread for publishing continuous camera status via LSL."""
+        if self.status_outlet is None:
+            return
+            
+        try:
+            # Set CPU affinity if requested
+            if self.lsl_cpu_core is not None:
+                self._set_thread_affinity("status LSL", self.lsl_cpu_core)
+                
+            # Status update loop
+            while not self.stop_status_event.is_set() and self._is_running:
+                try:
+                    # Determine current status
+                    if self.recording_triggered:
+                        status_value = 1  # Recording
+                    elif self.waiting_for_trigger and self.use_buffer:
+                        status_value = 2  # Buffering
+                    else:
+                        status_value = 0  # Idle
+                        
+                    # Send status update through LSL
+                    self.status_outlet.push_sample([status_value])
+                    
+                    # Update at 10Hz
+                    time.sleep(0.1)
+                    
+                except Exception as e:
+                    print(f"Error in camera status thread: {e}")
+                    time.sleep(1.0)  # Avoid tight loop on error
+                    
+        except Exception as e:
+            print(f"Fatal error in camera status thread: {e}")
 
 class StatusDisplay:
     """Display real-time status updates in the terminal."""

@@ -11,6 +11,7 @@ A Python package for capturing video from Raspberry Pi cameras and streaming fra
 - **Date-based Storage**: Organizes recordings by date with separate video and audio folders
 - **Audio Capture**: Support for USB microphones with synchronized recording
 - **LSL Integration**: Stream frame numbers via LSL for synchronization with other data streams
+- **Continuous Status Streams**: Dedicated LSL streams for recording status (0=idle, 1=recording, 2=buffering)
 - **Performance Optimization**: CPU core affinity control and threaded writing
 - **Unattended Operation**: Run as a system service or daily initialization script
 - **Native BGR Format**: Uses native BGR format directly from the camera without conversion
@@ -113,9 +114,34 @@ pip install -e .
 - **Codec Selection**: MJPG (Motion JPEG) is recommended for high frame rates (100fps) at 400x400 resolution
 - **Container Format**: MKV containers are used for better compatibility with MJPG codec
 - **LSL Integration**: Only frame numbers are streamed over LSL to minimize bandwidth and CPU usage
+- **LSL Status Streams**: Continuous 10Hz status updates for both camera and audio (0=idle, 1=recording, 2=buffering) 
 - **Camera API**: Uses picamera2 with direct BGR format capture for best performance
 - **Raspberry Pi ID**: Uses the Pi's unique serial number as the LSL source ID for better device tracking
 - **Fallback Mechanisms**: Multiple fallback options for codec/container compatibility
+
+## LSL Stream Configuration
+
+The system provides multiple LSL streams for synchronization and data integration:
+
+1. **Camera Frame Numbers**: Stream name: `VideoStream` (configurable)
+   - Sends frame numbers (integers) at the capture frame rate
+   - Used for basic synchronization with other data streams
+
+2. **Camera Status**: Stream name: `VideoStream_Status`
+   - Continuously sends the recording status at 10Hz
+   - Values: 0=idle, 1=recording, 2=buffering
+   - Use for precise alignment during post-processing
+
+3. **Audio Chunk Markers**: Stream name: `RaspieAudio` (configurable)
+   - Sends audio chunk indices and timestamps 
+   - Frequency depends on the audio chunk size
+
+4. **Audio Status**: Stream name: `RaspieAudio_Status`  
+   - Continuously sends the recording status at a 10Hz
+   - Values: 0=idle, 1=recording
+   - Use for precise alignment during post-processing
+
+When using these streams for data alignment, the status streams provide an accurate record of when recording was active, allowing for proper synchronization between video frames, audio samples, and other data sources.
 
 ## Requirements
 
