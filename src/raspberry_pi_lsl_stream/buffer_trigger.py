@@ -8,6 +8,8 @@ import json
 import numpy as np
 from collections import deque
 import logging
+import datetime
+import os
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
@@ -17,7 +19,7 @@ logger = logging.getLogger("BufferTrigger")
 class RollingBuffer:
     """Maintains a rolling buffer of frames with timestamps."""
     
-    def __init__(self, buffer_size_seconds=15, expected_fps=30):
+    def __init__(self, buffer_size_seconds=5.0, expected_fps=30):
         """
         Initialize the rolling buffer.
         
@@ -35,17 +37,30 @@ class RollingBuffer:
         self.buffer = deque(maxlen=capacity)
         self.lock = threading.RLock()  # Reentrant lock for thread safety
         
-    def add_frame(self, frame, timestamp):
+    def add_frame(self, frame, timestamp=None):
         """
         Add a frame to the rolling buffer.
         
         Args:
             frame: The video frame (numpy array)
-            timestamp: LSL timestamp when the frame was captured
+            timestamp: Optional timestamp when the frame was captured. If None, current time is used
         """
         with self.lock:
-            # Store a copy of the frame to prevent external modification
-            self.buffer.append((frame.copy(), timestamp))
+            if frame is None:
+                logger.warning("Attempted to add None frame to buffer")
+                return
+                
+            try:
+                # Use current time if no timestamp provided
+                if timestamp is None:
+                    timestamp = time.time()
+                    
+                # Store a copy of the frame to prevent external modification
+                frame_copy = frame.copy()
+                self.buffer.append((frame_copy, timestamp))
+                logger.debug(f"Added frame to buffer. Current size: {len(self.buffer)}")
+            except Exception as e:
+                logger.error(f"Error adding frame to buffer: {e}")
     
     def get_buffer_contents(self):
         """
@@ -56,17 +71,23 @@ class RollingBuffer:
         """
         with self.lock:
             # Return a copy of the buffer contents
-            return list(self.buffer)
+            contents = list(self.buffer)
+            logger.debug(f"Retrieved {len(contents)} frames from buffer")
+            return contents
     
     def clear(self):
         """Clear all frames from the buffer."""
         with self.lock:
+            size = len(self.buffer)
             self.buffer.clear()
+            logger.info(f"Cleared {size} frames from buffer")
     
     def get_buffer_size(self):
         """Return the number of frames currently in the buffer."""
         with self.lock:
-            return len(self.buffer)
+            size = len(self.buffer)
+            logger.debug(f"Buffer size: {size} frames")
+            return size
             
     def get_buffer_duration(self):
         """
@@ -84,13 +105,15 @@ class RollingBuffer:
             newest_timestamp = self.buffer[-1][1]
             
             # Return duration
-            return newest_timestamp - oldest_timestamp
+            duration = newest_timestamp - oldest_timestamp
+            logger.debug(f"Buffer duration: {duration:.2f}s")
+            return duration
 
 
 class NtfySubscriber:
     """Subscribes to ntfy topics and triggers actions on messages."""
     
-    def __init__(self, topic, callback, filter_condition=None):
+    def __init__(self, topic, callback, filter_condition=None, cpu_core=None):
         """
         Initialize the ntfy subscriber.
         
@@ -99,6 +122,7 @@ class NtfySubscriber:
             callback: Function to call when a message is received
             filter_condition: Optional function that takes message dict and returns 
                               True to trigger callback, False to ignore
+            cpu_core: CPU core to pin the subscriber thread to
         """
         self.topic = topic
         self.callback = callback
@@ -106,6 +130,7 @@ class NtfySubscriber:
         self.stop_event = threading.Event()
         self.thread = None
         self.topic_url = f"https://ntfy.sh/{topic}/json"
+        self.cpu_core = cpu_core
         
     def start(self):
         """Start the subscription in a background thread."""
@@ -136,6 +161,18 @@ class NtfySubscriber:
     
     def _subscription_loop(self):
         """Main subscription loop - runs in a background thread."""
+        # Set CPU core affinity if requested and available
+        if hasattr(self, 'cpu_core') and self.cpu_core is not None:
+            try:
+                import psutil
+                p = psutil.Process()
+                p.cpu_affinity([self.cpu_core])
+                logger.info(f"Set ntfy subscription thread affinity to core {self.cpu_core}")
+            except ImportError:
+                logger.warning("psutil not available for CPU affinity control")
+            except Exception as e:
+                logger.error(f"Failed to set CPU affinity for ntfy thread: {e}")
+                
         # Use a session for connection pooling
         session = requests.Session()
         
@@ -196,130 +233,156 @@ class NtfySubscriber:
 class BufferTriggerManager:
     """Manages the rolling buffer and notification trigger for camera recording."""
     
-    def __init__(self, buffer_size_seconds=15, ntfy_topic=None, callback=None, stop_callback=None):
+    def __init__(self, buffer_size_seconds=20.0, ntfy_topic=None, on_trigger=None, on_stop=None, ntfy_cpu_core=None):
         """
         Initialize the buffer trigger manager.
         
         Args:
-            buffer_size_seconds: Size of rolling buffer in seconds
-            ntfy_topic: ntfy topic to subscribe to for triggers
-            callback: Function to call when recording should start
-            stop_callback: Function to call when recording should stop
+            buffer_size_seconds: Number of seconds of footage to keep in the buffer
+            ntfy_topic: The ntfy topic to subscribe to for triggers
+            on_trigger: Function to call when recording is triggered, receives frames list
+            on_stop: Function to call when recording is stopped
+            ntfy_cpu_core: CPU core to pin the ntfy subscriber thread to
         """
-        self.rolling_buffer = RollingBuffer(buffer_size_seconds=buffer_size_seconds)
-        self.recording_active = False
-        self.callback = callback
-        self.stop_callback = stop_callback
+        self.buffer = RollingBuffer(buffer_size_seconds)
         self.ntfy_subscriber = None
+        self.on_trigger = on_trigger
+        self.on_stop = on_stop
+        self.recording_active = False
+        self.ntfy_topic = ntfy_topic
+        self.ntfy_cpu_core = ntfy_cpu_core
         
-        # Set up ntfy subscriber if topic is provided
         if ntfy_topic:
             self.setup_ntfy_subscription(ntfy_topic)
-    
+            
     def setup_ntfy_subscription(self, topic):
-        """Set up the ntfy subscription with the given topic."""
+        """Set up the ntfy subscription for the given topic."""
+        logger.info(f"Setting up ntfy subscription for topic: {topic}")
         self.ntfy_subscriber = NtfySubscriber(
-            topic=topic,
-            callback=self._handle_notification
+            topic,
+            self._handle_notification,
+            cpu_core=self.ntfy_cpu_core
         )
-    
+        
     def start(self):
         """Start the buffer trigger manager."""
+        logger.info("Starting buffer trigger manager")
         if self.ntfy_subscriber:
             self.ntfy_subscriber.start()
-        logger.info("Buffer trigger manager started")
-    
+            
     def stop(self):
         """Stop the buffer trigger manager."""
+        logger.info("Stopping buffer trigger manager")
         if self.ntfy_subscriber:
             self.ntfy_subscriber.stop()
-        logger.info("Buffer trigger manager stopped")
-    
-    def add_frame(self, frame, timestamp):
-        """Add a frame to the rolling buffer."""
-        self.rolling_buffer.add_frame(frame, timestamp)
-    
-    def _handle_notification(self, message):
-        """Handle incoming ntfy notification."""
-        logger.info(f"Received notification: {message.get('title', 'No title')}")
-        
-        # Check if this is a start or stop command
-        message_text = message.get('message', '').lower()
-        action = message.get('action', '').lower()
-        title = message.get('title', '').lower()
-        
-        # Look for stop keywords in various fields
-        stop_indicators = ['stop', 'end', 'halt', 'finish', 'terminate']
-        start_indicators = ['start', 'begin', 'record', 'trigger', 'capture']
-        
-        # Check if any stop indicators are in the message
-        is_stop_command = any(word in message_text for word in stop_indicators) or \
-                         any(word in title for word in stop_indicators) or \
-                         (action and any(word in action for word in stop_indicators))
-                         
-        # Check if any start indicators are in the message (if not explicitly a stop)
-        is_start_command = not is_stop_command and (
-                            any(word in message_text for word in start_indicators) or \
-                            any(word in title for word in start_indicators) or \
-                            (action and any(word in action for word in start_indicators)) or \
-                            # If no explicit action words found, treat as start by default
-                            (not any(word in message_text for word in start_indicators + stop_indicators) and \
-                             not any(word in title for word in start_indicators + stop_indicators) and \
-                             not (action and any(word in action for word in start_indicators + stop_indicators)))
-                          )
-        
-        # Handle stop command
-        if is_stop_command:
-            logger.info("Stop recording command received")
-            if self.recording_active and self.stop_callback:
-                logger.info("Calling stop callback")
-                self.recording_active = False
-                self.stop_callback(message)
-            else:
-                logger.info("Recording not active or no stop callback registered")
-            return
-        
-        # Handle start command
-        if is_start_command:
-            logger.info("Start recording command received")
-            if not self.recording_active:
-                # Get the current buffer contents
-                buffer_frames = self.rolling_buffer.get_buffer_contents()
-                buffer_duration = self.rolling_buffer.get_buffer_duration()
-                
-                logger.info(f"Trigger received with {len(buffer_frames)} frames in buffer ({buffer_duration:.2f}s)")
-                
-                # Call the callback with the buffer contents
-                if self.callback:
-                    self.recording_active = True
-                    self.callback(buffer_frames, message)
-            else:
-                logger.info("Recording already active, ignoring start command")
-            return
             
-        # If we got here, the message didn't contain clear start/stop indicators
-        logger.info(f"Notification did not contain clear start/stop indicators, treating as start by default")
-        if not self.recording_active and self.callback:
-            buffer_frames = self.rolling_buffer.get_buffer_contents()
-            self.recording_active = True
-            self.callback(buffer_frames, message)
-    
-    def trigger_manually(self):
-        """Manually trigger recording (for testing or alternative trigger methods)."""
-        logger.info("Manual trigger activated")
-        
-        # Only trigger if not already recording
+    def add_frame(self, frame):
+        """Add a frame to the buffer."""
         if not self.recording_active:
-            # Simulate a notification with manual=True flag
-            self._handle_notification({"title": "Manual Trigger", "message": "start recording", "manual": True})
+            self.buffer.add_frame(frame, time.time())
+            
+    def _handle_notification(self, message):
+        """Handle an incoming ntfy notification."""
+        try:
+            msg_text = message.get('message', '').lower()
+            logger.info(f"Received notification: {message.get('message', 'No message')}")
+            
+            if 'start recording' in msg_text or 'start' in msg_text:
+                logger.info("Start recording command received")
+                self.trigger_manually()
+            elif 'stop recording' in msg_text or 'stop' in msg_text:
+                logger.info("Stop recording command received")
+                self.stop_manually()
+        except Exception as e:
+            logger.error(f"Error handling notification: {e}")
+            
+    def trigger_manually(self):
+        """Manually trigger recording."""
+        logger.info("Manual trigger activated")
+        if not self.recording_active:
+            buffer_frames = self.buffer.get_buffer_contents()
+            buffer_duration = self.buffer.get_buffer_duration()
+            logger.info(f"Manual trigger with {len(buffer_frames)} frames in buffer ({buffer_duration:.2f}s)")
+            
+            # Set recording state
+            self.recording_active = True
+            
+            # Call callback with buffer contents
+            if self.on_trigger:
+                self.on_trigger(buffer_frames)
         else:
             logger.info("Recording already active, ignoring manual trigger")
-    
+            
     def stop_manually(self):
-        """Manually stop recording (for testing or alternative trigger methods)."""
-        logger.info("Manual stop triggered")
-        
-        # Only stop if currently recording
-        if self.recording_active and self.stop_callback:
+        """Manually stop recording."""
+        logger.info("Manual stop activated")
+        if self.recording_active:
             self.recording_active = False
-            self.stop_callback({"title": "Manual Stop", "message": "stop recording", "manual": True}) 
+            if self.on_stop:
+                self.on_stop()
+        else:
+            logger.info("Recording not active, ignoring manual stop")
+            
+    def get_buffer_size(self):
+        """Get current number of frames in buffer."""
+        return self.buffer.get_buffer_size()
+        
+    def get_buffer_duration(self):
+        """Get current duration of buffer in seconds."""
+        return self.buffer.get_buffer_duration()
+    
+    def get_date_based_directory(self, base_path):
+        """Create and return date-based directory structure.
+        
+        Args:
+            base_path: Base directory path
+            
+        Returns:
+            Path to the date-based directory
+        """
+        # Create date folder structure
+        today = datetime.datetime.now().strftime("%Y_%m_%d")
+        
+        # Check if base_path already ends with a date
+        if os.path.basename(base_path).startswith("20") and "_" in os.path.basename(base_path):
+            # Already a date folder
+            return base_path
+            
+        date_dir = os.path.join(base_path, today)
+        os.makedirs(date_dir, exist_ok=True)
+        
+        return date_dir
+    
+    def get_media_path(self, base_path, media_type="video"):
+        """Get path for media files with proper date structure.
+        
+        Args:
+            base_path: Base directory path
+            media_type: Type of media (video or audio)
+            
+        Returns:
+            Path to the media directory
+        """
+        date_dir = self.get_date_based_directory(base_path)
+        
+        # Create media-specific folder
+        media_dir = os.path.join(date_dir, media_type.lower())
+        os.makedirs(media_dir, exist_ok=True)
+        
+        return media_dir
+    
+    def generate_filename(self, media_type="video", file_ext="mp4"):
+        """Generate filename with date and timestamp.
+        
+        Args:
+            media_type: Type of media (video or audio)
+            file_ext: File extension
+            
+        Returns:
+            Formatted filename
+        """
+        now = datetime.datetime.now()
+        date_str = now.strftime("%Y_%m_%d")
+        time_str = now.strftime("%H%M%S")
+        
+        return f"{date_str}_{media_type}_{time_str}.{file_ext}" 

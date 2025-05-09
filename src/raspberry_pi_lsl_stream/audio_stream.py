@@ -379,6 +379,10 @@ class LSLAudioStreamer:
         # LSL stream configuration
         self.stream_name = stream_name
         self.source_id = source_id
+        
+        # Initialize LSL outlets
+        self.outlet = None
+        self.status_outlet = None  # New outlet for recording status
         self._setup_lsl_outlet()
         
         # File saving configuration
@@ -464,7 +468,7 @@ class LSLAudioStreamer:
     
     def _setup_lsl_outlet(self):
         """Set up LSL stream outlet for audio data markers."""
-        # Create LSL stream info and outlet
+        # Create LSL stream info and outlet for audio chunks
         # We'll stream audio chunk indices and timestamps for synchronization
         # Channel format: [chunk_index, timestamp]
         info = pylsl.StreamInfo(
@@ -491,6 +495,29 @@ class LSLAudioStreamer:
         # Create LSL outlet
         self.outlet = pylsl.StreamOutlet(info)
         print(f"Created LSL outlet: {self.stream_name}")
+        
+        # Create a separate LSL stream for recording status
+        status_info = pylsl.StreamInfo(
+            name=f"{self.stream_name}_Status",
+            type='RecordingStatus',
+            channel_count=1,  # Single channel for status flag
+            nominal_srate=10.0,  # Update status at 10Hz
+            channel_format='int32',
+            source_id=f"{self.source_id}_Status"
+        )
+        
+        # Add metadata
+        status_info.desc().append_child_value("device_name", self.device_name if hasattr(self, 'device_name') else "Unknown")
+        status_info.desc().append_child_value("content", "recording_status")
+        status_info.desc().append_child_value("description", "0=not_recording, 1=recording, 2=buffering")
+        
+        # Create status channel label
+        channels = status_info.desc().append_child("channels")
+        channels.append_child("channel").append_child_value("label", "RecordingStatus")
+        
+        # Create status outlet
+        self.status_outlet = pylsl.StreamOutlet(status_info)
+        print(f"Created LSL status outlet: {self.stream_name}_Status")
     
     def start(self):
         """Start audio capture."""
@@ -572,6 +599,14 @@ class LSLAudioStreamer:
         """Thread function for continuous audio capture."""
         # Set CPU affinity if requested
         self._set_thread_affinity("audio capture thread", self.capture_cpu_core)
+        
+        # Start a background thread for continuous status updates
+        status_thread = threading.Thread(
+            target=self._status_thread,
+            name="AudioStatusThread",
+            daemon=True
+        )
+        status_thread.start()
         
         try:
             # Configure audio capture callback
@@ -700,6 +735,29 @@ class LSLAudioStreamer:
                 self.audio_file = None
                 print(f"Closed audio file: {self.auto_output_filename}")
     
+    def _status_thread(self):
+        """Thread for continuous status updates via LSL."""
+        if self.status_outlet is None:
+            return
+            
+        while self.running:
+            try:
+                # Determine current status
+                if self.is_recording:
+                    status_value = 1  # Recording
+                else:
+                    status_value = 0  # Not recording
+                    
+                # Send status update through LSL
+                self.status_outlet.push_sample([status_value])
+                
+                # Update at 10Hz
+                time.sleep(0.1)
+                
+            except Exception as e:
+                print(f"Error in status thread: {e}")
+                time.sleep(1.0)  # Avoid tight loop on error
+    
     def start_recording(self):
         """Start recording audio to file.
         
@@ -723,6 +781,11 @@ class LSLAudioStreamer:
             
             # Set recording flag
             self.is_recording = True
+            
+            # Send immediate status update
+            if self.status_outlet:
+                self.status_outlet.push_sample([1])  # 1 = recording
+                
             print("Audio recording started")
     
     def stop_recording(self):
@@ -733,6 +796,10 @@ class LSLAudioStreamer:
             
             # Clear recording flag
             self.is_recording = False
+            
+            # Send immediate status update
+            if self.status_outlet:
+                self.status_outlet.push_sample([0])  # 0 = not recording
             
             # Close file
             self._close_current_file()

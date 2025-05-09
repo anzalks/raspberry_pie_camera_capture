@@ -1,0 +1,39 @@
+# Camera Configuration for Raspberry Pi
+---
+camera:
+  resolution:
+    width: 400
+    height: 400
+  fps: 100
+  codec: "h264"  # h264, h265, or mjpg
+  quality: "ultrafast"  # ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow
+  bitrate: 2000000  # 2 Mbps
+
+buffer:
+  enabled: true
+  duration: 20  # seconds of pre-trigger buffer
+
+storage:
+  base_dir: "recordings"
+  structure:
+    date_format: "yyyy_mm_dd"  # Will create folders like 2025_05_07
+    subfolder_video: "video"
+    subfolder_audio: "audio"
+  naming:
+    video: "{date}_{type}_{timestamp}.mp4"
+    audio: "{date}_{type}_{timestamp}.wav"
+
+remote:
+  ntfy_topic: "raspie-camera-test"  # Topic for receiving remote commands
+  
+audio:
+  enabled: true
+  device: "default"  # Use "default" for the default microphone
+  sample_rate: 44100
+  channels: 1  # Mono
+  format: "wav"
+  
+performance:
+  capture_cpu_core: 2  # Core for camera capture thread
+  writer_cpu_core: 3   # Core for video writer thread
+  audio_cpu_core: 1    # Core for audio capture thread 
