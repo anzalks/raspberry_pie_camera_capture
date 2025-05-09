@@ -103,7 +103,14 @@ class LSLCameraStreamer:
         self.frames_dropped_count = 0
         self.actual_fps = target_fps
         self.camera_model = "Raspberry Pi Camera"
-        self.source_id = str(uuid.uuid4())
+        
+        # Get Raspberry Pi's unique ID from /proc/cpuinfo
+        try:
+            self.source_id = self._get_raspberry_pi_id()
+        except:
+            # Fallback to UUID if we can't get the Pi's ID
+            self.source_id = str(uuid.uuid4())
+            
         self.lsl_pixel_format = "BGR"
         self.num_channels = 3
         self.buffer = None  # Initialize buffer reference
@@ -141,6 +148,25 @@ class LSLCameraStreamer:
         if self.save_video:
             self._initialize_video_writer()
 
+    def _get_raspberry_pi_id(self):
+        """Get Raspberry Pi's unique serial number from /proc/cpuinfo."""
+        try:
+            # Only works on Raspberry Pi
+            if not os.path.exists("/proc/cpuinfo"):
+                return str(uuid.uuid4())
+                
+            with open("/proc/cpuinfo", "r") as f:
+                for line in f:
+                    if line.startswith("Serial"):
+                        # Extract serial number after colon and strip whitespace
+                        return line.split(":")[1].strip()
+            
+            # If serial not found
+            return str(uuid.uuid4())
+        except Exception as e:
+            print(f"Error getting Raspberry Pi ID: {e}")
+            return str(uuid.uuid4())
+
     def _initialize_camera(self):
         """Initialize the Pi Camera."""
         try:
@@ -149,8 +175,8 @@ class LSLCameraStreamer:
             # Create PiCamera object
             self.camera = Picamera2()
             
-            # Configure camera with explicit H264-friendly settings
-            # Using BGR format directly since that's what the camera provides
+            # Configure camera with explicit settings
+            # Using BGR format directly since OpenCV uses BGR
             config = self.camera.create_video_configuration(
                 main={"size": (self.width, self.height), "format": "BGR888"},
                 lores={"size": (self.width, self.height), "format": "YUV420"}
@@ -173,11 +199,12 @@ class LSLCameraStreamer:
             print(f"PiCamera frame rate set to: {self.actual_fps} fps")
             print(f"PiCamera color format: BGR888 (native for OpenCV)")
             
-            # Test frame capture - using capture_array() which is the correct method for picamera2
+            # Test frame capture using capture_array()
             try:
                 frame = self.camera.capture_array("main")
                 if frame is None or frame.size == 0:
                     raise RuntimeError("Failed to capture test frame (empty frame)")
+                print(f"Test frame shape: {frame.shape}, dtype: {frame.dtype}")
             except Exception as e:
                 print(f"Error during test frame capture: {e}")
                 raise
@@ -204,11 +231,8 @@ class LSLCameraStreamer:
             # Generate output filename with timestamp
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             
-            # Use mp4 extension only when using h264/h265
-            if self.codec.lower() in ['h264', 'h265']:
-                extension = "mp4"
-            else:
-                extension = "avi"  # Use AVI for MJPG
+            # Use MKV as preferred container for all codecs
+            extension = "mkv"
                 
             self.auto_output_filename = f"recording_{timestamp}.{extension}"
             
@@ -220,20 +244,21 @@ class LSLCameraStreamer:
                 
             print(f"Initializing video writer for file: {output_file}")
             
-            # Determine codec - using Raspberry Pi compatible FourCC codes
+            # Determine codec - use MJPG as the preferred codec for high frame rates
             codec_map = {
                 'h264': 'X264',  # X264 is more compatible with Raspberry Pi
                 'h265': 'X265',  # X265 for HEVC codec
-                'mjpg': 'MJPG'   # Motion JPEG
+                'mjpg': 'MJPG'   # Motion JPEG - better for high fps
             }
             
             if self.codec.lower() not in codec_map:
-                print(f"Warning: Unsupported codec '{self.codec}'. Falling back to h264/X264.")
-                fourcc = cv2.VideoWriter_fourcc(*'X264')
+                print(f"Warning: Unsupported codec '{self.codec}'. Falling back to MJPG for high frame rate support.")
+                fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+                self.codec = 'mjpg'  # Update codec to match what we're actually using
             else:
                 fourcc = cv2.VideoWriter_fourcc(*codec_map[self.codec.lower()])
                 
-            print(f"Using codec: {self.codec.lower()} with FourCC: {codec_map.get(self.codec.lower(), 'X264')}")
+            print(f"Using codec: {self.codec.lower()} with FourCC: {codec_map.get(self.codec.lower(), 'MJPG')} in MKV container")
             
             # Create video writer
             self.video_writer = cv2.VideoWriter(
@@ -244,20 +269,47 @@ class LSLCameraStreamer:
             )
             
             if not self.video_writer.isOpened():
-                # Try an alternate codec if the first one failed
-                print("Failed to open video writer with primary codec, trying MJPG as fallback...")
-                fallback_file = os.path.join(os.path.dirname(output_file), 
-                                            f"fallback_{os.path.basename(output_file)}.avi")
-                self.video_writer = cv2.VideoWriter(
-                    fallback_file,
-                    cv2.VideoWriter_fourcc(*'MJPG'),
-                    self.actual_fps,
-                    (self.width, self.height)
-                )
-                if not self.video_writer.isOpened():
-                    raise RuntimeError(f"Failed to open video writer with any codec")
+                # Try alternate container if the first one failed
+                print("Failed to open video writer with MKV container, trying alternate container...")
+                
+                if self.codec.lower() == 'mjpg':
+                    # Try AVI as fallback for MJPG
+                    fallback_file = os.path.join(os.path.dirname(output_file), 
+                                               f"fallback_{os.path.basename(output_file)}.avi")
+                    self.video_writer = cv2.VideoWriter(
+                        fallback_file,
+                        cv2.VideoWriter_fourcc(*'MJPG'),
+                        self.actual_fps,
+                        (self.width, self.height)
+                    )
                 else:
-                    print(f"Successfully opened video writer with fallback MJPG codec: {fallback_file}")
+                    # Try MP4 as fallback for H264/H265
+                    fallback_file = os.path.join(os.path.dirname(output_file), 
+                                               f"fallback_{os.path.basename(output_file)}.mp4")
+                    self.video_writer = cv2.VideoWriter(
+                        fallback_file,
+                        fourcc,
+                        self.actual_fps,
+                        (self.width, self.height)
+                    )
+                
+                if not self.video_writer.isOpened():
+                    # Last resort: MJPG with AVI
+                    last_resort_file = os.path.join(os.path.dirname(output_file), 
+                                                 f"last_resort_{os.path.basename(output_file)}.avi")
+                    self.video_writer = cv2.VideoWriter(
+                        last_resort_file,
+                        cv2.VideoWriter_fourcc(*'MJPG'),
+                        self.actual_fps,
+                        (self.width, self.height)
+                    )
+                    
+                    if not self.video_writer.isOpened():
+                        raise RuntimeError(f"Failed to open video writer with any codec/container combination")
+                    else:
+                        print(f"Successfully opened video writer with last resort: MJPG/AVI: {last_resort_file}")
+                else:
+                    print(f"Successfully opened video writer with fallback: {fallback_file}")
                     
             # Initialize frame queue for threaded writing
             self.frame_queue = Queue(maxsize=int(self.queue_size_seconds * self.actual_fps))
@@ -314,14 +366,14 @@ class LSLCameraStreamer:
                 except Exception as e:
                     print(f"Failed to set CPU affinity for LSL thread: {e}")
                     
-            # Create StreamInfo
+            # Create StreamInfo for frame numbers only
             self.info = StreamInfo(
                 name=self.stream_name,
-                type='Video',
-                channel_count=self.width * self.height * 3,  # RGB channels
+                type='Markers',
+                channel_count=1,  # Only one channel for frame number
                 nominal_srate=self.actual_fps,
-                channel_format='float32',
-                source_id=str(uuid.uuid4())
+                channel_format='int32',
+                source_id=self.source_id
             )
             
             # Add metadata
@@ -329,10 +381,12 @@ class LSLCameraStreamer:
             self.info.desc().append_child_value("camera_model", "IMX708")
             self.info.desc().append_child_value("resolution", f"{self.width}x{self.height}")
             self.info.desc().append_child_value("fps", str(self.actual_fps))
+            self.info.desc().append_child_value("format", "BGR")
+            self.info.desc().append_child_value("content", "frame_numbers_only") 
             
             # Create outlet
             self.outlet = StreamOutlet(self.info)
-            print(f"LSL stream '{self.stream_name}' created and waiting for consumers")
+            print(f"LSL stream '{self.stream_name}' created for frame numbers only")
             
         except Exception as e:
             print(f"Error setting up LSL stream: {e}")
@@ -414,7 +468,7 @@ class LSLCameraStreamer:
             # Capture frame from PiCamera
             with self.camera_lock:
                 try:
-                    # Use capture_array() which is the correct method for picamera2
+                    # Use capture_array which is the correct method for picamera2
                     frame = self.camera.capture_array("main")
                 except Exception as e:
                     print(f"Failed to grab frame from camera: {e}")
@@ -425,19 +479,18 @@ class LSLCameraStreamer:
                     print("Failed to capture frame")
                     return None
                 
-                # BGR format is already compatible with OpenCV - no conversion needed
+                # Note: No conversion needed as we're already in BGR format
                 
             # Update frame count
             self.frame_count += 1
             
-            # Push frame to LSL if enabled
+            # Push frame number to LSL if enabled
             if self.push_to_lsl and self.outlet is not None:
                 try:
-                    # Reshape frame to 1D array
-                    frame_data = frame.reshape(-1)
-                    self.outlet.push_sample(frame_data)
+                    # Send only the frame number instead of entire frame
+                    self.outlet.push_sample([self.frame_count])
                 except Exception as e:
-                    print(f"Error pushing frame to LSL: {e}")
+                    print(f"Error pushing frame number to LSL: {e}")
                     
             # Add frame to buffer if enabled
             if self.use_buffer and self.buffer:

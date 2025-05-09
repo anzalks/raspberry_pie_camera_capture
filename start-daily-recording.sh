@@ -100,7 +100,7 @@ nohup python -m src.raspberry_pi_lsl_stream.camera_capture \
     --fps 100 \
     --save-video \
     --output-dir "$VIDEO_DIR" \
-    --codec h264 \
+    --codec mjpg \
     --buffer-size 20 \
     --ntfy-topic raspie-camera-test \
     --capture-cpu-core 2 \
