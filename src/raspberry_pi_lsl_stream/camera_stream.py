@@ -479,15 +479,20 @@ class LSLCameraStreamer:
         # Create output directory if it doesn't exist
         if self.output_path:
             os.makedirs(self.output_path, exist_ok=True)
+            print(f"Saving videos to: {os.path.abspath(self.output_path)}")
+        else:
+            # Default to 'recordings' directory in current working directory
+            self.output_path = "recordings"
+            os.makedirs(self.output_path, exist_ok=True)
+            print(f"No output path specified, using default: {os.path.abspath(self.output_path)}")
             
         # Generate a timestamped filename for the video file
         timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         video_file = f"raspie_video_{timestamp_str}.mkv"
         
-        if self.output_path:
-            self.output_file = os.path.join(self.output_path, video_file)
-        else:
-            self.output_file = video_file
+        self.output_file = os.path.join(self.output_path, video_file)
+        self.auto_output_filename = self.output_file
+        print(f"Video will be saved as: {self.output_file}")
 
     def _setup_lsl(self):
         """Configures and creates the LSL StreamInfo and StreamOutlet for Frame Numbers."""

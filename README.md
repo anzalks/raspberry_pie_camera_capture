@@ -1,6 +1,6 @@
 # Raspberry Pi Camera LSL Streamer
 
-> **Note:** You are currently viewing the `buffercapture_high_fps` branch. This branch implements an experimental optimization for Pi Camera capture using `capture_buffer()` instead of `capture_array()` to potentially achieve higher frame rates by avoiding memory copies. See the "High FPS Buffer Capture (Experimental)" section below.
+> **Note:** You are currently viewing the `vanila-lsl-stream` branch. This branch provides the core LSL streaming functionality with a simplified codebase.
 
 A Python package to capture video frames from a Raspberry Pi camera and stream them over LabStreamingLayer (LSL).
 
@@ -25,6 +25,7 @@ A Python package to capture video frames from a Raspberry Pi camera and stream t
 *   CPU core affinity management for optimized performance.
 *   Auto-start at boot with systemd service.
 *   Standardized "Raspie" naming convention throughout (filenames, services, LSL streams, ntfy topics).
+*   **Video Analysis Tools**: Includes utilities to analyze frame rates and interframe intervals.
 
 ## Quick Start
 
@@ -97,6 +98,8 @@ Run the streamer from the command line:
 ```bash
 rpi-lsl-stream [OPTIONS]
 ```
+
+By default, all recordings are saved in the `recordings` folder in the current directory.
 
 **Command-Line Options:**
 
@@ -715,6 +718,50 @@ By default, the system is configured to:
 - For high-resolution/high-fps recordings, you may need to reduce the buffer size
 - For Raspberry Pi 4 with 8GB RAM, a 1080p30 buffer can typically hold 20-30 seconds
 - For Raspberry Pi 4 with 4GB RAM, consider using 720p for longer buffers
+
+## Video Analysis Tools
+
+The system includes powerful tools for analyzing video recordings:
+
+### 1. Basic Video Verification
+
+Quickly check basic metadata about a video file:
+
+```bash
+rpi-verify-video recordings/your_video_file.mkv
+```
+
+This reports:
+- Resolution
+- Frame rate from metadata
+- Frame count
+- Calculated duration
+
+### 2. Detailed Frame Analysis
+
+For comprehensive analysis of frame rates and interframe intervals:
+
+```bash
+# Analyze a single video
+rpi-analyze-videos recordings/your_video_file.mkv
+
+# Analyze all videos in a directory
+rpi-analyze-videos recordings/
+```
+
+This tool:
+- Calculates actual frame rate by analyzing interframe intervals
+- Reports detailed statistics on frame timing consistency
+- Detects potential frame drops
+- Generates histograms and timeline plots of frame intervals
+- Exports comprehensive reports in text and visual formats
+
+The analysis reports are saved in an `analysis_reports` subdirectory, including:
+- Summary text files with all statistics
+- Histogram plots showing the distribution of frame intervals
+- Timeline plots showing frame timing consistency
+
+These tools are valuable for validating recording quality and diagnosing performance issues.
 
 ## Contributing
 

@@ -492,35 +492,79 @@ class LSLAudioStreamer:
         self.outlet = pylsl.StreamOutlet(info)
         print(f"Created LSL outlet: {self.stream_name}")
     
-    def start(self):
-        """Start audio capture."""
-        if self.running:
-            return
+    def start(self, cpu_core=None):
+        """Start the audio capture and LSL stream."""
+        if self._is_running:
+            print("Audio stream is already running.")
+            return False
+            
+        try:
+            # Initialize our audio output file writer if saving enabled
+            if self.save_audio:
+                self.initialize_audio_writer()
+                
+            # Initialize and start the buffer trigger manager if using buffer mode
+            if self.use_buffer:
+                self._initialize_buffer()
+                
+                if self.ntfy_topic:
+                    self.buffer_trigger = BufferTrigger(
+                        topic=self.ntfy_topic, 
+                        on_trigger=self._handle_trigger_callback,
+                        on_stop=self._handle_stop_callback
+                    )
+                    self.buffer_trigger.start()
+                    
+            # Initialize audio worker thread
+            self._thread = threading.Thread(target=self._audio_worker)
+            
+            # Set CPU affinity if requested
+            if cpu_core is not None:
+                try:
+                    import psutil
+                    print(f"Setting audio capture thread affinity to CPU {cpu_core}")
+                    self._thread.start()
+                    # Once thread is started, we can set affinity
+                    current_proc = psutil.Process()
+                    audio_threads = [thread for thread in current_proc.threads() 
+                                    if thread.id == self._thread.native_id]
+                    if audio_threads:
+                        audio_thread_handle = psutil.Process(pid=audio_threads[0].id)
+                        audio_thread_handle.cpu_affinity([cpu_core])
+                        print(f"Audio capture thread CPU affinity set to core {cpu_core}")
+                    else:
+                        print("Warning: Could not find audio thread to set CPU affinity")
+                        if not self._thread.is_alive():
+                            print("Audio thread not running.")
+                except ImportError:
+                    print("Warning: psutil module not available, cannot set CPU affinity.")
+                    self._thread.start()
+                except Exception as e:
+                    print(f"Error setting CPU affinity for audio thread: {e}")
+                    self._thread.start()
+            else:
+                # Normal thread start
+                self._thread.start()
+                
+            self._is_running = True
+            
+            # Initialize visualization if enabled
+            if self.show_preview:
+                if cv2 is None:
+                    print("Warning: OpenCV (cv2) is required for visualization but not available.")
+                    print("Continuing without visualization...")
+                    self.show_preview = False
+                else:
+                    self._initialize_visualization()
+                    
+            return True
         
-        self.running = True
-        
-        # Start the visualizer if preview is enabled
-        if self.show_preview and self.visualizer:
-            self.visualizer.start(cpu_core=self.visualizer_cpu_core)
-        
-        # Start the audio capture thread
-        self.capture_thread = threading.Thread(
-            target=self._audio_capture_thread,
-            name="AudioCaptureThread",
-            daemon=True
-        )
-        self.capture_thread.start()
-        
-        # Start writer thread if using threaded writer
-        if self.threaded_writer and self.save_audio:
-            self.writer_thread = threading.Thread(
-                target=self._audio_writer_thread, 
-                name="AudioWriterThread",
-                daemon=True
-            )
-            self.writer_thread.start()
-        
-        print(f"Audio capture started: {self.sample_rate} Hz, {self.channels} channels, {self.bit_depth}-bit")
+        except Exception as e:
+            print(f"Error starting audio capture: {e}")
+            import traceback
+            traceback.print_exc()
+            self.stop()
+            return False
     
     def stop(self):
         """Stop audio capture and clean up resources."""
@@ -769,4 +813,28 @@ class LSLAudioStreamer:
     
     def get_frames_dropped(self) -> int:
         """Get the number of audio chunks dropped."""
-        return self.frames_dropped 
+        return self.frames_dropped
+
+    def initialize_audio_writer(self, audio_format='wav'):
+        """Initialize the audio file writer for saving audio chunks."""
+        if not self.save_audio:
+            print("Audio saving is disabled.")
+            return
+        
+        # Create output directory if it doesn't exist
+        if self.output_path:
+            os.makedirs(self.output_path, exist_ok=True)
+            print(f"Saving audio to: {os.path.abspath(self.output_path)}")
+        else:
+            # Default to 'recordings' directory in current working directory
+            self.output_path = "recordings"
+            os.makedirs(self.output_path, exist_ok=True)
+            print(f"No output path specified for audio, using default: {os.path.abspath(self.output_path)}")
+                
+        # Generate a timestamped filename for the audio file
+        timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        audio_file = f"raspie_audio_{timestamp_str}.{audio_format}"
+        
+        self.output_file = os.path.join(self.output_path, audio_file)
+        self.auto_output_filename = self.output_file
+        print(f"Audio will be saved as: {self.output_file}") 

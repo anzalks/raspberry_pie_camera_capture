@@ -94,8 +94,8 @@ def main():
     
     # Output configuration
     output_group = parser.add_argument_group('Output Options')
-    output_group.add_argument('--output-path', type=str, default=None,
-                        help='Directory path to save the output files. Defaults to the current directory.')
+    output_group.add_argument('--output-path', type=str, default='recordings',
+                        help='Directory path to save the output files. Defaults to the "recordings" folder.')
     output_group.add_argument('--duration', type=int, default=None,
                         help='Record for a fixed duration (in seconds) then stop automatically.')
     
