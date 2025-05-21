@@ -2,5 +2,8 @@ pylsl
 numpy
 opencv-python
 requests
+scipy
+sounddevice
+matplotlib
 # Optional, for Raspberry Pi Camera module:
 picamera2 

@@ -38,6 +38,7 @@ setup(
             "rpi-lsl-stream=raspberry_pi_lsl_stream.cli:main",
             "rpi-verify-video=raspberry_pi_lsl_stream.verify_video:main",
             "rpi-analyze-videos=raspberry_pi_lsl_stream.analyze_videos:main",
+            "rpi-check-env=raspberry_pi_lsl_stream.check_environment:main",
         ],
     },
     classifiers=[
