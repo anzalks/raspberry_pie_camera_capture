@@ -40,7 +40,6 @@ setup(
         "console_scripts": [
             "camera-capture=raspberry_pi_lsl_stream.camera_capture:main",
             "audio-stream=raspberry_pi_lsl_stream.audio_stream:main",
-            "test-camera=raspberry_pi_lsl_stream.test_camera:main",
             "check-camera-env=check_camera_env:main",
         ],
     },

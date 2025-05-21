@@ -7,11 +7,10 @@ import time  # Import time for the loop sleep
 import atexit # Import atexit for cleanup registration
 import os # Import os for file existence check
 import threading # <<< Import threading
-# from .camera_stream import stream_camera # Relative import <- Remove old import
-from .camera_stream import LSLCameraStreamer # <-- Import the class
-from .audio_stream import LSLAudioStreamer # <-- Import audio streamer
+# Remove imports from deleted files
+from .camera_stream_fixed import LSLCameraStreamer # Updated to use fixed version instead
+from .audio_stream import LSLAudioStreamer
 from ._version import __version__
-from .verify_video import verify_video # <<< Import the verification function
 
 def _status_updater_loop(start_time, stop_event):
     """Target function for the status update thread."""
@@ -180,6 +179,20 @@ def handle_audio_command(args):
         if ntfy_subscriber:
             ntfy_subscriber.stop()
 
+# Setup camera parser function is needed but not defined here
+def setup_camera_parser(subparsers):
+    """Set up the argument parser for camera capture."""
+    # This function is needed but was not defined in the provided code
+    # We're adding a placeholder that redirects to the camera_capture module
+    camera_parser = subparsers.add_parser(
+        'camera',
+        help='Capture video from Raspberry Pi camera'
+    )
+    
+    # We'll just pass the arguments to camera_capture.main
+    from .camera_capture import main as camera_main
+    camera_parser.set_defaults(func=lambda args: camera_main())
+
 def main():
     """Main entry point for the CLI."""
     import argparse
@@ -188,10 +201,9 @@ def main():
     subparsers = parser.add_subparsers(dest='command', help='Command to run')
     
     # Set up parsers for each command
+    # Removed references to deleted parsers
     setup_camera_parser(subparsers)
-    setup_view_parser(subparsers)
     setup_audio_parser(subparsers)
-    setup_convert_parser(subparsers)
     
     args = parser.parse_args()
     

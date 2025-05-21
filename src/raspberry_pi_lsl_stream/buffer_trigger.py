@@ -233,7 +233,7 @@ class NtfySubscriber:
 class BufferTriggerManager:
     """Manages the rolling buffer and notification trigger for camera recording."""
     
-    def __init__(self, buffer_size_seconds=20.0, ntfy_topic=None, on_trigger=None, on_stop=None, ntfy_cpu_core=None):
+    def __init__(self, buffer_size_seconds=20.0, ntfy_topic=None, on_trigger=None, on_stop=None, ntfy_cpu_core=None, status_display=None):
         """
         Initialize the buffer trigger manager.
         
@@ -243,6 +243,7 @@ class BufferTriggerManager:
             on_trigger: Function to call when recording is triggered, receives frames list
             on_stop: Function to call when recording is stopped
             ntfy_cpu_core: CPU core to pin the ntfy subscriber thread to
+            status_display: StatusDisplay instance to update with notifications
         """
         self.buffer = RollingBuffer(buffer_size_seconds)
         self.ntfy_subscriber = None
@@ -251,6 +252,7 @@ class BufferTriggerManager:
         self.recording_active = False
         self.ntfy_topic = ntfy_topic
         self.ntfy_cpu_core = ntfy_cpu_core
+        self.status_display = status_display
         
         if ntfy_topic:
             self.setup_ntfy_subscription(ntfy_topic)
@@ -282,46 +284,79 @@ class BufferTriggerManager:
             self.buffer.add_frame(frame, time.time())
             
     def _handle_notification(self, message):
-        """Handle an incoming ntfy notification."""
+        """Handle a notification message from ntfy."""
         try:
-            msg_text = message.get('message', '').lower()
-            logger.info(f"Received notification: {message.get('message', 'No message')}")
+            # Get message text
+            message_text = message.get('message', '').strip().lower()
+            title = message.get('title', 'Notification')
             
-            if 'start recording' in msg_text or 'start' in msg_text:
-                logger.info("Start recording command received")
-                self.trigger_manually()
-            elif 'stop recording' in msg_text or 'stop' in msg_text:
-                logger.info("Stop recording command received")
-                self.stop_manually()
+            # Update status display if available
+            if self.status_display:
+                notification_text = f"{title}: {message_text}"
+                self.status_display.notify(notification_text)
+            
+            # Trigger recording if message contains "start" or "record"
+            if "start" in message_text or "record" in message_text:
+                logger.info(f"Triggering recording from notification: {message_text}")
+                # Set recording_active flag before getting buffer contents
+                self.recording_active = True
+                frames = self.buffer.get_buffer_contents()
+                if self.on_trigger:
+                    self.on_trigger(frames)
+            # Stop recording if message contains "stop" or "end"
+            elif "stop" in message_text or "end" in message_text:
+                logger.info(f"Stopping recording from notification: {message_text}")
+                # Set recording_active flag to False before calling stop callback
+                self.recording_active = False
+                if self.on_stop:
+                    self.on_stop()
         except Exception as e:
             logger.error(f"Error handling notification: {e}")
             
     def trigger_manually(self):
         """Manually trigger recording."""
-        logger.info("Manual trigger activated")
-        if not self.recording_active:
-            buffer_frames = self.buffer.get_buffer_contents()
-            buffer_duration = self.buffer.get_buffer_duration()
-            logger.info(f"Manual trigger with {len(buffer_frames)} frames in buffer ({buffer_duration:.2f}s)")
+        try:
+            logger.info("Manual recording trigger")
             
-            # Set recording state
+            # Update status display if available
+            if self.status_display:
+                self.status_display.notify("Manual trigger: Started recording")
+            
+            # Set recording_active flag before getting buffer contents
             self.recording_active = True
+                
+            # Get frames from buffer
+            frames = self.buffer.get_buffer_contents()
             
-            # Call callback with buffer contents
+            # Call trigger callback
             if self.on_trigger:
-                self.on_trigger(buffer_frames)
-        else:
-            logger.info("Recording already active, ignoring manual trigger")
+                self.on_trigger(frames)
+                
+            return True
+        except Exception as e:
+            logger.error(f"Error triggering manually: {e}")
+            return False
             
     def stop_manually(self):
         """Manually stop recording."""
-        logger.info("Manual stop activated")
-        if self.recording_active:
+        try:
+            logger.info("Manual recording stop")
+            
+            # Update status display if available
+            if self.status_display:
+                self.status_display.notify("Manual trigger: Stopped recording")
+            
+            # Set recording_active flag to False before calling stop callback
             self.recording_active = False
+                
+            # Call stop callback
             if self.on_stop:
                 self.on_stop()
-        else:
-            logger.info("Recording not active, ignoring manual stop")
+                
+            return True
+        except Exception as e:
+            logger.error(f"Error stopping manually: {e}")
+            return False
             
     def get_buffer_size(self):
         """Get current number of frames in buffer."""

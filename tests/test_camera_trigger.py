@@ -8,7 +8,8 @@ import sys
 import time
 import signal
 import argparse
-from raspberry_pi_lsl_stream.camera_stream import LSLCameraStreamer, StatusDisplay
+from raspberry_pi_lsl_stream.camera_stream_fixed import LSLCameraStreamer
+from raspberry_pi_lsl_stream.status_display import StatusDisplay
 
 def parse_args():
     """Parse command line arguments."""
@@ -47,19 +48,15 @@ def main():
     output_dir = "test_recordings"
     os.makedirs(output_dir, exist_ok=True)
     
-    # Initialize status display
-    status = StatusDisplay()
-    
     try:
         # Initialize camera streamer
         streamer = LSLCameraStreamer(
-            camera_id=args.camera_id,
             width=args.width,
             height=args.height,
             target_fps=args.fps,
             save_video=True,
             output_path=output_dir,
-            codec="auto",
+            codec="h264",
             show_preview=not args.no_preview,
             push_to_lsl=False,
             stream_name="test_stream",
@@ -67,6 +64,9 @@ def main():
             buffer_size_seconds=5.0,
             ntfy_topic="raspie-camera-test"
         )
+        
+        # Initialize status display
+        status = StatusDisplay(camera_streamer=streamer, buffer_manager=streamer.buffer_trigger_manager)
         
         # Start status display
         status.start()
@@ -82,14 +82,7 @@ def main():
         print(f"\nWaiting {args.trigger_delay} seconds before triggering...")
         start_time = time.time()
         while time.time() - start_time < args.trigger_delay:
-            # Update status
-            status.update(
-                frame_count=streamer.frame_count,
-                frames_written=streamer.frames_written_count,
-                frames_dropped=streamer.frames_dropped_count,
-                buffer_size=streamer.buffer.get_buffer_size() if streamer.use_buffer else 0,
-                recording_active=streamer.recording_triggered
-            )
+            # Status is updated automatically in the background
             time.sleep(0.1)
             
         # Trigger recording
@@ -100,14 +93,7 @@ def main():
         print(f"\nRecording for {args.record_duration} seconds...")
         start_time = time.time()
         while time.time() - start_time < args.record_duration:
-            # Update status
-            status.update(
-                frame_count=streamer.frame_count,
-                frames_written=streamer.frames_written_count,
-                frames_dropped=streamer.frames_dropped_count,
-                buffer_size=streamer.buffer.get_buffer_size() if streamer.use_buffer else 0,
-                recording_active=streamer.recording_triggered
-            )
+            # Status is updated automatically in the background
             time.sleep(0.1)
             
         # Stop recording
@@ -120,21 +106,14 @@ def main():
             print(f"\nWaiting {remaining_time} seconds before stopping...")
             start_time = time.time()
             while time.time() - start_time < remaining_time:
-                # Update status
-                status.update(
-                    frame_count=streamer.frame_count,
-                    frames_written=streamer.frames_written_count,
-                    frames_dropped=streamer.frames_dropped_count,
-                    buffer_size=streamer.buffer.get_buffer_size() if streamer.use_buffer else 0,
-                    recording_active=streamer.recording_triggered
-                )
+                # Status is updated automatically in the background
                 time.sleep(0.1)
                 
         # Print final statistics
         print("\nTest completed!")
-        print(f"Frames captured: {streamer.frame_count}")
-        print(f"Frames written: {streamer.frames_written_count}")
-        print(f"Frames dropped: {streamer.frames_dropped_count}")
+        print(f"Frames captured: {streamer.get_frame_count()}")
+        print(f"Frames written: {streamer.get_frames_written()}")
+        print(f"Frames dropped: {streamer.get_frames_dropped()}")
         
     except Exception as e:
         print(f"Error: {e}")
@@ -142,7 +121,8 @@ def main():
         
     finally:
         # Stop status display
-        status.stop()
+        if 'status' in locals():
+            status.stop()
         
         # Stop camera streamer
         if 'streamer' in locals():

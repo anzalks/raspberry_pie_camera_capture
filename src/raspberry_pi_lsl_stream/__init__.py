@@ -69,11 +69,13 @@ from ._version import __version__
 from .camera_stream_fixed import LSLCameraStreamer
 from .camera_capture import main as camera_capture_main
 from .buffer_trigger import BufferTriggerManager
+from .status_display import StatusDisplay
 
 __all__ = [
     '__version__',
     'LSLCameraStreamer',
     'camera_capture_main',
     'BufferTriggerManager',
+    'StatusDisplay',
     'IS_RASPBERRY_PI'
 ] 

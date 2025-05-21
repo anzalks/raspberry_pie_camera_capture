@@ -12,6 +12,7 @@ from queue import Queue, Empty, Full # Added for frame buffer queue
 import glob # Added for device detection
 import datetime # Added for timestamp generation
 import uuid # Added for UUID generation
+import subprocess # Added for running commands to detect and configure global shutter camera
 
 # Import Picamera2 
 print("DEBUG: Importing picamera2 for Raspberry Pi Camera...")
@@ -57,7 +58,9 @@ class LSLCameraStreamer:
                  queue_size_seconds=2.0,
                  capture_cpu_core=None,
                  writer_cpu_core=None,
-                 lsl_cpu_core=None):
+                 lsl_cpu_core=None,
+                 enable_crop=None,
+                 camera_id=0):
         """Initialize the camera streamer.
 
         Args:
@@ -77,7 +80,13 @@ class LSLCameraStreamer:
             capture_cpu_core (int, optional): CPU core to use for capture thread.
             writer_cpu_core (int, optional): CPU core to use for writer thread.
             lsl_cpu_core (int, optional): CPU core to use for LSL thread.
+            enable_crop (bool, optional): Automatically detected if None, otherwise forces crop mode.
+            camera_id (int): Camera ID to use (for multiple cameras).
         """
+        # Validate and sanitize parameters
+        self._validate_config(width, height, target_fps, codec, buffer_size_seconds, 
+                             queue_size_seconds, capture_cpu_core, writer_cpu_core, lsl_cpu_core)
+                             
         # Store parameters
         self.width = width
         self.height = height
@@ -95,6 +104,8 @@ class LSLCameraStreamer:
         self.capture_cpu_core = capture_cpu_core
         self.writer_cpu_core = writer_cpu_core
         self.lsl_cpu_core = lsl_cpu_core
+        self.enable_crop = enable_crop
+        self.camera_id = camera_id
         
         # Initialize state variables
         self._is_running = False
@@ -103,6 +114,10 @@ class LSLCameraStreamer:
         self.frames_dropped_count = 0
         self.actual_fps = target_fps
         self.camera_model = "Raspberry Pi Camera"
+        self.is_global_shutter = False
+        
+        # Check if it's a Global Shutter Camera
+        self._check_global_shutter_camera()
         
         # Get Raspberry Pi's unique ID from /proc/cpuinfo
         try:
@@ -173,6 +188,282 @@ class LSLCameraStreamer:
             print(f"Error getting Raspberry Pi ID: {e}")
             return str(uuid.uuid4())
 
+    def _check_global_shutter_camera(self):
+        """Detect if a Global Shutter Camera is connected and configure it."""
+        if platform.system() != "Linux":
+            print("Global Shutter Camera detection only works on Linux")
+            return False
+            
+        try:
+            # Check for the IMX296 sensor which is used in the Global Shutter Camera
+            result = subprocess.run(
+                ["vcgencmd", "get_camera"],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            
+            if "detected=1" in result.stdout:
+                # Further check if it's specifically a Global Shutter Camera by checking for IMX296
+                for m in range(6):  # Try media devices 0-5
+                    cmd = ["media-ctl", "-d", f"/dev/media{m}", "-p"]
+                    try:
+                        media_result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+                        if "imx296" in media_result.stdout.lower():
+                            print(f"Global Shutter Camera detected on /dev/media{m}")
+                            self.is_global_shutter = True
+                            self.camera_model = "Raspberry Pi Global Shutter Camera (IMX296)"
+                            self.media_device = f"/dev/media{m}"
+                            
+                            # Set auto-cropping if enable_crop is None (auto-detect mode)
+                            if self.enable_crop is None:
+                                # We'll now auto-enable cropping for all Global Shutter Camera operations
+                                # based on Hermann-SW's gist for achieving high frame rates
+                                print(f"Auto-enabling Global Shutter Camera cropping for {self.width}x{self.height} at {self.target_fps}fps")
+                                self.enable_crop = True
+                            
+                            # Configure cropping if enabled
+                            if self.enable_crop:
+                                self._configure_global_shutter_crop(m)
+                            return True
+                    except Exception as e:
+                        print(f"Error checking media device {m}: {e}")
+                        continue
+                        
+                # Additional check for IMX296 device node
+                try:
+                    for i in range(10):
+                        cmd = ["v4l2-ctl", "--list-devices"]
+                        device_result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+                        if "imx296" in device_result.stdout.lower():
+                            print(f"Global Shutter Camera (IMX296) detected through v4l2 devices")
+                            self.is_global_shutter = True
+                            self.camera_model = "Raspberry Pi Global Shutter Camera (IMX296)"
+                            # Configure with default media device since we couldn't find specific one
+                            self.media_device = "/dev/media0"
+                            
+                            # Enable cropping for optimal performance
+                            if self.enable_crop is None:
+                                self.enable_crop = True
+                                
+                            if self.enable_crop:
+                                self._configure_global_shutter_crop(0)  # Use media0 as fallback
+                            return True
+                except Exception as e:
+                    print(f"Error checking v4l2 devices for IMX296: {e}")
+        except Exception as e:
+            print(f"Error detecting Global Shutter Camera: {e}")
+            
+        print("No Global Shutter Camera detected or cropping not enabled")
+        return False
+        
+    def _configure_global_shutter_crop(self, media_device_num):
+        """Configure cropping for Global Shutter Camera.
+        
+        This implements the cropping technique from Hermann-SW's gist:
+        https://gist.github.com/Hermann-SW/e6049fe1a24fc2b5a53c654e0e9f6b9c
+        
+        The technique uses media-ctl to set specific crop regions that allow achieving
+        high frame rates with the Global Shutter Camera.
+        
+        Args:
+            media_device_num: The media device number (/dev/mediaX)
+        """
+        try:
+            # Make sure width and height are even numbers
+            if self.width % 2 != 0 or self.height % 2 != 0:
+                print("Warning: Global Shutter Camera requires even width and height. Adjusting dimensions.")
+                self.width = self.width - (self.width % 2)
+                self.height = self.height - (self.height % 2)
+                
+            # Check if dimensions and FPS combination requires optimization
+            self._optimize_dimensions_for_fps()
+                
+            # Determine the device ID based on Pi model and camera ID
+            device_id = 10  # Default for camera 0
+            try:
+                # Check if we're on a Pi 5
+                is_pi5 = False
+                with open("/proc/cpuinfo", "r") as f:
+                    cpuinfo = f.read()
+                    if "Revision" in cpuinfo and any(rev in cpuinfo for rev in ["17", "18"]):
+                        is_pi5 = True
+                        
+                if is_pi5:
+                    # Pi 5 uses different device IDs
+                    device_id = 10 if self.camera_id == 0 else 11
+            except Exception as e:
+                print(f"Error determining Pi model: {e}")
+                
+            # Calculate crop parameters (centered on the sensor)
+            # Global Shutter Camera has a 1456×1088 sensor
+            sensor_width = 1456  # Full sensor width for precise cropping
+            sensor_height = 1088
+            
+            # Calculate the top-left corner for crop to center it
+            left = (sensor_width - self.width) // 2
+            top = (sensor_height - self.height) // 2
+            
+            # Make sure left and top are even numbers
+            left = left - (left % 2)
+            top = top - (top % 2)
+            
+            # Build the media-ctl command to set cropping
+            cmd = [
+                "media-ctl",
+                "-d", f"/dev/media{media_device_num}",
+                "--set-v4l2",
+                f"'imx296 {device_id}-001a':0 [fmt:SBGGR10_1X10/{self.width}x{self.height} crop:({left},{top})/{self.width}x{self.height}]"
+            ]
+            
+            print(f"Configuring Global Shutter Camera crop: {' '.join(cmd)}")
+            crop_result = subprocess.run(" ".join(cmd), shell=True, capture_output=True, text=True)
+            
+            if crop_result.returncode == 0:
+                print(f"Successfully configured Global Shutter Camera cropping to {self.width}x{self.height}")
+                # Let's check if the configuration was applied correctly by listing camera info
+                check_cmd = ["libcamera-hello", "--list-cameras"]
+                check_result = subprocess.run(check_cmd, capture_output=True, text=True)
+                print(f"Camera configuration verified: {check_result.stdout if check_result.returncode == 0 else 'Failed to verify'}")
+                
+                # Update camera model with current configuration
+                self.camera_model = f"Raspberry Pi Global Shutter Camera (IMX296) {self.width}x{self.height}@{self.target_fps}fps"
+                return True
+            else:
+                print(f"Error configuring Global Shutter Camera cropping: {crop_result.stderr}")
+                # Try alternative method with v4l2-ctl if media-ctl fails
+                try:
+                    print("Attempting fallback method with v4l2-ctl...")
+                    # Find the video device for the IMX296
+                    video_device = None
+                    cmd = ["v4l2-ctl", "--list-devices"]
+                    v4l2_result = subprocess.run(cmd, capture_output=True, text=True)
+                    lines = v4l2_result.stdout.split('\n')
+                    for i, line in enumerate(lines):
+                        if "imx296" in line.lower() and i+1 < len(lines):
+                            video_device = lines[i+1].strip()
+                            break
+                            
+                    if video_device:
+                        print(f"Found IMX296 on {video_device}")
+                        # Set format using v4l2-ctl
+                        format_cmd = [
+                            "v4l2-ctl",
+                            "-d", video_device,
+                            "--set-fmt-video=width={},height={},pixelformat=RGGB".format(self.width, self.height)
+                        ]
+                        subprocess.run(format_cmd)
+                        
+                        # Set crop using v4l2-ctl
+                        crop_cmd = [
+                            "v4l2-ctl",
+                            "-d", video_device,
+                            "--set-crop=top={},left={},width={},height={}".format(top, left, self.width, self.height)
+                        ]
+                        subprocess.run(crop_cmd)
+                        print("Applied fallback configuration with v4l2-ctl")
+                        return True
+                    else:
+                        print("Could not find IMX296 video device")
+                except Exception as e:
+                    print(f"Fallback configuration failed: {e}")
+                return False
+                
+        except Exception as e:
+            print(f"Error configuring Global Shutter Camera crop: {e}")
+            traceback.print_exc()
+            return False
+
+    def _optimize_dimensions_for_fps(self):
+        """Optimize dimensions based on target FPS for Global Shutter Camera.
+        
+        Based on Hermann-SW's research (https://gist.github.com/Hermann-SW/e6049fe1a24fc2b5a53c654e0e9f6b9c)
+        the following crop configurations work reliably:
+        - 1456x96 at 536fps (full width, minimal height)
+        - 688x136 at 400fps (medium crop)
+        - 224x96 at 500fps (small crop)
+        - 600x600 at 200fps (square crop for general usage)
+        """
+        # Store original dimensions for reporting
+        original_width = self.width
+        original_height = self.height
+    
+        # Check if user requested a square crop (equal width and height)
+        is_square_crop = self.width == self.height
+        
+        # Optimize dimensions for specific frame rate targets
+        if self.target_fps >= 500:
+            # For very high fps (500+), use either the 224x96 or 1456x96 configuration
+            # from Hermann-SW's research
+            if self.height > 96:
+                print(f"Warning: Adjusting height from {self.height} to 96 to achieve {self.target_fps}fps")
+                self.height = 96
+                
+            if self.width != 224 and self.width != 1456:
+                # Check if user wanted full width or narrow crop
+                if self.width < 800:  # User probably wanted small ROI
+                    print(f"Warning: Adjusting width from {self.width} to 224 to achieve {self.target_fps}fps")
+                    self.width = 224
+                else:  # User probably wanted full width
+                    print(f"Warning: Adjusting width from {self.width} to 1456 to achieve {self.target_fps}fps")
+                    self.width = 1456
+                    
+        elif self.target_fps > 350 and self.target_fps < 500:
+            # For ~400fps, use the 688x136 configuration that Hermann-SW found optimal
+            if self.width != 688 or self.height != 136:
+                print(f"Warning: Adjusting dimensions from {self.width}x{self.height} to 688x136 to achieve {self.target_fps}fps")
+                self.width = 688
+                self.height = 136
+                
+        elif self.target_fps > 180 and self.target_fps <= 350:
+            # For ~200fps with square crop, we can use up to about 600x600
+            if is_square_crop and self.width > 600:
+                print(f"Warning: Adjusting square dimensions from {self.width}x{self.height} to 600x600 to achieve {self.target_fps}fps")
+                self.width = 600
+                self.height = 600
+            elif not is_square_crop:
+                # For non-square crops at ~200fps, scale dimensions appropriately
+                max_total_pixels = 600 * 600
+                current_pixels = self.width * self.height
+                
+                if current_pixels > max_total_pixels:
+                    # Scale dimensions down while maintaining aspect ratio
+                    scale_factor = (max_total_pixels / current_pixels) ** 0.5
+                    self.width = int(self.width * scale_factor)
+                    self.height = int(self.height * scale_factor)
+                    print(f"Warning: Scaling dimensions to {self.width}x{self.height} to achieve {self.target_fps}fps")
+                
+        elif self.target_fps > 120:
+            # For other high frame rates (120-180fps), ensure dimensions are reasonable
+            max_total_pixels = 700 * 700  # Slightly higher max pixel count
+            current_pixels = self.width * self.height
+            
+            if current_pixels > max_total_pixels:
+                # Scale dimensions down while maintaining aspect ratio
+                scale_factor = (max_total_pixels / current_pixels) ** 0.5
+                self.width = int(self.width * scale_factor)
+                self.height = int(self.height * scale_factor)
+                print(f"Warning: Scaling dimensions to {self.width}x{self.height} to achieve {self.target_fps}fps")
+                
+                # If it was intended to be square, make it square again
+                if is_square_crop:
+                    square_dim = min(self.width, self.height)
+                    self.width = square_dim
+                    self.height = square_dim
+                    print(f"Maintaining square crop at {self.width}x{self.height}")
+        
+        # Make sure we still have even dimensions (required by the camera)
+        if self.width % 2 != 0:
+            self.width -= 1
+        if self.height % 2 != 0:
+            self.height -= 1
+        
+        # Report if dimensions were changed
+        if original_width != self.width or original_height != self.height:
+            print(f"Dimensions adjusted from {original_width}x{original_height} to {self.width}x{self.height} for target fps: {self.target_fps}")
+        else:
+            print(f"Using dimensions: {self.width}x{self.height} for target fps: {self.target_fps}")
+
     def _initialize_camera(self):
         """Initialize the Pi Camera."""
         try:
@@ -181,29 +472,68 @@ class LSLCameraStreamer:
             # Create PiCamera object
             self.camera = Picamera2()
             
-            # Configure camera with explicit settings
-            # Using BGR format directly since OpenCV uses BGR
-            config = self.camera.create_video_configuration(
-                main={"size": (self.width, self.height), "format": "BGR888"},
-                lores={"size": (self.width, self.height), "format": "YUV420"}
-            )
+            # If camera_id is specified for multiple cameras, set it
+            if self.camera_id > 0:
+                self.camera.set_camera(self.camera_id)
             
-            # Set additional video parameters
-            config["controls"] = {
-                "FrameRate": self.target_fps,
-                "NoiseReductionMode": 1  # Fast noise reduction
-            }
+            # First, check if we haven't already detected the camera type
+            if not hasattr(self, 'is_global_shutter') or not hasattr(self, 'enable_crop'):
+                # Check for Global Shutter Camera
+                self._check_global_shutter_camera()
             
-            self.camera.configure(config)
+            if self.is_global_shutter:
+                print(f"Using Global Shutter Camera: {self.width}x{self.height} at {self.target_fps} fps")
+                
+                # For high frame rates, we need to enable crop mode
+                if self.target_fps > 100 and (self.enable_crop is None or self.enable_crop):
+                    # Auto-enable cropping for high frame rates
+                    self.enable_crop = True
+                    print(f"Auto-enabling crop mode for high frame rate: {self.target_fps} fps")
+                
+                # Special settings for Global Shutter Camera
+                if self.enable_crop:
+                    # If cropping is enabled, the configuration has already been done by media-ctl
+                    # We don't need additional configuration here, just start the camera
+                    pass
+                else:
+                    # For standard usage without cropping, configure with normal settings
+                    config = self.camera.create_video_configuration(
+                        main={"size": (self.width, self.height), "format": "BGR888"},
+                        lores={"size": (self.width, self.height), "format": "YUV420"}
+                    )
+                    
+                    # Set additional video parameters for Global Shutter camera
+                    config["controls"] = {
+                        "FrameRate": self.target_fps,
+                        "NoiseReductionMode": 1,  # Fast noise reduction
+                        # Add any Global Shutter specific controls here
+                    }
+                    
+                    self.camera.configure(config)
+            else:
+                # Standard configuration for regular Pi camera
+                # Using BGR format directly since OpenCV uses BGR
+                config = self.camera.create_video_configuration(
+                    main={"size": (self.width, self.height), "format": "BGR888"},
+                    lores={"size": (self.width, self.height), "format": "YUV420"}
+                )
+                
+                # Set additional video parameters
+                config["controls"] = {
+                    "FrameRate": self.target_fps,
+                    "NoiseReductionMode": 1  # Fast noise reduction
+                }
+                
+                self.camera.configure(config)
             
             # Start camera
             self.camera.start()
-            print(f"PiCamera initialized with resolution {self.width}x{self.height} at target {self.target_fps} fps")
+            print(f"Camera initialized with resolution {self.width}x{self.height} at target {self.target_fps} fps")
             
             # Set frame rate
             self.actual_fps = self.target_fps
-            print(f"PiCamera frame rate set to: {self.actual_fps} fps")
-            print(f"PiCamera color format: BGR888 (native for OpenCV)")
+            print(f"Camera frame rate set to: {self.actual_fps} fps")
+            print(f"Camera color format: BGR888 (native for OpenCV)")
             
             # Test frame capture using capture_array()
             try:
@@ -215,18 +545,18 @@ class LSLCameraStreamer:
                 print(f"Error during test frame capture: {e}")
                 raise
                 
-            print("Successfully initialized PiCamera")
+            print("Successfully initialized Camera")
             return True
 
         except Exception as e:
-            print(f"Error initializing PiCamera: {e}")
+            print(f"Error initializing Camera: {e}")
             if self.camera is not None:
                 try:
                     self.camera.stop()
                 except Exception as e:
-                    print(f"Error stopping PiCamera: {e}")
+                    print(f"Error stopping Camera: {e}")
             self.camera = None
-            raise RuntimeError(f"Failed to initialize PiCamera: {e}")
+            raise RuntimeError(f"Failed to initialize Camera: {e}")
 
     def _initialize_video_writer(self):
         """Initialize the video writer for saving frames."""
@@ -237,7 +567,7 @@ class LSLCameraStreamer:
             # Generate output filename with timestamp
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             
-            # Use MKV as preferred container for all codecs
+            # Always use MKV as the container format
             extension = "mkv"
                 
             self.auto_output_filename = f"recording_{timestamp}.{extension}"
@@ -266,7 +596,7 @@ class LSLCameraStreamer:
                 
             print(f"Using codec: {self.codec.lower()} with FourCC: {codec_map.get(self.codec.lower(), 'MJPG')} in MKV container")
             
-            # Create video writer
+            # Create video writer - always using MKV container for robustness
             self.video_writer = cv2.VideoWriter(
                 output_file,
                 fourcc,
@@ -275,47 +605,22 @@ class LSLCameraStreamer:
             )
             
             if not self.video_writer.isOpened():
-                # Try alternate container if the first one failed
-                print("Failed to open video writer with MKV container, trying alternate container...")
+                print("Failed to open video writer with MKV container, retrying with MKV/MJPG combination...")
                 
-                if self.codec.lower() == 'mjpg':
-                    # Try AVI as fallback for MJPG
-                    fallback_file = os.path.join(os.path.dirname(output_file), 
-                                               f"fallback_{os.path.basename(output_file)}.avi")
-                    self.video_writer = cv2.VideoWriter(
-                        fallback_file,
-                        cv2.VideoWriter_fourcc(*'MJPG'),
-                        self.actual_fps,
-                        (self.width, self.height)
-                    )
-                else:
-                    # Try MP4 as fallback for H264/H265
-                    fallback_file = os.path.join(os.path.dirname(output_file), 
-                                               f"fallback_{os.path.basename(output_file)}.mp4")
-                    self.video_writer = cv2.VideoWriter(
-                        fallback_file,
-                        fourcc,
-                        self.actual_fps,
-                        (self.width, self.height)
-                    )
+                # Try MJPG with MKV as a consistent fallback
+                mjpg_mkv_file = os.path.join(os.path.dirname(output_file), 
+                                       f"retry_{os.path.basename(output_file)}")
+                self.video_writer = cv2.VideoWriter(
+                    mjpg_mkv_file,
+                    cv2.VideoWriter_fourcc(*'MJPG'),
+                    self.actual_fps,
+                    (self.width, self.height)
+                )
                 
                 if not self.video_writer.isOpened():
-                    # Last resort: MJPG with AVI
-                    last_resort_file = os.path.join(os.path.dirname(output_file), 
-                                                 f"last_resort_{os.path.basename(output_file)}.avi")
-                    self.video_writer = cv2.VideoWriter(
-                        last_resort_file,
-                        cv2.VideoWriter_fourcc(*'MJPG'),
-                        self.actual_fps,
-                        (self.width, self.height)
-                    )
-                    
-                    if not self.video_writer.isOpened():
-                        raise RuntimeError(f"Failed to open video writer with any codec/container combination")
-                    else:
-                        print(f"Successfully opened video writer with last resort: MJPG/AVI: {last_resort_file}")
+                    raise RuntimeError(f"Failed to open video writer with MKV container")
                 else:
-                    print(f"Successfully opened video writer with fallback: {fallback_file}")
+                    print(f"Successfully opened video writer with fallback: {mjpg_mkv_file}")
                     
             # Initialize frame queue for threaded writing
             self.frame_queue = Queue(maxsize=int(self.queue_size_seconds * self.actual_fps))
@@ -376,9 +681,9 @@ class LSLCameraStreamer:
             self.info = StreamInfo(
                 name=self.stream_name,
                 type='Markers',
-                channel_count=1,  # Only one channel for frame number
+                channel_count=4,  # Channel 1: frame number, Channel 2: timestamp, Channel 3: is_keyframe, Channel 4: ntfy_notification_active
                 nominal_srate=self.actual_fps,
-                channel_format='int32',
+                channel_format='double',
                 source_id=self.source_id
             )
             
@@ -388,19 +693,28 @@ class LSLCameraStreamer:
             self.info.desc().append_child_value("resolution", f"{self.width}x{self.height}")
             self.info.desc().append_child_value("fps", str(self.actual_fps))
             self.info.desc().append_child_value("format", "BGR")
-            self.info.desc().append_child_value("content", "frame_numbers_only") 
+            self.info.desc().append_child_value("content", "frame_metadata")
+            self.info.desc().append_child_value("codec", self.codec)
+            self.info.desc().append_child_value("buffer_size_seconds", str(self.buffer_size_seconds))
+            
+            # Add channel metadata
+            channels = self.info.desc().append_child("channels")
+            channels.append_child("channel").append_child_value("label", "FrameNumber")
+            channels.append_child("channel").append_child_value("label", "Timestamp")
+            channels.append_child("channel").append_child_value("label", "IsKeyframe")
+            channels.append_child("channel").append_child_value("label", "NtfyNotificationActive")
             
             # Create outlet
             self.outlet = StreamOutlet(self.info)
-            print(f"LSL stream '{self.stream_name}' created for frame numbers only")
+            print(f"LSL stream '{self.stream_name}' created for frame metadata")
             
             # Create a separate LSL stream for recording status
             status_info = StreamInfo(
                 name=f"{self.stream_name}_Status",
                 type='RecordingStatus',
-                channel_count=1,  # Single channel for status flag
+                channel_count=2,  # Channel 1: status flag, Channel 2: timestamp
                 nominal_srate=10.0,  # Update status at 10Hz
-                channel_format='int32',
+                channel_format='double',
                 source_id=f"{self.source_id}_Status"
             )
             
@@ -413,6 +727,7 @@ class LSLCameraStreamer:
             # Create status channel label
             channels = status_info.desc().append_child("channels")
             channels.append_child("channel").append_child_value("label", "RecordingStatus")
+            channels.append_child("channel").append_child_value("label", "Timestamp")
             
             # Create status outlet
             self.status_outlet = StreamOutlet(status_info)
@@ -532,14 +847,18 @@ class LSLCameraStreamer:
                 
             # Update frame count
             self.frame_count += 1
+            frame_timestamp = time.time()
             
-            # Push frame number to LSL if enabled
+            # Push frame metadata to LSL if enabled
             if self.push_to_lsl and self.outlet is not None:
                 try:
-                    # Send only the frame number instead of entire frame
-                    self.outlet.push_sample([self.frame_count])
+                    # Send frame metadata: frame number, timestamp, keyframe flag (simulated), and ntfy_notification_active
+                    # Every 30th frame is considered a keyframe for illustration
+                    is_keyframe = 1.0 if self.frame_count % 30 == 0 else 0.0
+                    ntfy_notification_active = 1.0 if self.recording_triggered else 0.0
+                    self.outlet.push_sample([float(self.frame_count), frame_timestamp, is_keyframe, ntfy_notification_active])
                 except Exception as e:
-                    print(f"Error pushing frame number to LSL: {e}")
+                    print(f"Error pushing frame metadata to LSL: {e}")
                     
             # Add frame to buffer if enabled
             if self.use_buffer and self.buffer:
@@ -616,6 +935,21 @@ class LSLCameraStreamer:
             if self.save_video and self.video_writer is None:
                 self._initialize_video_writer()
                 
+            # Make sure frame queue is initialized even if video writer init failed but we want to try again
+            if self.save_video and self.frame_queue is None:
+                print("Frame queue not initialized. Initializing now...")
+                try:
+                    self.frame_queue = Queue(maxsize=int(self.queue_size_seconds * self.actual_fps))
+                    # Start writer thread if not running
+                    if self.writer_thread is None or not self.writer_thread.is_alive():
+                        self.stop_writer_event = threading.Event()
+                        self.writer_thread = threading.Thread(target=self._writer_loop, daemon=True)
+                        self.writer_thread.start()
+                        print("Writer thread started")
+                except Exception as e:
+                    print(f"Error initializing frame queue: {e}")
+                    self.frame_queue = None
+                
             # Write buffered frames
             if self.save_video and self.video_writer is not None and self.frame_queue is not None:
                 for frame, timestamp in frames:
@@ -623,6 +957,7 @@ class LSLCameraStreamer:
                         self.frame_queue.put(frame)
                     else:
                         print("Frame queue full, dropping frame")
+                        self.frames_dropped_count += 1
                         
             # Update state
             self.waiting_for_trigger = False
@@ -636,7 +971,16 @@ class LSLCameraStreamer:
             
         except Exception as e:
             print(f"Error handling recording trigger: {e}")
-            
+            # Try to recover from error
+            if self.save_video and self.video_writer is None:
+                print("Attempting to recover by re-initializing video writer...")
+                try:
+                    self._initialize_video_writer()
+                    if self.video_writer is not None:
+                        print("Video writer recovery successful")
+                except Exception as recovery_error:
+                    print(f"Recovery failed: {recovery_error}")
+
     def _handle_recording_stop(self):
         """Handle recording stop from buffer trigger manager."""
         if not self.recording_triggered:
@@ -776,8 +1120,11 @@ class LSLCameraStreamer:
                     else:
                         status_value = 0  # Idle
                         
+                    # Current timestamp
+                    current_time = time.time()
+                        
                     # Send status update through LSL
-                    self.status_outlet.push_sample([status_value])
+                    self.status_outlet.push_sample([float(status_value), current_time])
                     
                     # Update at 10Hz
                     time.sleep(0.1)
@@ -789,79 +1136,91 @@ class LSLCameraStreamer:
         except Exception as e:
             print(f"Fatal error in camera status thread: {e}")
 
-class StatusDisplay:
-    """Display real-time status updates in the terminal."""
-    
-    def __init__(self, camera_streamer=None, buffer_manager=None, ntfy_topic=None, update_interval=1.0):
-        """Initialize the status display.
+    def _validate_config(self, width, height, target_fps, codec, buffer_size_seconds, 
+                        queue_size_seconds, capture_cpu_core, writer_cpu_core, lsl_cpu_core):
+        """Validate and adjust configuration parameters to be compatible with hardware.
         
         Args:
-            camera_streamer: The LSLCameraStreamer instance to monitor
-            buffer_manager: The BufferTriggerManager instance to monitor
-            ntfy_topic: The ntfy topic for remote control
-            update_interval: Update interval in seconds
+            width (int): Desired frame width
+            height (int): Desired frame height
+            target_fps (float): Target frame rate
+            codec (str): Video codec to use
+            buffer_size_seconds (float): Size of rolling buffer in seconds
+            queue_size_seconds (float): Size of frame queue in seconds
+            capture_cpu_core (int): CPU core for capture thread
+            writer_cpu_core (int): CPU core for writer thread
+            lsl_cpu_core (int): CPU core for LSL thread
+            
+        Returns:
+            None. Raises ValueError for invalid configurations.
         """
-        self.update_interval = update_interval
-        self.camera_streamer = camera_streamer
-        self.buffer_manager = buffer_manager
-        self.ntfy_topic = ntfy_topic
-        self.stop_event = threading.Event()
-        self.display_thread = None
-        
-    def start(self):
-        """Start the status display thread."""
-        if self.display_thread is not None:
-            return
+        # Resolution validation
+        if width <= 0 or height <= 0:
+            raise ValueError(f"Invalid resolution: {width}x{height}. Width and height must be positive.")
             
-        self.stop_event.clear()
-        self.display_thread = threading.Thread(target=self._display_loop, daemon=True)
-        self.display_thread.start()
-        
-    def stop(self):
-        """Stop the status display thread."""
-        if self.display_thread is None:
-            return
+        # Check for reasonable resolution bounds for Pi Camera
+        if width > 4032 or height > 3040:
+            print(f"Warning: Resolution {width}x{height} exceeds maximum Pi Camera v3 resolution (4032x3040)")
+            print("Performance may be degraded or capture may fail")
             
-        self.stop_event.set()
-        self.display_thread.join(timeout=2.0)
-        self.display_thread = None
-        
-    def update(self):
-        """Update the display with current information."""
-        if not self.camera_streamer:
-            return
+        # FPS validation
+        if target_fps <= 0:
+            raise ValueError(f"Invalid frame rate: {target_fps}. FPS must be positive.")
             
-        info = self.camera_streamer.get_info()
-        
-        # Get buffer info
-        buffer_size = 0
-        buffer_duration = 0.0
-        recording_active = False
-        
-        if self.buffer_manager:
-            buffer_size = self.buffer_manager.get_buffer_size()
-            buffer_duration = self.buffer_manager.get_buffer_duration()
-            recording_active = not self.camera_streamer.waiting_for_trigger
+        if target_fps > 120:
+            print(f"Warning: High frame rate requested ({target_fps} fps). The Raspberry Pi may struggle.")
+            print("Consider reducing to 90 fps or less for better stability.")
             
-        # Print status
-        print("\033[H\033[J")  # Clear screen
-        print(f"=== Camera Status ===")
-        print(f"Camera: {info['source_type']} ({info['width']}x{info['height']})")
-        print(f"FPS: {info['actual_fps']:.1f}")
-        print(f"Frames captured: {self.camera_streamer.get_frame_count()}")
-        print(f"Frames written: {self.camera_streamer.get_frames_written()}")
-        print(f"Frames dropped: {self.camera_streamer.get_frames_dropped()}")
-        print(f"Buffer size: {buffer_size} frames ({buffer_duration:.1f}s)")
-        print(f"Recording: {'ACTIVE' if recording_active else 'WAITING FOR TRIGGER'}")
-        print(f"NTFY topic: {self.ntfy_topic}")
-        print(f"Press 's' to start recording, 'x' to stop, 'q' to quit")
+        # Codec validation
+        valid_codecs = ['h264', 'h265', 'mjpg']
+        if codec.lower() not in valid_codecs:
+            print(f"Warning: Codec '{codec}' not in supported list {valid_codecs}.")
+            print("Falling back to MJPG for high frame rate compatibility")
+            codec = 'mjpg'  # Reassigned in the caller
+            
+        # Buffer size validation
+        if buffer_size_seconds <= 0:
+            raise ValueError(f"Invalid buffer size: {buffer_size_seconds}. Buffer size must be positive.")
+            
+        # For high-resolution, high-fps combinations, ensure adequate buffer
+        expected_frame_bytes = width * height * 3  # Estimated bytes per BGR frame
+        frames_per_second = target_fps
+        expected_buffer_bytes = expected_frame_bytes * frames_per_second * buffer_size_seconds
         
-    def _display_loop(self):
-        """Thread function to update the display periodically."""
-        while not self.stop_event.is_set():
+        # 1 GB in bytes as an arbitrary limit for reasonable memory usage
+        if expected_buffer_bytes > 1 * 1024 * 1024 * 1024:
+            print(f"Warning: Estimated buffer size is large: {expected_buffer_bytes / (1024*1024):.1f} MB")
+            print("Consider reducing resolution, FPS, or buffer duration to avoid memory issues")
+            
+        # Queue size validation
+        if queue_size_seconds <= 0:
+            raise ValueError(f"Invalid queue size: {queue_size_seconds}. Queue size must be positive.")
+            
+        # CPU core validation
+        if PSUTIL_AVAILABLE:
             try:
-                self.update()
-                time.sleep(self.update_interval)
+                cpu_count = psutil.cpu_count()
+                
+                # Validate capture CPU core
+                if capture_cpu_core is not None and (capture_cpu_core < 0 or capture_cpu_core >= cpu_count):
+                    print(f"Warning: Invalid capture CPU core: {capture_cpu_core}. Must be between 0 and {cpu_count-1}")
+                    capture_cpu_core = None  # Reassigned in the caller
+                    
+                # Validate writer CPU core
+                if writer_cpu_core is not None and (writer_cpu_core < 0 or writer_cpu_core >= cpu_count):
+                    print(f"Warning: Invalid writer CPU core: {writer_cpu_core}. Must be between 0 and {cpu_count-1}")
+                    writer_cpu_core = None  # Reassigned in the caller
+                    
+                # Validate LSL CPU core
+                if lsl_cpu_core is not None and (lsl_cpu_core < 0 or lsl_cpu_core >= cpu_count):
+                    print(f"Warning: Invalid LSL CPU core: {lsl_cpu_core}. Must be between 0 and {cpu_count-1}")
+                    lsl_cpu_core = None  # Reassigned in the caller
+                    
+                # Check for duplicated CPU core assignments
+                cores = [c for c in (capture_cpu_core, writer_cpu_core, lsl_cpu_core) if c is not None]
+                if len(cores) != len(set(cores)):
+                    print("Warning: Multiple threads assigned to same CPU core. Performance may be degraded.")
             except Exception as e:
-                print(f"Error updating status display: {e}")
-                time.sleep(1.0) 
+                print(f"Warning: Error validating CPU cores: {e}")
+                
+        print("Configuration validation complete.") 

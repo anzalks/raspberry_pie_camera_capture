@@ -117,14 +117,15 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)
     
     parser = argparse.ArgumentParser(description='Camera capture and streaming')
-    parser.add_argument('--camera-id', type=int, default=0, help='Camera index or ID to use')
+    parser.add_argument('--camera-id', type=int, default=0, 
+                       help='Camera index or ID to use (0=default camera, 1=second camera)')
     parser.add_argument('--width', type=int, default=400, help='Frame width')
     parser.add_argument('--height', type=int, default=400, help='Frame height')
     parser.add_argument('--fps', type=int, default=100, help='Target frame rate')
     parser.add_argument('--save-video', action='store_true', help='Save video files')
     parser.add_argument('--output-dir', type=str, default='recordings', help='Directory to save recordings')
-    parser.add_argument('--codec', type=str, choices=['auto', 'h264', 'h265', 'mjpg'], default='h264', 
-                       help='Video codec to use')
+    parser.add_argument('--codec', type=str, choices=['auto', 'h264', 'h265', 'mjpg'], default='mjpg', 
+                       help='Video codec to use (mjpg recommended for high frame rates)')
     parser.add_argument('--no-preview', action='store_true', help='Disable preview window')
     parser.add_argument('--no-lsl', action='store_true', help='Disable LSL streaming')
     parser.add_argument('--stream-name', type=str, default='VideoStream', help='LSL stream name')
@@ -132,6 +133,8 @@ def main():
     parser.add_argument('--buffer-size', type=float, default=20.0, help='Buffer size in seconds')
     parser.add_argument('--ntfy-topic', type=str, default='raspie-camera-test', 
                        help='Topic for ntfy notifications')
+    parser.add_argument('--enable-crop', action='store_true',
+                       help='Enable camera sensor cropping (automatically enabled for Global Shutter Camera)')
     
     # Add CPU core affinity options
     parser.add_argument('--capture-cpu-core', type=int, default=None, 
@@ -172,7 +175,7 @@ def main():
             # Add video subdirectory
             video_dir = os.path.join(output_dir, "video")
             os.makedirs(video_dir, exist_ok=True)
-            logger.info(f"Video recordings will be saved to: {video_dir}")
+            logger.info(f"Video recordings will be saved to: {video_dir} in MKV format")
             output_dir = video_dir
             
         # Set up buffer trigger manager if enabled
@@ -183,6 +186,7 @@ def main():
                 buffer_size_seconds=args.buffer_size,
                 ntfy_topic=args.ntfy_topic,
                 ntfy_cpu_core=args.ntfy_cpu_core
+                # We'll connect the status_display after it's created
             )
         
         # Set up the camera streamer - adjust parameters as needed
@@ -203,17 +207,21 @@ def main():
                 ntfy_topic=args.ntfy_topic,
                 capture_cpu_core=args.capture_cpu_core,
                 writer_cpu_core=args.writer_cpu_core,
-                lsl_cpu_core=args.lsl_cpu_core
+                lsl_cpu_core=args.lsl_cpu_core,
+                camera_id=args.camera_id,
+                enable_crop=args.enable_crop
             )
             
-            # Set up status display
-            status_display = None
-            if not args.no_preview:
-                status_display = StatusDisplay(
-                    camera_streamer=camera,
-                    buffer_manager=buffer_manager,
-                    ntfy_topic=args.ntfy_topic if buffer_manager else None
-                )
+            # Set up status display - always enable it for terminal UI
+            status_display = StatusDisplay(
+                camera_streamer=camera,
+                buffer_manager=buffer_manager,
+                ntfy_topic=args.ntfy_topic if buffer_manager else None
+            )
+            
+            # Connect status display to buffer manager after creation
+            if buffer_manager:
+                buffer_manager.status_display = status_display
             
             # Start the camera
             started = camera.start()
@@ -225,6 +233,9 @@ def main():
             if buffer_manager:
                 buffer_manager.start()
                 
+            # Start the status display
+            status_display.start()
+                
             # Main loop
             logger.info("Camera capture started. Press Ctrl+C to stop.")
             
@@ -232,12 +243,8 @@ def main():
                 # Capture a frame
                 frame = camera.capture_frame()
                 
-                # Update status display
-                if status_display:
-                    status_display.update()
-                    
-                # Sleep to maintain desired frame rate
-                time.sleep(0.01)  # Small sleep to prevent CPU overuse
+                # Small sleep to prevent CPU overuse
+                time.sleep(0.01)
                 
         except KeyboardInterrupt:
             logger.info("Keyboard interrupt received")
@@ -245,6 +252,10 @@ def main():
             logger.exception(f"Error in main loop: {e}")
         finally:
             # Cleanup resources
+            if 'status_display' in locals() and status_display:
+                logger.info("Stopping status display...")
+                status_display.stop()
+                
             if camera:
                 logger.info("Stopping camera...")
                 camera.stop()
