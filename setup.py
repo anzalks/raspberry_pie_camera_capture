@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
 
 from setuptools import setup, find_packages
+import os
 
-# Read version from _version.py
-with open('src/raspberry_pi_lsl_stream/_version.py', 'r') as f:
-    exec(f.read())  # This will define __version__
+# Set a default version if _version.py is not found
+__version__ = "0.1.0"
+
+# Try to read version from _version.py
+try:
+    with open('src/raspberry_pi_lsl_stream/_version.py', 'r') as f:
+        exec(f.read())  # This will define __version__
+except (FileNotFoundError, IOError):
+    # If file is not found, use default version
+    pass
 
 setup(
     name="raspie-capture",

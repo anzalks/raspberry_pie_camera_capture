@@ -741,57 +741,27 @@ class LSLCameraStreamer:
 
 
     def capture_frame(self):
-        """Captures a single frame, puts it in the queue (if saving), displays preview, and pushes LSL.
-           Uses capture_buffer() for PiCamera based on forum example for potentially higher FPS.
-        """
+        """Captures a single frame, puts it in the queue (if saving), displays preview, and pushes LSL."""
         if not self._is_running:
              return None, None
              
         timestamp = local_clock()
         frame_data = None
-        buffer_name = None # Store the buffer name/handle for release
         current_frame_index = -1
         
         try:
             # --- Capture frame ---
             if self.is_picamera and self.picam2:
-                # Forum post pattern: capture_buffer -> mmap -> release_buffer
-                buffer_name = self.picam2.capture_buffer()
-                # Get the memory-mapped data. The exact method depends on picamera2 version.
-                # Try direct attribute access first, fallback to helpers.mmap if needed.
-                # We assume the mapped data is flat; needs reshaping.
-                mapped_buffer = None
+                # Use the standard capture_array method which is more compatible
                 try:
-                    # Try direct access (more modern?)
-                    mapped_buffer = self.picam2.map_buffer(buffer_name)
-                except AttributeError:
-                    # Fallback to older helpers module if map_buffer doesn't exist
-                    # This might require an import of picamera2.helpers
-                    try:
-                        # We need to import helpers dynamically if needed
-                        from picamera2 import helpers
-                        mapped_buffer = helpers.mmap(buffer_name)
-                    except (ImportError, AttributeError) as e_map:
-                        print(f"ERROR: Could not map buffer using direct method or helpers.mmap: {e_map}")
-                        # Need to release the captured buffer even if mapping failed
-                        if buffer_name:
-                            try:
-                                self.picam2.release_buffer(buffer_name)
-                            except Exception: pass # Avoid error cascade
-                        return None, None # Cannot proceed without mapped data
-
-                # Create NumPy view from the mapped buffer (zero-copy)
-                # Assuming BGR888 or similar format matching self.width/height/channels
-                if mapped_buffer is not None:
-                    frame_data = np.frombuffer(mapped_buffer, dtype=np.uint8).reshape((self.height, self.width, self.num_channels))
-                else:
-                    # Should have been caught by error handling above, but safety check
-                    print("ERROR: mapped_buffer is None after attempting map.")
-                    if buffer_name: 
-                         try: self.picam2.release_buffer(buffer_name) 
-                         except Exception: pass
+                    frame_data = self.picam2.capture_array("main")
+                    if frame_data is None:
+                        print("Warning: PiCamera capture_array returned None. Skipping frame.")
+                        return None, None
+                except Exception as e:
+                    print(f"Error capturing frame from PiCamera: {e}")
+                    traceback.print_exc()
                     return None, None
-
             elif not self.is_picamera and self.cap:
                 # Standard OpenCV capture for webcams
                 ret, frame_data = self.cap.read()
@@ -869,52 +839,22 @@ class LSLCameraStreamer:
                          self.outlet.push_sample([current_frame_index], timestamp)
                      except Exception as e:
                          print(f"Error pushing frame number ({current_frame_index}) to LSL directly: {e}")
-                # else:
-                #      print("Warning: LSL Outlet is None. Cannot push sample.") # Logged during setup
                 
-                # --- Show Preview Frame ---
+                # --- Show Preview (Conditional) ---
                 if self.show_preview and hasattr(self, 'preview_window_name'):
                      try:
-                         # Set visualizer core affinity if showing preview
-                         if PSUTIL_AVAILABLE and self.visualizer_cpu_core is not None and current_frame_index == 0:
-                             self._set_thread_affinity("visualization", self.visualizer_cpu_core)
-                             
                          if cv2.getWindowProperty(self.preview_window_name, cv2.WND_PROP_VISIBLE) >= 1:
-                              cv2.imshow(self.preview_window_name, frame_data)
-                              key = cv2.waitKey(1)
-                              
-                              # Check if 't' key pressed for manual trigger while in buffer mode
-                              if self.use_buffer and key == ord('t'):
-                                  print("Manual trigger activated by 't' key")
-                                  if self.buffer_trigger_manager:
-                                      self.buffer_trigger_manager.trigger_manually()
-                              # Check if 's' key pressed for manual stop
-                              elif self.use_buffer and key == ord('s'):
-                                  print("Manual stop activated by 's' key")
-                                  if self.buffer_trigger_manager and self.recording_triggered:
-                                      self.buffer_trigger_manager.stop_manually()
+                             cv2.imshow(self.preview_window_name, frame_data)
+                             cv2.waitKey(1)
                      except Exception as e:
+                          print(f"Error showing preview: {e}")
                           pass
             
-            # Return the numpy array view (not the buffer object)
             return frame_data, timestamp
-
         except Exception as e:
-            # Catch errors specific to camera capture or preview
             print(f"Error during frame capture/processing: {e}")
             traceback.print_exc()
-            return None, None # Indicate failure for this frame
-        finally:
-            # --- CRITICAL: Release the buffer back to picamera2 ---
-            if self.is_picamera and self.picam2 and buffer_name is not None:
-                try:
-                    # Unmap first if we mapped successfully (might depend on how mapping was done)
-                    # If map_buffer returned a context manager, it might unmap automatically.
-                    # If using helpers.mmap, it might need explicit unmapping or closing.
-                    # Assuming direct unmapping isn't strictly needed before release_buffer for now.
-                    self.picam2.release_buffer(buffer_name)
-                except Exception as e_release:
-                    print(f"Error releasing picamera2 buffer: {e_release}")
+            return None, None
 
     def _initialize_buffer_trigger(self):
         """Initialize the buffer trigger system for pre-trigger recording."""
