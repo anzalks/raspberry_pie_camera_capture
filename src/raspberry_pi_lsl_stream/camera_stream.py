@@ -166,6 +166,15 @@ class LSLCameraStreamer:
                 self.preview_window_name = f"Preview: {self.stream_name}"
                 cv2.namedWindow(self.preview_window_name, cv2.WINDOW_NORMAL)
                 cv2.resizeWindow(self.preview_window_name, self.width // 2, self.height // 2) # Smaller preview
+                
+            # Initialize frame queue for video writer
+            if self.save_video:
+                # Calculate queue size based on fps and buffer seconds
+                queue_size = int(self.actual_fps * self.queue_size_seconds)
+                if queue_size < 100:
+                    queue_size = 100  # Minimum size
+                self.frame_queue = Queue(maxsize=queue_size)
+                print(f"Video frame queue initialized with size {queue_size}")
         except Exception as e:
             # Ensure cleanup if initialization fails
             print(f"Streamer initialization failed: {e}")
@@ -493,6 +502,75 @@ class LSLCameraStreamer:
         self.output_file = os.path.join(self.output_path, video_file)
         self.auto_output_filename = self.output_file
         print(f"Video will be saved as: {self.output_file}")
+        
+        # Initialize the video writer with appropriate codec
+        try:
+            # Determine which codec to use
+            if self.codec == 'auto':
+                # Try hardware-accelerated codecs first
+                codec_options = ['h264', 'h265', 'mjpg']
+            else:
+                # Use the requested codec
+                codec_options = [self.codec]
+                
+            # Map codec names to FourCC values
+            codec_map = {
+                'h264': 'avc1',  # H.264
+                'h265': 'hev1',  # H.265
+                'mjpg': 'MJPG',  # Motion JPEG
+            }
+            
+            # Try codecs in order until one works
+            writer = None
+            for codec_name in codec_options:
+                fourcc_str = codec_map.get(codec_name, 'MJPG')  # Default to MJPG if unknown
+                fourcc = cv2.VideoWriter_fourcc(*fourcc_str)
+                
+                # Create the writer
+                try:
+                    writer = cv2.VideoWriter(
+                        self.output_file,
+                        fourcc,
+                        self.actual_fps,
+                        (self.width, self.height),
+                        True  # isColor
+                    )
+                    
+                    # Test if it was created successfully
+                    if writer.isOpened():
+                        print(f"Successfully initialized VideoWriter with codec '{fourcc_str}' (from option '{codec_name}')")
+                        break
+                    else:
+                        print(f"Failed to initialize VideoWriter with codec '{fourcc_str}' (from option '{codec_name}')")
+                        writer.release()
+                        writer = None
+                except Exception as e:
+                    print(f"Error creating VideoWriter with codec '{fourcc_str}': {e}")
+                    if writer:
+                        writer.release()
+                    writer = None
+            
+            # If all options failed, try a final fallback
+            if writer is None:
+                print("All codec options failed. Trying one last fallback...")
+                writer = cv2.VideoWriter(
+                    self.output_file,
+                    cv2.VideoWriter_fourcc(*'MJPG'),
+                    self.actual_fps,
+                    (self.width, self.height),
+                    True
+                )
+                
+                if not writer.isOpened():
+                    raise RuntimeError("Could not initialize VideoWriter with any codec option")
+            
+            self.video_writer = writer
+            print(f"VideoWriter initialized for {self.width}x{self.height} @ {self.actual_fps}fps")
+            
+        except Exception as e:
+            print(f"Error initializing VideoWriter: {e}")
+            self.video_writer = None
+            traceback.print_exc()
 
     def _setup_lsl(self):
         """Configures and creates the LSL StreamInfo and StreamOutlet for Frame Numbers."""
