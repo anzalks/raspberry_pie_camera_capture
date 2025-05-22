@@ -33,6 +33,8 @@ VENV_DIR_NAME=".venv"
 VENV_PATH="$PROJECT_DIR/$VENV_DIR_NAME"
 SUDO_USER_NAME=${SUDO_USER:-$(logname 2>/dev/null || echo "pi")} # Get actual user if sudo, fallback to logname or 'pi'
 
+ORIG_SWAPSIZE="" # Initialize for swap functions
+
 echo -e "${GREEN_TEXT}=== Starting Raspberry Pi Camera Setup ===${NC}"
 echo "Running as: $(whoami), Script Invoker (SUDO_USER): $SUDO_USER_NAME"
 echo "Project Directory: $PROJECT_DIR"
@@ -41,35 +43,55 @@ echo "Virtual Environment Path: $VENV_PATH"
 # --- Swap Management Functions ---
 increase_swap() {
     echo -e "${YELLOW_TEXT}Attempting to increase swap space...${NC}"
-    SWAP_SIZE_MB=2048 # Increase to 2GB
-    CONF_SWAPSIZE_LINE=$(grep -E "^CONF_SWAPSIZE=" /etc/dphys-swapfile)
-    if [ -n "$CONF_SWAPSIZE_LINE" ]; then
-        ORIG_SWAPSIZE=$(echo "$CONF_SWAPSIZE_LINE" | cut -d'=' -f2)
-        echo "Original CONF_SWAPSIZE was $ORIG_SWAPSIZE"
-        sed -i "s/^CONF_SWAPSIZE=.*/CONF_SWAPSIZE=$SWAP_SIZE_MB/" /etc/dphys-swapfile
-        echo "Set CONF_SWAPSIZE to $SWAP_SIZE_MB"
-        dphys-swapfile swapoff
-        dphys-swapfile setup
-        dphys-swapfile swapon
-        echo "Swap increased. New status:"
+    if [ -f /etc/dphys-swapfile ]; then
+        SWAP_SIZE_MB=2048
+        CONF_SWAPSIZE_LINE=$(grep -E "^CONF_SWAPSIZE=" /etc/dphys-swapfile)
+        if [ -n "$CONF_SWAPSIZE_LINE" ]; then
+            ORIG_SWAPSIZE=$(echo "$CONF_SWAPSIZE_LINE" | cut -d'=' -f2)
+            echo "Original CONF_SWAPSIZE was $ORIG_SWAPSIZE MB"
+            if [ "$ORIG_SWAPSIZE" != "$SWAP_SIZE_MB" ]; then
+                sed -i "s/^CONF_SWAPSIZE=.*/CONF_SWAPSIZE=$SWAP_SIZE_MB/" /etc/dphys-swapfile
+                echo "Set CONF_SWAPSIZE to $SWAP_SIZE_MB MB"
+                echo "Restarting dphys-swapfile service..."
+                systemctl stop dphys-swapfile || echo "Failed to stop dphys-swapfile, continuing..."
+                systemctl start dphys-swapfile || echo "Failed to start dphys-swapfile, continuing..."
+                echo "Swap space potentially increased. Current status:"
+            else
+                echo "CONF_SWAPSIZE is already $SWAP_SIZE_MB MB. No changes made."
+            fi
+        else
+             echo "CONF_SWAPSIZE line not found in /etc/dphys-swapfile. Creating it."
+             echo "CONF_SWAPSIZE=$SWAP_SIZE_MB" >> /etc/dphys-swapfile
+             echo "Restarting dphys-swapfile service..."
+             systemctl stop dphys-swapfile || echo "Failed to stop dphys-swapfile, continuing..."
+             systemctl start dphys-swapfile || echo "Failed to start dphys-swapfile, continuing..."
+        fi
         free -m
     else
-        echo "CONF_SWAPSIZE not found in /etc/dphys-swapfile. Cannot automatically increase swap."
+        echo -e "${RED_TEXT}dphys-swapfile not found. Cannot manage swap automatically.${NC}"
     fi
 }
 
 restore_swap() {
     echo -e "${YELLOW_TEXT}Attempting to restore original swap space...${NC}"
-    if [ -n "$ORIG_SWAPSIZE" ]; then
-        echo "Restoring CONF_SWAPSIZE to $ORIG_SWAPSIZE"
-        sed -i "s/^CONF_SWAPSIZE=.*/CONF_SWAPSIZE=$ORIG_SWAPSIZE/" /etc/dphys-swapfile
-        dphys-swapfile swapoff
-        dphys-swapfile setup
-        dphys-swapfile swapon
-        echo "Swap restored. New status:"
+     if [ -f /etc/dphys-swapfile ] && [ -n "$ORIG_SWAPSIZE" ]; then
+        CONF_SWAPSIZE_LINE_CURRENT=$(grep -E "^CONF_SWAPSIZE=" /etc/dphys-swapfile | cut -d'=' -f2)
+        if [ "$CONF_SWAPSIZE_LINE_CURRENT" != "$ORIG_SWAPSIZE" ]; then
+            echo "Restoring CONF_SWAPSIZE to $ORIG_SWAPSIZE MB"
+            sed -i "s/^CONF_SWAPSIZE=.*/CONF_SWAPSIZE=$ORIG_SWAPSIZE/" /etc/dphys-swapfile
+            echo "Restarting dphys-swapfile service..."
+            systemctl stop dphys-swapfile || echo "Failed to stop dphys-swapfile, continuing..."
+            systemctl start dphys-swapfile || echo "Failed to start dphys-swapfile, continuing..."
+            echo "Swap space potentially restored. Current status:"
+        else
+            echo "CONF_SWAPSIZE is already at the original recorded value of $ORIG_SWAPSIZE MB."
+        fi
         free -m
+    elif [ -f /etc/dphys-swapfile ]; then
+        echo "Original swap size not recorded or no change was made. Current CONF_SWAPSIZE will be kept."
+        echo "If you manually changed it or want to revert, edit /etc/dphys-swapfile."
     else
-        echo "Original swap size not recorded. Please check /etc/dphys-swapfile manually."
+        echo -e "${RED_TEXT}dphys-swapfile not found. Cannot manage swap automatically.${NC}"
     fi
 }
 
@@ -102,21 +124,21 @@ apt install -y --no-install-recommends python3-scipy
 sleep 2
 
 echo -e "${YELLOW_TEXT}Attempting to install liblsl-dev (LabStreamingLayer library) via apt...${NC}"
-if apt install -y liblsl-dev; then
+if apt install -y --no-install-recommends liblsl-dev; then
   echo -e "${GREEN_TEXT}liblsl-dev installed successfully via apt.${NC}"
 else
   echo -e "${YELLOW_TEXT}apt install liblsl-dev failed. Attempting to build from source...${NC}"
-  apt install -y cmake
+  apt install -y --no-install-recommends cmake
   ORIG_DIR_LSL=$(pwd)
-  TEMP_LSL_DIR=$(mktemp -d)
+  TEMP_LSL_DIR=$(mktemp -d); trap "echo 'Cleaning up $TEMP_LSL_DIR'; rm -rf $TEMP_LSL_DIR" EXIT
   echo "Cloning liblsl into $TEMP_LSL_DIR/liblsl..."
   git clone --depth 1 https://github.com/sccn/liblsl.git "$TEMP_LSL_DIR/liblsl"
   cd "$TEMP_LSL_DIR/liblsl"
   mkdir -p build && cd build
-  cmake .. && make -j$(nproc) && make install && ldconfig
+  cmake .. && make -j2 && make install && ldconfig # Reduced to -j2
   echo -e "${GREEN_TEXT}liblsl successfully built and installed from source.${NC}"
   cd "$ORIG_DIR_LSL"
-  rm -rf "$TEMP_LSL_DIR"
+  rm -rf "$TEMP_LSL_DIR"; trap - EXIT
 fi
 
 # --- Install other dependencies ---
@@ -228,18 +250,18 @@ PIP_EXEC="$VENV_PATH/bin/pip"
 PYTHON_EXEC="$VENV_PATH/bin/python"
 
 echo -e "${YELLOW_TEXT}Upgrading pip, setuptools, and wheel in virtual environment (as $SUDO_USER_NAME)...${NC}"
-sudo -u "$SUDO_USER_NAME" "$PIP_EXEC" install --upgrade pip setuptools wheel
+sudo -u "$SUDO_USER_NAME" "$PIP_EXEC" install --prefer-binary --upgrade pip setuptools wheel
 
 echo -e "${YELLOW_TEXT}Installing core Python packages (pylsl, numpy, etc.) into venv (as $SUDO_USER_NAME)...${NC}"
 PIP_CORE_PACKAGES=( "pylsl" "numpy" "scipy" "pyyaml" "requests" "psutil" "importlib-metadata" )
-if ! sudo -u "$SUDO_USER_NAME" "$PIP_EXEC" install --verbose ${PIP_CORE_PACKAGES[*]}; then
+if ! sudo -u "$SUDO_USER_NAME" "$PIP_EXEC" install --prefer-binary --verbose ${PIP_CORE_PACKAGES[*]}; then
     echo -e "${RED_TEXT}ERROR: Failed to install one or more core Python packages. Check output.${NC}"
 fi
 
 echo -e "${YELLOW_TEXT}Attempting to install/reinstall 'picamera2' into venv (as $SUDO_USER_NAME)...${NC}"
 echo "This uses --force-reinstall --no-cache-dir --no-binary=:all: for picamera2."
 set -x # Enable command tracing for this specific pip command
-if ! sudo -u "$SUDO_USER_NAME" "$PIP_EXEC" install --verbose --force-reinstall --no-cache-dir --no-binary=:all: picamera2; then
+if ! sudo -u "$SUDO_USER_NAME" "$PIP_EXEC" install --prefer-binary --force-reinstall --no-cache-dir --no-binary=:all: picamera2; then
     echo -e "${RED_TEXT}ERROR: Failed to install 'picamera2' using pip. This is critical!${NC}"
 fi
 set +x # Disable command tracing
