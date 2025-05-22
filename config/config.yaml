@@ -18,7 +18,7 @@ camera:
   
   # Media controller settings
   media_ctl:
-    device_pattern: "/dev/media1"
+    device_pattern: "/dev/media%d"  # Use a pattern to allow searching through all devices
     entity_pattern: "imx296 %s-001a"
     bayer_format: "SBGGR10_1X10"  # Format appropriate for IMX296
   

@@ -105,63 +105,65 @@ def find_imx296_media_device(config):
     device_pattern = config['camera']['media_ctl']['device_pattern']
     entity_pattern = config['camera']['media_ctl']['entity_pattern']
     
-    # If a specific device is configured, check that first
-    if not '%d' in device_pattern:
-        logger.info(f"Using configured media device: {device_pattern}")
+    logger.info("Searching for IMX296 camera in available media devices...")
+    
+    # First, run libcamera-hello to see if the camera is detected by libcamera
+    try:
+        libcamera_hello_path = config['system']['libcamera_hello_path']
+        cmd = [libcamera_hello_path, "--list-cameras"]
+        logger.info(f"Running: {' '.join(cmd)}")
+        output = subprocess.check_output(cmd, universal_newlines=True, stderr=subprocess.STDOUT)
+        logger.info(f"libcamera-hello output:\n{output}")
+        
+        if "imx296" not in output.lower():
+            logger.error("IMX296 camera not detected by libcamera-hello. Check camera connection.")
+    except subprocess.CalledProcessError as e:
+        logger.warning(f"Error running libcamera-hello: {e}")
+        logger.warning(f"Output: {e.output if hasattr(e, 'output') else 'No output'}")
+    
+    # Check if device_pattern has a %d format specifier
+    is_pattern = '%d' in device_pattern
+    
+    # List all media devices
+    media_devices = []
+    for i in range(10):  # Check media0 through media9
+        if is_pattern:
+            media_dev = device_pattern % i
+        else:
+            media_dev = f"/dev/media{i}"
+        
+        if os.path.exists(media_dev):
+            media_devices.append(media_dev)
+    
+    logger.info(f"Found media devices: {media_devices}")
+    
+    # Try each media device
+    for media_dev in media_devices:
+        logger.info(f"Checking media device: {media_dev}")
+        
         try:
-            cmd = [media_ctl_path, "-d", device_pattern, "-p"]
-            output = subprocess.check_output(cmd, universal_newlines=True)
+            # Run media-ctl to list entities
+            cmd = [media_ctl_path, "-d", media_dev, "-p"]
+            logger.info(f"Running: {' '.join(cmd)}")
+            output = subprocess.check_output(cmd, universal_newlines=True, stderr=subprocess.STDOUT)
             
-            # Look for IMX296 entity in the output
-            for line in output.splitlines():
-                if "imx296" in line.lower():
+            # Log the full output for debugging
+            logger.debug(f"media-ctl output for {media_dev}:\n{output}")
+            
+            # Check if IMX296 is mentioned anywhere in the output
+            if "imx296" in output.lower():
+                logger.info(f"Found IMX296 in {media_dev}")
+                
+                # Look for the specific entity
+                for line in output.splitlines():
+                    # This regex looks for IMX296 in different formats
                     match = re.search(r'entity\s+\d+:\s+(imx296\s+[a-z0-9\-]+)', line, re.IGNORECASE)
                     if match:
                         entity_match = match.group(1)
                         logger.info(f"Found IMX296 entity: {entity_match}")
-                        return device_pattern, entity_match
-            
-            logger.warning(f"IMX296 not found in configured device {device_pattern}")
-        except subprocess.CalledProcessError as e:
-            logger.warning(f"Error running media-ctl on configured device {device_pattern}: {e}")
-    
-    # If specific device failed or using pattern, try various media devices
-    logger.info("Searching for IMX296 camera in available media devices...")
-    
-    # Check if device_pattern has a %d format specifier
-    if '%d' in device_pattern:
-        device_range = range(10)  # Check media0 through media9
-        pattern_to_check = lambda i: device_pattern % i
-    else:
-        # If no format specifier, we'll try some standard patterns
-        device_range = range(10)
-        pattern_to_check = lambda i: f"/dev/media{i}"
-    
-    for i in device_range:
-        media_dev = pattern_to_check(i)
-        if not os.path.exists(media_dev):
-            continue
-        
-        logger.info(f"Checking media device: {media_dev}")
-        
-        # Run media-ctl to list entities
-        try:
-            cmd = [media_ctl_path, "-d", media_dev, "-p"]
-            output = subprocess.check_output(cmd, universal_newlines=True)
-            
-            # Look for IMX296 entity in the output
-            entity_match = None
-            for line in output.splitlines():
-                # This regex looks for IMX296 in different formats
-                match = re.search(r'entity\s+\d+:\s+(imx296\s+[a-z0-9\-]+)', line, re.IGNORECASE)
-                if match:
-                    entity_match = match.group(1)
-                    logger.info(f"Found IMX296 entity: {entity_match}")
-                    return media_dev, entity_match
-            
-            # If no explicit match, try a fallback pattern search
-            if "imx296" in output.lower():
-                # Try to extract the entity from another line
+                        return media_dev, entity_match
+                
+                # If we found imx296 but not the exact entity, try to extract the entity from another line
                 for line in output.splitlines():
                     if "imx296" in line.lower():
                         parts = line.split(":")
@@ -170,13 +172,39 @@ def find_imx296_media_device(config):
                             logger.info(f"Found IMX296 entity using fallback method: {entity_name}")
                             return media_dev, entity_name
                 
-                logger.warning(f"IMX296 found in {media_dev} but couldn't identify entity name")
+                # If we still haven't found a specific entity but know the camera is on this device
+                logger.info(f"IMX296 found in {media_dev} but couldn't identify entity name. Using default.")
+                return media_dev, "imx296"
                 
         except subprocess.CalledProcessError as e:
             logger.warning(f"Error running media-ctl on {media_dev}: {e}")
+            logger.warning(f"Output: {e.output if hasattr(e, 'output') else 'No output'}")
             continue
     
-    logger.error("Could not find IMX296 camera. Is it connected and powered on?")
+    # Try a different approach - look for device patterns that might indicate a camera
+    logger.warning("Could not find IMX296 camera using standard methods. Trying alternative search.")
+    for media_dev in media_devices:
+        try:
+            cmd = [media_ctl_path, "-d", media_dev, "-p"]
+            output = subprocess.check_output(cmd, universal_newlines=True, stderr=subprocess.STDOUT)
+            
+            # Look for terms that might indicate a camera
+            camera_indicators = ["camera", "sensor", "csi", "mipi"]
+            for indicator in camera_indicators:
+                if indicator in output.lower():
+                    logger.info(f"Found potential camera device: {media_dev} (contains '{indicator}')")
+                    # Extract any entity that might be a camera
+                    for line in output.splitlines():
+                        if "entity" in line.lower() and any(ind in line.lower() for ind in camera_indicators):
+                            parts = line.split(":")
+                            if len(parts) >= 2:
+                                entity_name = parts[1].strip()
+                                logger.info(f"Using camera entity: {entity_name}")
+                                return media_dev, entity_name
+        except:
+            continue
+    
+    logger.error("Could not find IMX296 camera or any camera device. Is it connected and powered on?")
     return None, None
 
 def configure_media_ctl(config):
@@ -188,6 +216,32 @@ def configure_media_ctl(config):
     media_dev, entity_name = find_imx296_media_device(config)
     if not media_dev or not entity_name:
         logger.error("Cannot configure media-ctl without a valid device and entity")
+        # Try to provide some diagnostic information
+        try:
+            # Check if libcamera can see the camera
+            libcamera_hello_path = config['system']['libcamera_hello_path']
+            logger.info("Checking for cameras with libcamera-hello:")
+            cmd = [libcamera_hello_path, "--list-cameras"]
+            output = subprocess.check_output(cmd, universal_newlines=True, stderr=subprocess.STDOUT)
+            logger.info(f"libcamera-hello output:\n{output}")
+            
+            # List all media devices
+            logger.info("Listing all media devices:")
+            for i in range(10):
+                media_path = f"/dev/media{i}"
+                if os.path.exists(media_path):
+                    logger.info(f"Found {media_path}")
+                    try:
+                        cmd = [media_ctl_path, "-d", media_path, "-p"]
+                        output = subprocess.check_output(cmd, universal_newlines=True, stderr=subprocess.STDOUT)
+                        logger.info(f"media-ctl output summary for {media_path}: {len(output.splitlines())} lines")
+                    except subprocess.CalledProcessError as e:
+                        logger.error(f"Error running media-ctl on {media_path}: {e}")
+            
+            logger.info("Camera not found. Please check connections and ensure camera is enabled in raspi-config.")
+        except Exception as e:
+            logger.error(f"Error during diagnostics: {e}")
+        
         return False
     
     # Calculate crop coordinates to center the 400x400 window in the sensor
@@ -201,6 +255,12 @@ def configure_media_ctl(config):
     
     bayer_format = config['camera']['media_ctl']['bayer_format']
     
+    # Log the configuration we're about to apply
+    logger.info(f"Configuring IMX296 camera on {media_dev}")
+    logger.info(f"Entity: {entity_name}")
+    logger.info(f"Crop: {crop_x},{crop_y}/{target_width}x{target_height}")
+    logger.info(f"Format: {bayer_format}")
+    
     # Construct and execute the media-ctl command
     try:
         # Format the command with the calculated crop coordinates
@@ -210,8 +270,20 @@ def configure_media_ctl(config):
         ]
         
         logger.info(f"Executing media-ctl command: {' '.join(cmd)}")
-        output = subprocess.check_output(cmd, universal_newlines=True, stderr=subprocess.STDOUT)
-        logger.info(f"media-ctl output: {output}")
+        
+        # Try with different quoting styles if necessary
+        try:
+            output = subprocess.check_output(cmd, universal_newlines=True, stderr=subprocess.STDOUT, shell=False)
+            logger.info(f"media-ctl output: {output}")
+        except subprocess.CalledProcessError:
+            # Try without quotes around the entity name
+            cmd = [
+                media_ctl_path, "-d", media_dev,
+                "--set-v4l2", f'{entity_name}:0[fmt:{bayer_format}/{target_width}x{target_height} crop:({crop_x},{crop_y})/{target_width}x{target_height}]'
+            ]
+            logger.info(f"Retrying with modified command: {' '.join(cmd)}")
+            output = subprocess.check_output(cmd, universal_newlines=True, stderr=subprocess.STDOUT)
+            logger.info(f"media-ctl output: {output}")
         
         # Verify the configuration
         cmd_verify = [media_ctl_path, "-d", media_dev, "-p"]
@@ -225,6 +297,17 @@ def configure_media_ctl(config):
     except subprocess.CalledProcessError as e:
         logger.error(f"Failed to configure media-ctl: {e}")
         logger.error(f"Command output: {e.output if hasattr(e, 'output') else 'No output'}")
+        
+        # Try to provide more diagnostics
+        logger.info("Attempting diagnostics for media-ctl failure:")
+        try:
+            # List available formats
+            cmd = [media_ctl_path, "-d", media_dev, "--print-dot"]
+            output = subprocess.check_output(cmd, universal_newlines=True, stderr=subprocess.STDOUT)
+            logger.info(f"Available formats and connections (dot graph):\n{output}")
+        except Exception as diag_e:
+            logger.error(f"Diagnostics failed: {diag_e}")
+        
         return False
 
 def verify_with_libcamera_hello(config):

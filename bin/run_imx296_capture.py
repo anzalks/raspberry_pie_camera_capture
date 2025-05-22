@@ -135,15 +135,17 @@ def main():
             if os.geteuid() != 0 and not has_video_access:
                 # Prepend sudo to the command
                 cmd = ["sudo"] + cmd
-            return subprocess.check_output(cmd, universal_newlines=True)
+            # Use the original subprocess.check_output to avoid recursion
+            return original_check_output(cmd, universal_newlines=True)
         
-        # Patch the module's subprocess.check_output for media-ctl commands
+        # Store the original check_output function
         original_check_output = subprocess.check_output
         
         def patched_check_output(cmd, *args, **kwargs):
             """Patched version of subprocess.check_output that adds sudo for media-ctl."""
             if isinstance(cmd, list) and len(cmd) > 0 and "media-ctl" in cmd[0]:
                 return run_media_ctl_with_sudo(cmd)
+            # Use the original function for non-media-ctl commands
             return original_check_output(cmd, *args, **kwargs)
         
         # Apply the patch only for the imported module
