@@ -9,6 +9,9 @@ SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$ROOT_DIR"
 
+# Enable tracing for debugging if needed
+# set -x
+
 # Function to configure Global Shutter Camera using Hermann-SW's technique
 configure_global_shutter() {
   local width=$1
@@ -86,7 +89,7 @@ configure_global_shutter() {
       echo "WARNING: IMX296 Global Shutter Camera not found in media devices"
       echo "Will still attempt to apply configuration..."
     fi
-
+  
     # Find the media device the GS camera is connected to
     gs_configured=false
     for m in {0..5}; do
@@ -696,7 +699,7 @@ try:
     camera = LSLCameraStreamer(
         width=width,
         height=height,
-        target_fps=min(fps, 120),  # Limit fps to avoid issues
+        target_fps=fps,  # Don't limit fps, use the requested value
         save_video=True,
         output_path=today_dir,
         codec="mjpg",
@@ -710,79 +713,32 @@ try:
         camera_id=0
     )
     
+    # Print status immediately to show configuration
+    print(f"Camera initialized with {width}x{height} @ {fps}fps")
+    print(f"Global Shutter Camera support is ENABLED")
+    print(f"Starting camera...")
+
     # Keep the script running until Ctrl+C is pressed
     try:
+        # Start the camera explicitly and wait to ensure it's running
+        print("Starting camera capture...")
         camera.start()
+        print("Camera started successfully!")
+        
+        # Sleep briefly to let camera initialize
+        time.sleep(1)
+        
         running = True
         status_update_interval = 0.2  # Update status more frequently (5 times per second)
         last_update = time.time()
         
-        while running:
-            # Simple terminal UI for status updates
-            if time.time() - last_update >= status_update_interval:
-                print_status_update(camera, camera.buffer_trigger_manager)
-                last_update = time.time()
-            
-            time.sleep(0.05)  # Faster refresh rate
-    except Exception as e:
-        logger.error(f"Error in main loop: {e}")
-        traceback.print_exc()
-        
-except Exception as e:
-    logger.error(f"Error: {str(e)}")
-    traceback.print_exc()
-    sys.exit(1)
-finally:
-    # Cleanup
-    if 'camera' in locals() and camera:
-        try:
-            camera.stop()
-            logger.info("Camera stopped")
-        except Exception as e:
-            logger.error(f"Error stopping camera: {e}")
-EOF
-
-# Make the temporary script executable
-chmod +x $TMP_SCRIPT
-
-# Function to detect available terminal emulator
-detect_terminal() {
-    if command -v lxterminal &> /dev/null; then
-        echo "lxterminal"
-    elif command -v xterm &> /dev/null; then
-        echo "xterm"
-    elif command -v gnome-terminal &> /dev/null; then
-        echo "gnome-terminal"
-    elif command -v x-terminal-emulator &> /dev/null; then
-        echo "x-terminal-emulator"
-    else
-        echo ""
-    fi
-}
-
-# Check if we're in a graphical environment where we can open a new terminal
-if [ -n "$DISPLAY" ] && [ "$DISPLAY_MODE" = "terminal" ]; then
-    echo "Launching camera UI in a new terminal window..."
-    
-    # Detect which terminal emulator is available
-    TERM_EMU=$(detect_terminal)
-    
-    if [ -n "$TERM_EMU" ]; then
-        # Launch the script in a new terminal window
-        case $TERM_EMU in
-            lxterminal)
-                lxterminal --title="Raspberry Pi Camera Capture" --command="$TMP_SCRIPT" &
-                ;;
-            xterm)
-                xterm -title "Raspberry Pi Camera Capture" -e "$TMP_SCRIPT" &
-                ;;
-            gnome-terminal)
-                gnome-terminal -- "$TMP_SCRIPT" &
-                ;;
-            x-terminal-emulator)
-                x-terminal-emulator -e "$TMP_SCRIPT" &
-                ;;
-        esac
+        # Check if terminal actually started
+        if [ $? -ne 0 ]; then
+            echo "Failed to start new terminal window. Falling back to current terminal."
+            "$TMP_SCRIPT"
+            rm -f "$TMP_SCRIPT"
+            exit $?
+        fi
         
         echo "Camera UI launched in a new terminal window."
         echo "This terminal will show debug information only."
@@ -793,11 +749,13 @@ if [ -n "$DISPLAY" ] && [ "$DISPLAY_MODE" = "terminal" ]; then
         rm -f "$DEBUG_PIPE"
         mkfifo "$DEBUG_PIPE"
         
-        # Modify the temp script to write debug info to the pipe
-        sed -i '/logger.info/s/^/logger.info("DEBUGPIPE: " + /;s/$/); os.system("echo \\"\\$_\\" > \/tmp\/camera_debug_pipe")/g' "$TMP_SCRIPT"
+        # Create a debug version of the script
+        DEBUG_SCRIPT="${TMP_SCRIPT}_debug"
+        cp "$TMP_SCRIPT" "$DEBUG_SCRIPT"
+        chmod +x "$DEBUG_SCRIPT"
         
-        # Add real-time debug monitoring to the script
-        cat >> "$TMP_SCRIPT" << 'EOD'
+        # Add debug code to the debug script
+        cat >> "$DEBUG_SCRIPT" << 'EOD'
 # Function to log debug information to the pipe
 def log_debug(message):
     try:
@@ -822,13 +780,24 @@ def monitor_camera_status():
 # Add monitoring to the main loop
 old_time = time.time()
 status_interval = 1.0  # Send status every second
+
+# Replace the main loop with one that includes monitoring
+while running:
+    # Simple terminal UI for status updates
+    if time.time() - last_update >= status_update_interval:
+        print_status_update(camera, camera.buffer_trigger_manager)
+        last_update = time.time()
+    
+    # Monitor camera status for debug
+    if time.time() - old_time >= status_interval:
+        monitor_camera_status()
+        old_time = time.time()
+    
+    time.sleep(0.05)  # Faster refresh rate
+
+# Exit before the original loop runs
+sys.exit(0)
 EOD
-        
-        # Update the main loop to include status monitoring
-        sed -i '/while running:/a \        # Monitor camera status\n        if time.time() - old_time >= status_interval:\n            monitor_camera_status()\n            old_time = time.time()' "$TMP_SCRIPT"
-        
-        # Add error logging to pipe
-        sed -i '/logger.error/s/^/log_debug(f"ERROR: {str(e)}"); /g' "$TMP_SCRIPT"
         
         # Show debug info in the original terminal
         echo ""
@@ -838,6 +807,7 @@ EOD
         echo "- Target FPS: ${fps}"
         echo "- Preview Enabled: ${PREVIEW_ENABLED}"
         echo "- Output Directory: ${TODAY_DIR}"
+        echo "- Global Shutter Support: ENABLED"
         echo ""
         echo "System Information:"
         if [ -f "/proc/cpuinfo" ]; then
@@ -850,7 +820,7 @@ EOD
         echo "- OS: $(grep PRETTY_NAME /etc/os-release | cut -d'"' -f2)"
         echo ""
         echo "=== REAL-TIME DEBUG LOG ==="
-        echo "Starting camera process..."
+        echo "Starting camera process in separate terminal..."
         
         # Read from the pipe and display debug info
         tail -f "$DEBUG_PIPE" &
@@ -871,12 +841,187 @@ EOD
         # Cleanup processes and pipe
         kill $TAIL_PID 2>/dev/null || true
         kill $MONITOR_PID 2>/dev/null || true
-        rm -f "$DEBUG_PIPE"
-    else
-        # Fallback to running in the current terminal if no terminal emulator found
-        echo "No terminal emulator found. Running camera UI in current terminal..."
-        "$TMP_SCRIPT"
+        rm -f "$DEBUG_PIPE" "$TMP_SCRIPT" "$DEBUG_SCRIPT"
+    except Exception as e:
+        logger.error(f"Error in main loop: {e}")
+        traceback.print_exc()
+        
+except Exception as e:
+    logger.error(f"Error: {str(e)}")
+    traceback.print_exc()
+    sys.exit(1)
+finally:
+    # Cleanup
+    if 'camera' in locals() and camera:
+        try:
+            camera.stop()
+            logger.info("Camera stopped")
+        except Exception as e:
+            logger.error(f"Error stopping camera: {e}")
+EOF
+
+# Make the temporary script executable
+chmod +x $TMP_SCRIPT
+
+# Function to detect available terminal emulator
+detect_terminal() {
+    # Force disable terminal detection if not running in X11
+    if [ -z "$DISPLAY" ]; then
+        return 1
     fi
+    
+    # Try to detect available terminal emulators
+    for term in lxterminal xterm gnome-terminal x-terminal-emulator konsole terminology; do
+        if command -v "$term" &> /dev/null; then
+            echo "$term"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Check if we're in a graphical environment where we can open a new terminal
+TERM_EMU=$(detect_terminal)
+if [ -n "$TERM_EMU" ] && [ "$DISPLAY_MODE" = "terminal" ]; then
+    echo "Launching camera UI in a new terminal window using $TERM_EMU..."
+    
+    # Make a separate copy of the script for the terminal
+    UI_SCRIPT="${TMP_SCRIPT}_ui"
+    cp "$TMP_SCRIPT" "$UI_SCRIPT"
+    chmod +x "$UI_SCRIPT"
+    
+    # Launch the script in a new terminal window with explicit geometry
+    case $TERM_EMU in
+        lxterminal)
+            lxterminal --title="Raspberry Pi Camera Capture" --geometry=100x40 --command="$UI_SCRIPT" &
+            ;;
+        xterm)
+            xterm -title "Raspberry Pi Camera Capture" -geometry 100x40 -e "$UI_SCRIPT" &
+            ;;
+        gnome-terminal)
+            gnome-terminal --geometry=100x40 -- "$UI_SCRIPT" &
+            ;;
+        konsole)
+            konsole --title "Raspberry Pi Camera Capture" -e "$UI_SCRIPT" &
+            ;;
+        terminology)
+            terminology -t "Raspberry Pi Camera Capture" -e "$UI_SCRIPT" &
+            ;;
+        x-terminal-emulator)
+            x-terminal-emulator -e "$UI_SCRIPT" &
+            ;;
+    esac
+    
+    # Check if terminal actually started
+    if [ $? -ne 0 ]; then
+        echo "Failed to start new terminal window. Falling back to current terminal."
+        "$TMP_SCRIPT"
+        rm -f "$UI_SCRIPT"
+        exit $?
+    fi
+    
+    echo "Camera UI launched in a new terminal window."
+    echo "This terminal will show debug information only."
+    echo "To stop the camera, close the camera UI window or press Ctrl+C there."
+    
+    # Create a named pipe for communication between processes
+    DEBUG_PIPE="/tmp/camera_debug_pipe"
+    rm -f "$DEBUG_PIPE"
+    mkfifo "$DEBUG_PIPE"
+    
+    # Create a debug version of the script
+    DEBUG_SCRIPT="${TMP_SCRIPT}_debug"
+    cp "$TMP_SCRIPT" "$DEBUG_SCRIPT"
+    chmod +x "$DEBUG_SCRIPT"
+    
+    # Add debug code to the debug script
+    cat >> "$DEBUG_SCRIPT" << 'EOD'
+# Function to log debug information to the pipe
+def log_debug(message):
+    try:
+        with open('/tmp/camera_debug_pipe', 'w') as f:
+            f.write(f"DEBUG: {message}\n")
+    except:
+        pass
+
+# Monitor camera status
+def monitor_camera_status():
+    if 'camera' in globals() and camera:
+        try:
+            info = camera.get_info()
+            status = "RECORDING" if info.get('recording', False) else "STANDBY"
+            fps = info.get('current_fps', 0)
+            frames = camera.get_frame_count()
+            written = camera.get_frames_written()
+            log_debug(f"STATUS: {status} | FPS: {fps:.1f} | Frames: {frames} | Written: {written}")
+        except Exception as e:
+            log_debug(f"Error monitoring status: {e}")
+
+# Add monitoring to the main loop
+old_time = time.time()
+status_interval = 1.0  # Send status every second
+
+# Replace the main loop with one that includes monitoring
+while running:
+    # Simple terminal UI for status updates
+    if time.time() - last_update >= status_update_interval:
+        print_status_update(camera, camera.buffer_trigger_manager)
+        last_update = time.time()
+    
+    # Monitor camera status for debug
+    if time.time() - old_time >= status_interval:
+        monitor_camera_status()
+        old_time = time.time()
+    
+    time.sleep(0.05)  # Faster refresh rate
+
+# Exit before the original loop runs
+sys.exit(0)
+EOD
+    
+    # Show debug info in the original terminal
+    echo ""
+    echo "=== DEBUG INFORMATION ==="
+    echo "Camera Configuration:"
+    echo "- Resolution: ${width}x${height}"
+    echo "- Target FPS: ${fps}"
+    echo "- Preview Enabled: ${PREVIEW_ENABLED}"
+    echo "- Output Directory: ${TODAY_DIR}"
+    echo "- Global Shutter Support: ENABLED"
+    echo ""
+    echo "System Information:"
+    if [ -f "/proc/cpuinfo" ]; then
+        echo "- CPU: $(grep "model name" /proc/cpuinfo | head -n 1 | cut -d':' -f2 | xargs)"
+        echo "- CPU Cores: $(grep -c "processor" /proc/cpuinfo)"
+    fi
+    if [ -f "/proc/meminfo" ]; then
+        echo "- RAM: $(grep "MemTotal" /proc/meminfo | awk '{print $2/1024/1024 " GB"}')"
+    fi
+    echo "- OS: $(grep PRETTY_NAME /etc/os-release | cut -d'"' -f2)"
+    echo ""
+    echo "=== REAL-TIME DEBUG LOG ==="
+    echo "Starting camera process in separate terminal..."
+    
+    # Read from the pipe and display debug info
+    tail -f "$DEBUG_PIPE" &
+    TAIL_PID=$!
+    
+    # Add resource monitoring in a loop
+    (
+        while true; do
+            echo "SYS: CPU: $(top -bn1 | grep "Cpu(s)" | awk '{print $2}')% | MEM: $(free -m | awk 'NR==2{printf "%.1f%%", $3*100/$2}') | $(date '+%H:%M:%S')" > "$DEBUG_PIPE"
+            sleep 3
+        done
+    ) &
+    MONITOR_PID=$!
+    
+    # Wait for the script to exit in the other terminal
+    wait
+    
+    # Cleanup processes and pipe
+    kill $TAIL_PID 2>/dev/null || true
+    kill $MONITOR_PID 2>/dev/null || true
+    rm -f "$DEBUG_PIPE" "$UI_SCRIPT" "$DEBUG_SCRIPT"
 else
     # Run in the current terminal if we're not in a graphical environment or in service mode
     echo "Running camera capture with terminal UI in current window..."
