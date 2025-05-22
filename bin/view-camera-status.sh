@@ -29,10 +29,11 @@ echo "1. View live logs"
 echo "2. Start service"
 echo "3. Stop service"
 echo "4. Restart service"
-echo "5. Exit"
+echo "5. Run manually (not as service)"
+echo "6. Exit"
 echo
 
-read -p "Enter your choice [1-5]: " choice
+read -p "Enter your choice [1-6]: " choice
 
 case $choice in
     1)
@@ -57,7 +58,17 @@ case $choice in
         sleep 2
         sudo systemctl status imx296-camera.service
         ;;
-    5|*)
+    5)
+        echo -e "${YELLOW}Running camera script manually...${NC}"
+        # Set default directory and run script
+        script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        project_root="$(dirname "$script_dir")"
+        
+        cd "$project_root"
+        source .venv/bin/activate
+        sudo python3 bin/run_imx296_capture.py
+        ;;
+    6|*)
         echo "Exiting."
         exit 0
         ;;

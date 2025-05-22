@@ -34,15 +34,7 @@ def main():
                       help="Path to config file")
     parser.add_argument("--check-only", action="store_true",
                       help="Only check the environment and configuration, don't start the system")
-    parser.add_argument("--sudo", action="store_true",
-                      help="Run the media-ctl commands with sudo (required for hardware cropping)")
     args = parser.parse_args()
-    
-    # Check if we need to run with sudo for media-ctl
-    if args.sudo and os.geteuid() != 0:
-        print("Re-running with sudo to access media controller...")
-        cmd = ["sudo", sys.executable] + sys.argv
-        os.execvp("sudo", cmd)
     
     # Check for required tools
     print("Checking for required tools...")
@@ -121,6 +113,12 @@ def main():
         
         return 1
     
+    # Check if we have permission to access video and media devices
+    has_video_access = check_device_permissions("/dev/video0") and check_device_permissions("/dev/media0")
+    if not has_video_access:
+        print("WARNING: You may not have permission to access camera devices.")
+        print("Some operations like media-ctl will be run with sudo.")
+    
     # If check-only flag is set, exit here
     if args.check_only:
         print("Environment check passed. All required tools and packages are available.")
@@ -128,8 +126,31 @@ def main():
     
     # Import and run the main module
     try:
-        from src.imx296_gs_capture.imx296_capture import main as run_camera
-        return run_camera()
+        # Import with modified version that uses sudo for media-ctl if needed
+        import src.imx296_gs_capture.imx296_capture as imx296_module
+        
+        # Add a function to run media-ctl with sudo if needed
+        def run_media_ctl_with_sudo(cmd):
+            """Run media-ctl with sudo if needed."""
+            if os.geteuid() != 0 and not has_video_access:
+                # Prepend sudo to the command
+                cmd = ["sudo"] + cmd
+            return subprocess.check_output(cmd, universal_newlines=True)
+        
+        # Patch the module's subprocess.check_output for media-ctl commands
+        original_check_output = subprocess.check_output
+        
+        def patched_check_output(cmd, *args, **kwargs):
+            """Patched version of subprocess.check_output that adds sudo for media-ctl."""
+            if isinstance(cmd, list) and len(cmd) > 0 and "media-ctl" in cmd[0]:
+                return run_media_ctl_with_sudo(cmd)
+            return original_check_output(cmd, *args, **kwargs)
+        
+        # Apply the patch only for the imported module
+        imx296_module.subprocess.check_output = patched_check_output
+        
+        # Run the camera module's main function
+        return imx296_module.main()
     except ImportError as e:
         print(f"ERROR: Failed to import IMX296 camera module: {e}")
         print("\nTry running with the project root in your Python path:")
@@ -147,6 +168,22 @@ def check_tool_exists(tool_name):
         subprocess.run(["which", tool_name], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
         return True
     except subprocess.CalledProcessError:
+        return False
+
+def check_device_permissions(device_path):
+    """Check if the user has permission to access a device."""
+    if not os.path.exists(device_path):
+        # Device doesn't exist, can't check permissions
+        return False
+    
+    try:
+        # Try to open the device for reading
+        with open(device_path, 'rb'):
+            return True
+    except PermissionError:
+        return False
+    except:
+        # Any other error, assume we don't have permission
         return False
 
 if __name__ == "__main__":

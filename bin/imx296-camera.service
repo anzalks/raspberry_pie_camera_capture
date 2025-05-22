@@ -9,7 +9,17 @@ User=dawg
 Group=dawg
 WorkingDirectory=/home/dawg/Downloads/insha_rpie/raspberry_pie_camera_capture
 Environment="PYTHONPATH=/home/dawg/Downloads/insha_rpie/raspberry_pie_camera_capture"
-ExecStart=/home/dawg/Downloads/insha_rpie/raspberry_pie_camera_capture/.venv/bin/python3 bin/run_imx296_capture.py --sudo
+Environment="LD_LIBRARY_PATH=/usr/local/lib"
+
+# Add sudoers permission for media-ctl
+ExecStartPre=/bin/bash -c 'echo "dawg ALL=(ALL) NOPASSWD: /usr/bin/media-ctl" | sudo tee /etc/sudoers.d/imx296-camera'
+
+# Start the camera capture script
+ExecStart=/home/dawg/Downloads/insha_rpie/raspberry_pie_camera_capture/.venv/bin/python3 bin/run_imx296_capture.py
+
+# Clean up sudoers file when stopping
+ExecStopPost=/bin/bash -c 'sudo rm -f /etc/sudoers.d/imx296-camera'
+
 StandardOutput=journal
 StandardError=journal
 Restart=on-failure

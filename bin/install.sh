@@ -44,21 +44,39 @@ install_system_dependencies() {
 
 # Function to build liblsl from source
 build_liblsl_from_source() {
-    echo -e "${YELLOW}Building liblsl from source...${NC}"
+    echo -e "${YELLOW}Installing liblsl (LabStreamingLayer library)...${NC}"
+    
+    # First attempt to install via apt
+    echo "Attempting to install liblsl-dev via apt..."
+    if apt install -y liblsl-dev; then
+        echo -e "${GREEN}liblsl-dev installed successfully via apt.${NC}"
+        return 0
+    fi
+    
+    echo "apt install liblsl-dev failed. Attempting to build from source..."
     
     # Get username of the user who ran sudo
     SUDO_USER_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
     
-    # Create a temporary directory in the user's home where they have permission
-    BUILD_DIR="$SUDO_USER_HOME/tmp_liblsl_build_$(date +%s)"
+    # Store original directory
+    ORIG_DIR=$(pwd)
+    
+    # Create build directory in a standard location
+    BUILD_DIR="$SUDO_USER_HOME/liblsl_build"
+    # Remove if it exists
+    if [ -d "$BUILD_DIR" ]; then
+        echo "Removing existing liblsl build directory..."
+        rm -rf "$BUILD_DIR"
+    fi
+    
+    # Create directory and set permissions
     mkdir -p "$BUILD_DIR"
     chown "$SUDO_USER":"$(id -gn "$SUDO_USER")" "$BUILD_DIR"
     
     echo "Using build directory: $BUILD_DIR"
-    
-    # Change to the build directory
     cd "$BUILD_DIR" || {
         echo -e "${RED}Failed to change to build directory.${NC}"
+        cd "$ORIG_DIR"
         return 1
     }
     
@@ -66,14 +84,14 @@ build_liblsl_from_source() {
     echo "Cloning LSL repository..."
     if ! su -c "git clone --depth=1 https://github.com/sccn/liblsl.git" "$SUDO_USER"; then
         echo -e "${RED}Failed to clone liblsl repository.${NC}"
-        cd "$PROJECT_ROOT"
+        cd "$ORIG_DIR"
         rm -rf "$BUILD_DIR"
         return 1
     fi
     
     cd liblsl || {
         echo -e "${RED}Failed to change to liblsl directory.${NC}"
-        cd "$PROJECT_ROOT"
+        cd "$ORIG_DIR"
         rm -rf "$BUILD_DIR"
         return 1
     }
@@ -82,40 +100,42 @@ build_liblsl_from_source() {
     mkdir -p build
     cd build || {
         echo -e "${RED}Failed to create/enter build directory.${NC}"
-        cd "$PROJECT_ROOT"
+        cd "$ORIG_DIR"
         rm -rf "$BUILD_DIR"
         return 1
     }
     
     # Configure and build
-    echo "Configuring and building LSL..."
+    echo "Configuring liblsl build with CMake..."
     if ! su -c "cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local" "$SUDO_USER"; then
         echo -e "${RED}Failed to configure liblsl build.${NC}"
-        cd "$PROJECT_ROOT"
+        cd "$ORIG_DIR"
         rm -rf "$BUILD_DIR"
         return 1
     fi
     
+    echo "Compiling liblsl (this may take a while)..."
     if ! su -c "cmake --build . -j$(nproc)" "$SUDO_USER"; then
         echo -e "${RED}Failed to build liblsl.${NC}"
-        cd "$PROJECT_ROOT"
+        cd "$ORIG_DIR"
         rm -rf "$BUILD_DIR"
         return 1
     fi
     
     # Install (this needs to be done as root)
-    echo "Installing LSL..."
+    echo "Installing liblsl..."
     if ! make install; then
         echo -e "${RED}Failed to install liblsl.${NC}"
-        cd "$PROJECT_ROOT"
+        cd "$ORIG_DIR"
         rm -rf "$BUILD_DIR"
         return 1
     fi
     
+    echo "Updating shared library cache..."
     ldconfig
     
     # Clean up
-    cd "$PROJECT_ROOT" || true
+    cd "$ORIG_DIR" || true
     rm -rf "$BUILD_DIR"
     
     echo -e "${GREEN}liblsl built and installed from source.${NC}"
@@ -138,18 +158,17 @@ create_virtual_env() {
         rm -rf "$VENV_DIR"
     fi
     
-    # Create new venv
-    sudo -u "$SUDO_USER" python3 -m venv "$VENV_DIR"
+    # Create new venv with system site packages (allows access to system-installed packages)
+    echo "Creating new virtual environment..."
+    sudo -u "$SUDO_USER" python3 -m venv --system-site-packages "$VENV_DIR"
     
     # Install required Python packages
     echo "Installing required Python packages..."
-    sudo -u "$SUDO_USER" "${VENV_DIR}/bin/pip" install \
-        pyyaml \
-        requests \
-        psutil
+    sudo -u "$SUDO_USER" "${VENV_DIR}/bin/pip" install --upgrade pip setuptools wheel
+    sudo -u "$SUDO_USER" "${VENV_DIR}/bin/pip" install pyyaml requests psutil
     
     # Install pylsl separately - this needs the liblsl library already installed
-    echo "Installing pylsl..."
+    echo "Installing pylsl (Python LSL bindings)..."
     sudo -u "$SUDO_USER" "${VENV_DIR}/bin/pip" install pylsl
     
     echo -e "${GREEN}Python virtual environment created and packages installed.${NC}"
@@ -273,16 +292,15 @@ echo -e "${YELLOW}Starting installation...${NC}"
 # Install system dependencies
 install_system_dependencies
 
-# Build liblsl from source for Raspberry Pi OS Bookworm
-echo -e "${YELLOW}Building and installing liblsl (C/C++ LSL library)...${NC}"
+# Build and install liblsl (C/C++ library)
+echo -e "${YELLOW}Setting up Lab Streaming Layer (LSL) support...${NC}"
 if ! build_liblsl_from_source; then
-    echo -e "${RED}Failed to build and install liblsl from source.${NC}"
-    echo -e "${RED}LSL functionality may not work correctly without the native library.${NC}"
-    echo -e "${YELLOW}Will continue with installation, but you may need to build liblsl manually later.${NC}"
+    echo -e "${RED}Warning: Failed to install liblsl. LSL functionality may not work.${NC}"
+    echo -e "${YELLOW}Continuing with installation, but you may need to install liblsl manually.${NC}"
 fi
 
-# Create Python virtual environment and install pylsl
-echo -e "${YELLOW}Setting up Python environment with pylsl (Python LSL bindings)...${NC}"
+# Create Python virtual environment and install packages including pylsl
+echo -e "${YELLOW}Setting up Python environment...${NC}"
 create_virtual_env
 
 # Detect camera and update configuration
