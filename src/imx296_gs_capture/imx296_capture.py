@@ -566,6 +566,10 @@ def camera_thread(config):
         last_pts_read_time = 0
         pts_data = []
         
+        # Track time for FPS calculation
+        last_fps_time = time.time()
+        last_fps_count = 0
+        
         # Main loop for reading frames
         logger.info("Camera capture started, buffering frames to RAM")
         
@@ -592,11 +596,40 @@ def camera_thread(config):
                     current_frame.extend(chunk[:marker_pos])
                     
                     # Process the completed frame
-                    process_frame(current_frame, frame_count, start_time, frame_buffer, pts_data)
                     frame_count += 1
+                    pts_data[frame_count] = time.time() - start_time
+                    process_frame(current_frame, frame_count, start_time, frame_buffer, pts_data)
                     
-                    # Start a new frame with remaining data
-                    current_frame = bytearray(chunk[marker_pos:])
+                    # Track time for FPS calculation
+                    if time.time() - last_fps_time >= 1.0:
+                        current_fps = frame_count - last_fps_count
+                        last_fps_count = frame_count
+                        last_fps_time = time.time()
+                        logger.debug(f"Current FPS: {current_fps}")
+                    
+                    # Every 100 frames, or every second if recording, log buffer status
+                    if frame_count % 100 == 0 or (recording_event.is_set() and frame_count % config['camera']['framerate'] == 0):
+                        buffer_size = len(frame_buffer)
+                        queue_size = frame_queue.qsize() if not frame_queue.empty() else 0
+                        logger.info(f"Captured {frame_count} frames, buffer contains {buffer_size} frames")
+                        
+                        if recording_event.is_set():
+                            logger.info(f"Recording active: session frame {session_frame_counter}, queue size {queue_size}")
+                            
+                            # Calculate and log estimated disk space
+                            output_dir = config['recording']['output_dir']
+                            output_path = Path(output_dir)
+                            if output_path.exists():
+                                free_space = shutil.disk_usage(output_path).free / (1024 * 1024 * 1024)  # Convert to GB
+                                logger.info(f"Recording to: {output_dir}, free space: {free_space:.2f} GB")
+                                
+                                # Log the current output file
+                                current_timestamp = int(time.time())
+                                session_id = config['recording'].get('session_id', current_timestamp)
+                                current_file = f"recording_{session_id}_{current_timestamp}.mkv"
+                                logger.info(f"Current output file: {current_file}")
+                            else:
+                                logger.warning(f"Recording directory does not exist: {output_dir}")
                 else:
                     # This is the first frame, just store the data
                     current_frame.extend(chunk)
@@ -635,28 +668,39 @@ def camera_thread(config):
 
 def process_frame(frame_data, frame_num, start_time, frame_buffer, pts_data):
     """Process a captured frame - store in buffer and handle recording if active."""
-    global session_frame_counter, is_recording_active
+    global session_frame_counter
     
-    # Find timestamp for this frame from PTS data
+    # Get the timestamp for this frame
     frame_timestamp = find_timestamp_for_frame(frame_num, pts_data, start_time)
     
     # Add frame to the circular buffer
     frame_buffer.append((frame_timestamp, bytes(frame_data)))
     
-    # If recording is active, send to ffmpeg and push to LSL
-    if is_recording_active:
-        # Put frame in queue for ffmpeg
-        try:
-            frame_queue.put((frame_timestamp, bytes(frame_data)), block=False)
-        except queue.Full:
-            logging.warning("Frame queue full, dropping frame")
+    # If recording is active, push frame to the queue for writing
+    if recording_event.is_set():
+        session_frame_counter += 1
         
-        # Send metadata to LSL
-        if lsl_outlet:
-            # Prepare sample: [unix_timestamp, recording_active, frame_number]
-            sample = [frame_timestamp, 1.0, float(session_frame_counter)]
-            lsl_outlet.push_sample(sample, frame_timestamp)
-            session_frame_counter += 1
+        # Put the frame in the queue for the ffmpeg thread
+        try:
+            # Use non-blocking put with a short timeout to avoid hanging
+            frame_queue.put((frame_timestamp, bytes(frame_data)), block=True, timeout=0.1)
+            # Every 100 frames, log LSL data being transmitted
+            if session_frame_counter % 100 == 0:
+                logger = logging.getLogger('imx296_capture')
+                data = [frame_timestamp, int(recording_event.is_set()), session_frame_counter]
+                logger.info(f"LSL output: {data}")
+        except queue.Full:
+            # If queue is full, we're probably too slow to write frames, log warning
+            logger = logging.getLogger('imx296_capture')
+            logger.warning(f"Frame queue full ({frame_queue.qsize()}/{frame_queue.maxsize}), dropping frame")
+    
+    # Send metadata to LSL regardless of recording status
+    if lsl_outlet:
+        # Prepare sample: [unix_timestamp, recording_active, frame_number]
+        sample = [frame_timestamp, float(recording_event.is_set()), float(frame_num)]
+        lsl_outlet.push_sample(sample, frame_timestamp)
+    
+    return frame_timestamp
 
 def find_timestamp_for_frame(frame_num, pts_data, start_time):
     """Find the timestamp for a given frame from PTS data."""
