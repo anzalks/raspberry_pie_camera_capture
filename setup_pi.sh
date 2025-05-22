@@ -17,12 +17,13 @@ if [ "$(id -u)" -ne 0 ]; then
   echo "This script must be run as root (use sudo). Exiting." >&2
   exit 1
 fi
+
+# Define critical variables
 PROJECT_DIR=$(pwd)
 CONFIG_FILE="$PROJECT_DIR/config.yaml"
 VENV_DIR=".venv"
 
 echo "Updating package list..."
-apt update
 
 echo "Installing required system packages (including build tools, python3-dev, picamera2, and potentially useful extras)..."
 # Install packages one by one to reduce memory usage
@@ -174,6 +175,27 @@ fi
 
 echo "Setting up Python virtual environment and project..."
 
+# Create Python virtual environment
+echo "Creating Python virtual environment..."
+python3 -m venv "$PROJECT_DIR/$VENV_DIR"
+echo "Virtual environment created at $PROJECT_DIR/$VENV_DIR"
+
+# Set proper ownership
+if [ -n "$SUDO_USER" ]; then
+  echo "Setting ownership for virtual environment"
+  chown -R "$SUDO_USER:$SUDO_USER" "$PROJECT_DIR/$VENV_DIR"
+fi
+
+# Install required Python packages in the virtual environment
+echo "Installing required Python packages in virtual environment..."
+# Use the Python interpreter from the virtual environment
+"$PROJECT_DIR/$VENV_DIR/bin/pip" install --upgrade pip
+"$PROJECT_DIR/$VENV_DIR/bin/pip" install wheel setuptools
+"$PROJECT_DIR/$VENV_DIR/bin/pip" install pylsl numpy scipy
+"$PROJECT_DIR/$VENV_DIR/bin/pip" install -e "$PROJECT_DIR"
+
+echo "Python virtual environment setup complete with pylsl installed."
+
 # --- Setup Recordings Directory Structure ---
 echo "Setting up recordings directory structure..."
 RECORDINGS_DIR="$(pwd)/recordings"
@@ -272,7 +294,26 @@ if [ -f "$CONFIG_FILE" ]; then
     sed -i 's/preview: false/preview: true/' "$CONFIG_FILE"
     echo "Updated preview setting in config file"
 else
-    echo "WARNING: Config file not found, skipping preview update"
+    echo "WARNING: Config file not found at $CONFIG_FILE, skipping preview update"
+    echo "Creating a basic config file..."
+    cat > "$CONFIG_FILE" << EOF
+# Basic configuration file for Raspberry Pi Camera Capture
+camera:
+  preview: true
+  resolution: [1280, 720]
+  framerate: 30
+  rotation: 0
+recording:
+  enabled: true
+  format: h264
+  output_dir: ~/raspie_recordings
+remote:
+  ntfy_topic: raspie-camera-test
+EOF
+    if [ -n "$SUDO_USER" ]; then
+        chown $SUDO_USER:$SUDO_USER "$CONFIG_FILE"
+    fi
+    echo "Created basic config file at $CONFIG_FILE"
 fi
 
 echo "Camera setup complete. A reboot is recommended to ensure camera detection."
@@ -304,7 +345,7 @@ After=network.target
 Type=simple
 User=$SUDO_USER
 WorkingDirectory=$PROJECT_DIR
-ExecStart=/usr/bin/python3 -m src.raspberry_pi_lsl_stream.camera_capture --config $CONFIG_FILE
+ExecStart=$PROJECT_DIR/$VENV_DIR/bin/python -m src.raspberry_pi_lsl_stream.camera_capture --config $CONFIG_FILE
 Environment="PATH=$PROJECT_DIR/$VENV_DIR/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="PYTHONUNBUFFERED=1"
 Environment="TERM=xterm-256color"
