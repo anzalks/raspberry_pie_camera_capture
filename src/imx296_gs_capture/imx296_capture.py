@@ -824,64 +824,72 @@ def main():
     parser.add_argument("--config", default="config/config.yaml", help="Path to config file")
     args = parser.parse_args()
     
-    # Load configuration
-    config = load_config(args.config)
-    
-    # Setup logging
-    logger = setup_logging(config)
-    
-    logger.info("========== IMX296 Global Shutter Camera Capture System ==========")
-    logger.info(f"Starting with config file: {args.config}")
-    
     try:
-        # Configure media-ctl for hardware cropping
-        logger.info("Configuring media-ctl for hardware cropping...")
-        if not configure_media_ctl(config):
-            logger.error("Failed to configure media-ctl, exiting")
+        # Load configuration
+        config = load_config(args.config)
+        
+        # Setup logging
+        logger = setup_logging(config)
+        
+        logger.info("========== IMX296 Global Shutter Camera Capture System ==========")
+        logger.info(f"Starting with config file: {args.config}")
+        
+        try:
+            # Configure media-ctl for hardware cropping
+            logger.info("Configuring media-ctl for hardware cropping...")
+            if not configure_media_ctl(config):
+                logger.error("Failed to configure media-ctl, exiting")
+                return 1
+            
+            # Setup LSL stream
+            logger.info("Setting up LSL stream...")
+            if not setup_lsl_stream(config):
+                logger.warning("Failed to setup LSL stream, continuing without LSL")
+            
+            # Start camera thread
+            logger.info("Starting camera capture thread...")
+            camera_thread_obj = threading.Thread(
+                target=camera_thread,
+                args=(config,),
+                daemon=True
+            )
+            camera_thread_obj.start()
+            
+            # Start ntfy thread
+            logger.info("Starting ntfy notification thread...")
+            ntfy_thread_obj = threading.Thread(
+                target=ntfy_thread,
+                args=(config,),
+                daemon=True
+            )
+            ntfy_thread_obj.start()
+            
+            # Main thread just waits for stop event
+            logger.info("System ready and listening for ntfy notifications")
+            while not stop_event.is_set():
+                time.sleep(0.1)
+            
+            # Wait for threads to exit
+            logger.info("Waiting for threads to exit...")
+            ntfy_thread_obj.join(timeout=10)
+            camera_thread_obj.join(timeout=10)
+            
+        except Exception as e:
+            logger.error(f"Unhandled exception in main: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return 1
+        finally:
+            # Clean up resources
+            cleanup()
+            logger.info("IMX296 Global Shutter Camera Capture System exited")
         
-        # Setup LSL stream
-        logger.info("Setting up LSL stream...")
-        if not setup_lsl_stream(config):
-            logger.warning("Failed to setup LSL stream, continuing without LSL")
-        
-        # Start camera thread
-        logger.info("Starting camera capture thread...")
-        camera_thread_obj = threading.Thread(
-            target=camera_thread,
-            args=(config,),
-            daemon=True
-        )
-        camera_thread_obj.start()
-        
-        # Start ntfy thread
-        logger.info("Starting ntfy notification thread...")
-        ntfy_thread_obj = threading.Thread(
-            target=ntfy_thread,
-            args=(config,),
-            daemon=True
-        )
-        ntfy_thread_obj.start()
-        
-        # Main thread just waits for stop event
-        logger.info("System ready and listening for ntfy notifications")
-        while not stop_event.is_set():
-            time.sleep(0.1)
-        
-        # Wait for threads to exit
-        logger.info("Waiting for threads to exit...")
-        ntfy_thread_obj.join(timeout=10)
-        camera_thread_obj.join(timeout=10)
-        
+        return 0
     except Exception as e:
-        logger.error(f"Unhandled exception in main: {e}")
+        print(f"Critical error before logging was setup: {e}")
+        import traceback
+        traceback.print_exc()
         return 1
-    finally:
-        # Clean up resources
-        cleanup()
-        logger.info("IMX296 Global Shutter Camera Capture System exited")
-    
-    return 0
 
 if __name__ == "__main__":
     sys.exit(main()) 

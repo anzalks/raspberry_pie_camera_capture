@@ -59,14 +59,14 @@ case $choice in
         sudo systemctl status imx296-camera.service
         ;;
     5)
-        echo -e "${YELLOW}Running camera script manually...${NC}"
+        echo -e "${YELLOW}Running camera script manually with full debug output...${NC}"
         # Set default directory and run script
         script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
         project_root="$(dirname "$script_dir")"
         
         cd "$project_root"
         source .venv/bin/activate
-        sudo python3 bin/run_imx296_capture.py
+        PYTHONPATH="$project_root" python3 -u bin/run_imx296_capture.py
         ;;
     6|*)
         echo "Exiting."

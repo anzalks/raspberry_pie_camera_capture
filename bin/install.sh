@@ -37,6 +37,7 @@ install_system_dependencies() {
         git \
         build-essential \
         cmake \
+        pkg-config \
         libasio-dev
     
     echo -e "${GREEN}System dependencies installed.${NC}"
@@ -55,34 +56,36 @@ build_liblsl_from_source() {
     
     echo "apt install liblsl-dev failed. Attempting to build from source..."
     
-    # Get username of the user who ran sudo
-    SUDO_USER_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+    # Install build dependencies for liblsl
+    echo "Installing build dependencies for liblsl..."
+    apt install -y \
+        build-essential \
+        cmake \
+        pkg-config \
+        libasio-dev
     
     # Store original directory
     ORIG_DIR=$(pwd)
     
-    # Create build directory in a standard location
-    BUILD_DIR="$SUDO_USER_HOME/liblsl_build"
-    # Remove if it exists
-    if [ -d "$BUILD_DIR" ]; then
-        echo "Removing existing liblsl build directory..."
-        rm -rf "$BUILD_DIR"
-    fi
+    # Define build directory and repo URL
+    REPO_URL="https://github.com/sccn/liblsl.git"
+    BUILD_DIR="/tmp/liblsl_build_$(date +%s)"
     
-    # Create directory and set permissions
-    mkdir -p "$BUILD_DIR"
-    chown "$SUDO_USER":"$(id -gn "$SUDO_USER")" "$BUILD_DIR"
+    echo "Creating temporary build directory: ${BUILD_DIR}"
+    # Clean previous attempts if exists
+    rm -rf "${BUILD_DIR}"
+    mkdir -p "${BUILD_DIR}"
     
-    echo "Using build directory: $BUILD_DIR"
-    cd "$BUILD_DIR" || {
+    # Change to build directory
+    cd "${BUILD_DIR}" || {
         echo -e "${RED}Failed to change to build directory.${NC}"
         cd "$ORIG_DIR"
         return 1
     }
     
     # Clone the LSL repository
-    echo "Cloning LSL repository..."
-    if ! su -c "git clone --depth=1 https://github.com/sccn/liblsl.git" "$SUDO_USER"; then
+    echo "Cloning LSL repository from ${REPO_URL}..."
+    if ! git clone --depth=1 "${REPO_URL}" liblsl; then
         echo -e "${RED}Failed to clone liblsl repository.${NC}"
         cd "$ORIG_DIR"
         rm -rf "$BUILD_DIR"
@@ -107,7 +110,7 @@ build_liblsl_from_source() {
     
     # Configure and build
     echo "Configuring liblsl build with CMake..."
-    if ! su -c "cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local" "$SUDO_USER"; then
+    if ! cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local; then
         echo -e "${RED}Failed to configure liblsl build.${NC}"
         cd "$ORIG_DIR"
         rm -rf "$BUILD_DIR"
@@ -115,14 +118,14 @@ build_liblsl_from_source() {
     fi
     
     echo "Compiling liblsl (this may take a while)..."
-    if ! su -c "cmake --build . -j$(nproc)" "$SUDO_USER"; then
+    if ! cmake --build . -j$(nproc); then
         echo -e "${RED}Failed to build liblsl.${NC}"
         cd "$ORIG_DIR"
         rm -rf "$BUILD_DIR"
         return 1
     fi
     
-    # Install (this needs to be done as root)
+    # Install
     echo "Installing liblsl..."
     if ! make install; then
         echo -e "${RED}Failed to install liblsl.${NC}"
