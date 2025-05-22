@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=IMX296 Camera Dashboard
+Comment=Monitor and control the IMX296 global shutter camera
+Exec=/bin/bash -c "cd %k/.. && ./bin/dashboard.sh"
+Icon=utilities-terminal
+Terminal=true
+Categories=Utility;
+Keywords=camera;dashboard; 

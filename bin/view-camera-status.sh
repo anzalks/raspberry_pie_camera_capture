@@ -25,6 +25,27 @@ DIALOG_HEIGHT=30
 DIALOG_WIDTH=100
 TEMP_FILE="/tmp/camera_dashboard_$$.tmp"
 
+# Parse command line arguments
+AUTO_MODE=false
+for arg in "$@"; do
+    case $arg in
+        --auto)
+            AUTO_MODE=true
+            ;;
+        --help)
+            echo "Usage: $0 [OPTIONS]"
+            echo "Options:"
+            echo "  --auto     Auto-start mode (no menu, directly launch dashboard)"
+            echo "  --help     Show this help message"
+            echo "  --menu     Show menu instead of directly launching dashboard"
+            exit 0
+            ;;
+        --menu)
+            SHOW_MENU=true
+            ;;
+    esac
+done
+
 # Function to draw a box with title
 draw_box() {
     local title="$1"
@@ -129,6 +150,14 @@ show_dashboard() {
         else
             status_text="Status: STOPPED\n"
             status_text+="Start the service with: sudo systemctl start $SERVICE_NAME\n"
+            
+            # If in auto mode and service is not running, try to start it
+            if $AUTO_MODE; then
+                echo "Service not running. Attempting to start..."
+                sudo systemctl start $SERVICE_NAME
+                sleep 2
+                # Continue to show dashboard - it will reflect new status on next iteration
+            fi
         fi
         
         # Get buffer information
@@ -332,6 +361,9 @@ EOF
                --and-widget --begin 29 50 --title "Remote Control" --cr-wrap --tailboxbg "$TEMP_FILE" 4 50 0 "$TEMP_FILE" "ntfy" \
                --no-cancel --no-shadow --no-collapse --sleep 2
         
+        # Add key commands at the bottom
+        dialog --title "Key Commands" --infobox "Press 'q' to quit, 's' to start recording, 'p' to stop recording" 3 50
+        
         # Check for Ctrl+C or other exit
         if [ $? -ne 0 ]; then
             break
@@ -425,103 +457,134 @@ cleanup_dashboard() {
     clear
 }
 
-echo -e "${GREEN}=== IMX296 Global Shutter Camera Status Viewer ===${NC}"
-echo
+# Function to display menu
+show_menu() {
+    echo "=== IMX296 Global Shutter Camera Status Viewer ==="
+    echo
 
-# Check if the service is installed
-if [ ! -f "/etc/systemd/system/imx296-camera.service" ]; then
-    echo -e "${RED}Error: IMX296 camera service is not installed.${NC}"
-    echo "Please run: sudo bin/install.sh"
-    exit 1
+    # Check if the service is installed
+    if [ ! -f "/etc/systemd/system/imx296-camera.service" ]; then
+        echo "Error: IMX296 camera service is not installed."
+        echo "Please run: sudo bin/install.sh"
+        exit 1
+    fi
+
+    # Check service status
+    echo "Checking service status..."
+    sudo systemctl status imx296-camera.service
+
+    # Ask user what they want to do
+    echo
+    echo "Options:"
+    echo "1. View live logs"
+    echo "2. Start service"
+    echo "3. Stop service"
+    echo "4. Restart service"
+    echo "5. Run manually (not as service)"
+    echo "6. Test camera directly"
+    echo "7. Show dashboard view"
+    echo "8. Exit"
+    echo
+
+    read -p "Enter your choice [1-8]: " choice
+
+    case $choice in
+        1)
+            echo "Viewing live logs (Ctrl+C to exit)..."
+            sudo journalctl -u imx296-camera.service -f
+            ;;
+        2)
+            echo "Starting service..."
+            sudo systemctl start imx296-camera.service
+            sleep 2
+            sudo systemctl status imx296-camera.service
+            ;;
+        3)
+            echo "Stopping service..."
+            sudo systemctl stop imx296-camera.service
+            sleep 2
+            sudo systemctl status imx296-camera.service
+            ;;
+        4)
+            echo "Restarting service..."
+            sudo systemctl restart imx296-camera.service
+            sleep 2
+            sudo systemctl status imx296-camera.service
+            ;;
+        5)
+            echo "Running camera script manually with full debug output..."
+            # Set default directory and run script
+            script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+            project_root="$(dirname "$script_dir")"
+            
+            cd "$project_root"
+            source .venv/bin/activate
+            PYTHONPATH="$project_root" python3 -u bin/run_imx296_capture.py
+            ;;
+        6)
+            echo "Testing camera directly with libcamera-vid..."
+            # Test if libcamera-vid works directly
+            echo "1. Testing libcamera-hello --list-cameras"
+            libcamera-hello --list-cameras
+            
+            echo
+            echo "2. Testing simple 5-second capture to file..."
+            echo "This will record a 5-second test video to /tmp/test.h264"
+            read -p "Press Enter to continue..."
+            
+            libcamera-vid --width 400 --height 400 --framerate 100 -t 5000 -o /tmp/test.h264
+            
+            echo
+            echo "3. File information:"
+            ls -la /tmp/test.h264
+            
+            echo
+            echo "4. Testing streaming output..."
+            echo "This will display stdout/stderr output from libcamera-vid for 3 seconds"
+            read -p "Press Enter to continue..."
+            
+            # Run with timeout to capture output
+            timeout 3 libcamera-vid --width 400 --height 400 --framerate 100 -o - | hexdump -C | head -10
+            
+            echo
+            echo "Tests completed."
+            ;;
+        7)
+            show_dashboard
+            ;;
+        8|*)
+            echo "Exiting."
+            exit 0
+            ;;
+    esac
+}
+
+# Setup auto-launch on service start
+setup_auto_launch() {
+    # Create a systemd drop-in directory for the camera service
+    SYSTEMD_DIR="/etc/systemd/system/${SERVICE_NAME}.d"
+    
+    sudo mkdir -p $SYSTEMD_DIR
+    
+    # Create file to launch dashboard when service starts
+    cat << EOF | sudo tee $SYSTEMD_DIR/dashboard.conf > /dev/null
+[Service]
+ExecStartPost=/bin/bash -c "nohup /usr/bin/x-terminal-emulator -e ${SCRIPT_DIR}/view-camera-status.sh --auto > /dev/null 2>&1 &"
+EOF
+
+    sudo systemctl daemon-reload
+    echo "Auto-launch configured. Dashboard will open when service starts."
+}
+
+# Main logic - determine what to do based on arguments
+if [[ "$1" == "--setup-auto-launch" ]]; then
+    setup_auto_launch
+    exit 0
+elif [[ "$SHOW_MENU" == "true" ]]; then
+    show_menu
+else
+    # Default behavior: go straight to dashboard
+    show_dashboard
 fi
-
-# Check service status
-echo -e "${YELLOW}Checking service status...${NC}"
-sudo systemctl status imx296-camera.service
-
-# Ask user what they want to do
-echo
-echo -e "${YELLOW}Options:${NC}"
-echo "1. View live logs"
-echo "2. Start service"
-echo "3. Stop service"
-echo "4. Restart service"
-echo "5. Run manually (not as service)"
-echo "6. Test camera directly"
-echo "7. Show dashboard view"
-echo "8. Exit"
-echo
-
-read -p "Enter your choice [1-8]: " choice
-
-case $choice in
-    1)
-        echo -e "${YELLOW}Viewing live logs (Ctrl+C to exit)...${NC}"
-        sudo journalctl -u imx296-camera.service -f
-        ;;
-    2)
-        echo -e "${YELLOW}Starting service...${NC}"
-        sudo systemctl start imx296-camera.service
-        sleep 2
-        sudo systemctl status imx296-camera.service
-        ;;
-    3)
-        echo -e "${YELLOW}Stopping service...${NC}"
-        sudo systemctl stop imx296-camera.service
-        sleep 2
-        sudo systemctl status imx296-camera.service
-        ;;
-    4)
-        echo -e "${YELLOW}Restarting service...${NC}"
-        sudo systemctl restart imx296-camera.service
-        sleep 2
-        sudo systemctl status imx296-camera.service
-        ;;
-    5)
-        echo -e "${YELLOW}Running camera script manually with full debug output...${NC}"
-        # Set default directory and run script
-        script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-        project_root="$(dirname "$script_dir")"
-        
-        cd "$project_root"
-        source .venv/bin/activate
-        PYTHONPATH="$project_root" python3 -u bin/run_imx296_capture.py
-        ;;
-    6)
-        echo -e "${YELLOW}Testing camera directly with libcamera-vid...${NC}"
-        # Test if libcamera-vid works directly
-        echo -e "${GREEN}1. Testing libcamera-hello --list-cameras${NC}"
-        libcamera-hello --list-cameras
-        
-        echo
-        echo -e "${GREEN}2. Testing simple 5-second capture to file...${NC}"
-        echo "This will record a 5-second test video to /tmp/test.h264"
-        read -p "Press Enter to continue..."
-        
-        libcamera-vid --width 400 --height 400 --framerate 100 -t 5000 -o /tmp/test.h264
-        
-        echo
-        echo -e "${GREEN}3. File information:${NC}"
-        ls -la /tmp/test.h264
-        
-        echo
-        echo -e "${GREEN}4. Testing streaming output...${NC}"
-        echo "This will display stdout/stderr output from libcamera-vid for 3 seconds"
-        read -p "Press Enter to continue..."
-        
-        # Run with timeout to capture output
-        timeout 3 libcamera-vid --width 400 --height 400 --framerate 100 -o - | hexdump -C | head -10
-        
-        echo
-        echo -e "${GREEN}Tests completed.${NC}"
-        ;;
-    7)
-        show_dashboard
-        ;;
-    8|*)
-        echo "Exiting."
-        exit 0
-        ;;
-esac
 
 exit 0 

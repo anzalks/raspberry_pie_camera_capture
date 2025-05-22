@@ -71,13 +71,51 @@ Author: Anzal KS <anzal.ks@gmail.com>
 
 ### Viewing Camera Status
 
-To view the camera status, use the provided script:
+The system provides a comprehensive dashboard for monitoring camera status:
 
 ```bash
 bin/view-camera-status.sh
 ```
 
-This will attach to the tmux session where the camera capture is running. To detach without stopping the camera, press `Ctrl+B` then `D`.
+This will directly launch the dashboard interface that shows:
+- Service status and uptime
+- Frame buffer statistics and fullness
+- Recording status and file information
+- Recent recordings list
+- LSL stream data
+- Remote control commands
+
+#### Dashboard Options
+
+You can use the following command-line options:
+
+- Default (no options): Directly launch the dashboard
+- `--menu`: Show the traditional menu instead of launching the dashboard directly
+- `--auto`: Auto-start mode (attempts to start the service if not running)
+- `--help`: Display help information
+
+#### Auto-Launch Setup
+
+To configure the dashboard to automatically launch when the camera service starts:
+
+```bash
+sudo bin/view-camera-status.sh --setup-auto-launch
+```
+
+This creates a systemd hook that will open a terminal window with the dashboard whenever the camera service starts.
+
+#### Quick Launch Options
+
+For easier access, the system provides:
+
+1. **Simple launcher script**:
+   ```bash
+   bin/dashboard.sh
+   ```
+   This checks if the service is running, offers to start it if needed, and launches the dashboard.
+
+2. **Desktop shortcut**:
+   During installation, you can choose to install a desktop shortcut that opens the dashboard directly.
 
 ### Controlling Recording
 

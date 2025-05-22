@@ -285,8 +285,60 @@ make_scripts_executable() {
     
     chmod +x "${PROJECT_ROOT}/bin/run_imx296_capture.py"
     chmod +x "${PROJECT_ROOT}/bin/view-camera-status.sh"
+    chmod +x "${PROJECT_ROOT}/bin/dashboard.sh"
     
     echo -e "${GREEN}Scripts are now executable.${NC}"
+}
+
+# Function to install dialog for the dashboard
+install_dialog() {
+    echo -e "${YELLOW}Installing dialog for the dashboard UI...${NC}"
+    apt install -y dialog
+    echo -e "${GREEN}Dialog installed.${NC}"
+}
+
+# Function to setup auto-launch dashboard
+setup_auto_launch_dashboard() {
+    echo -e "${YELLOW}Setting up auto-launch for the dashboard...${NC}"
+    
+    # Check if the dashboard script exists
+    if [ ! -f "${PROJECT_ROOT}/bin/view-camera-status.sh" ]; then
+        echo -e "${RED}Error: Dashboard script not found. Skipping auto-launch setup.${NC}"
+        return 1
+    fi
+    
+    # Make the dashboard script executable
+    chmod +x "${PROJECT_ROOT}/bin/view-camera-status.sh"
+    
+    # Run the dashboard script with setup-auto-launch option
+    "${PROJECT_ROOT}/bin/view-camera-status.sh" --setup-auto-launch
+    
+    echo -e "${GREEN}Dashboard auto-launch configured. The dashboard will open automatically when the service starts.${NC}"
+    return 0
+}
+
+# Function to install desktop shortcut
+install_desktop_shortcut() {
+    echo -e "${YELLOW}Installing desktop shortcut...${NC}"
+    
+    # Get sudo user's desktop path
+    DESKTOP_DIR=$(sudo -u "$SUDO_USER" bash -c 'echo $HOME/Desktop')
+    
+    if [ -d "$DESKTOP_DIR" ]; then
+        # Copy and adjust the desktop file
+        cp "${PROJECT_ROOT}/bin/Camera-Dashboard.desktop" "$DESKTOP_DIR/"
+        
+        # Replace placeholders with actual paths
+        sed -i "s|%k/..|${PROJECT_ROOT}|g" "$DESKTOP_DIR/Camera-Dashboard.desktop"
+        
+        # Set permissions
+        chown "$SUDO_USER:$(id -gn "$SUDO_USER")" "$DESKTOP_DIR/Camera-Dashboard.desktop"
+        chmod +x "$DESKTOP_DIR/Camera-Dashboard.desktop"
+        
+        echo -e "${GREEN}Desktop shortcut installed to ${DESKTOP_DIR}/Camera-Dashboard.desktop${NC}"
+    else
+        echo -e "${YELLOW}Desktop directory not found. Skipping desktop shortcut installation.${NC}"
+    fi
 }
 
 # Main installation process
@@ -294,6 +346,9 @@ echo -e "${YELLOW}Starting installation...${NC}"
 
 # Install system dependencies
 install_system_dependencies
+
+# Install dialog for the dashboard
+install_dialog
 
 # Build and install liblsl (C/C++ library)
 echo -e "${YELLOW}Setting up Lab Streaming Layer (LSL) support...${NC}"
@@ -318,6 +373,22 @@ setup_systemd_service
 # Make scripts executable
 make_scripts_executable
 
+# Ask if the user wants to setup auto-launch dashboard
+echo
+echo -e "${YELLOW}Do you want to setup the dashboard to auto-launch when the service starts? (y/n)${NC}"
+read -r auto_launch_choice
+if [[ "$auto_launch_choice" =~ ^[Yy]$ ]]; then
+    setup_auto_launch_dashboard
+fi
+
+# Ask if the user wants to install a desktop shortcut
+echo
+echo -e "${YELLOW}Do you want to install a desktop shortcut for the dashboard? (y/n)${NC}"
+read -r shortcut_choice
+if [[ "$shortcut_choice" =~ ^[Yy]$ ]]; then
+    install_desktop_shortcut
+fi
+
 echo -e "${GREEN}Installation complete!${NC}"
 echo
 echo -e "${YELLOW}Next steps:${NC}"
@@ -325,6 +396,11 @@ echo "1. Check camera connection with: sudo media-ctl -d /dev/media0 -p"
 echo "2. Start the service with: sudo systemctl start imx296-camera.service"
 echo "3. View camera status with: ${PROJECT_ROOT}/bin/view-camera-status.sh"
 echo "4. Enable autostart with: sudo systemctl enable imx296-camera.service"
+echo
+echo -e "${YELLOW}Dashboard options:${NC}"
+echo "- Launch dashboard directly: ${PROJECT_ROOT}/bin/view-camera-status.sh"
+echo "- Show menu interface: ${PROJECT_ROOT}/bin/view-camera-status.sh --menu"
+echo "- Setup auto-launch: sudo ${PROJECT_ROOT}/bin/view-camera-status.sh --setup-auto-launch"
 echo
 echo -e "${YELLOW}Control the camera with ntfy.sh:${NC}"
 echo "- To start recording: curl -d \"start\" https://ntfy.sh/YOUR_TOPIC"
