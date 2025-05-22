@@ -316,23 +316,44 @@ class LSLCameraStreamer:
             left = left - (left % 2)
             top = top - (top % 2)
             
-            # Build the media-ctl command to set cropping
+            # Check for bookworm OS to apply workaround if needed
+            workaround = ""
+            try:
+                with open("/etc/os-release", "r") as f:
+                    os_release = f.read()
+                    if "=bookworm" in os_release:
+                        workaround = "--no-raw"
+                        print("Detected Bookworm OS, applying --no-raw workaround")
+            except Exception as e:
+                print(f"Error checking OS version: {e}")
+            
+            # Build the media-ctl command using Hermann-SW's approach
+            # This command sets both format and crop in one operation
             cmd = [
                 "media-ctl",
                 "-d", f"/dev/media{media_device_num}",
                 "--set-v4l2",
-                f"'imx296 {device_id}-001a':0 [fmt:SBGGR10_1X10/{self.width}x{self.height} crop:({left},{top})/{self.width}x{self.height}]"
+                f"'imx296 {device_id}-001a':0 [fmt:SBGGR10_1X10/{self.width}x{self.height} crop:({left},{top})/{self.width}x{self.height}]",
+                "-v"
             ]
             
             print(f"Configuring Global Shutter Camera crop: {' '.join(cmd)}")
-            crop_result = subprocess.run(" ".join(cmd), shell=True, capture_output=True, text=True)
+            cmd_str = " ".join(cmd)
+            crop_result = subprocess.run(cmd_str, shell=True, capture_output=True, text=True)
             
             if crop_result.returncode == 0:
                 print(f"Successfully configured Global Shutter Camera cropping to {self.width}x{self.height}")
                 # Let's check if the configuration was applied correctly by listing camera info
                 check_cmd = ["libcamera-hello", "--list-cameras"]
                 check_result = subprocess.run(check_cmd, capture_output=True, text=True)
-                print(f"Camera configuration verified: {check_result.stdout if check_result.returncode == 0 else 'Failed to verify'}")
+                print("Camera configuration verified:")
+                if check_result.returncode == 0:
+                    # Extract and print relevant crop info from the output
+                    for line in check_result.stdout.split('\n'):
+                        if "crop" in line:
+                            print(f"  {line.strip()}")
+                else:
+                    print("  Failed to verify camera configuration")
                 
                 # Update camera model with current configuration
                 self.camera_model = f"Raspberry Pi Global Shutter Camera (IMX296) {self.width}x{self.height}@{self.target_fps}fps"
@@ -440,6 +461,10 @@ class LSLCameraStreamer:
                     self.width = int(self.width * scale_factor)
                     self.height = int(self.height * scale_factor)
                     print(f"Warning: Scaling dimensions to {self.width}x{self.height} to achieve {self.target_fps}fps")
+                    
+                    # Ensure dimensions are even
+                    self.width = self.width - (self.width % 2)
+                    self.height = self.height - (self.height % 2)
                 
         elif self.target_fps > 120:
             # For other high frame rates (120-180fps), ensure dimensions are reasonable
@@ -453,12 +478,9 @@ class LSLCameraStreamer:
                 self.height = int(self.height * scale_factor)
                 print(f"Warning: Scaling dimensions to {self.width}x{self.height} to achieve {self.target_fps}fps")
                 
-                # If it was intended to be square, make it square again
-                if is_square_crop:
-                    square_dim = min(self.width, self.height)
-                    self.width = square_dim
-                    self.height = square_dim
-                    print(f"Maintaining square crop at {self.width}x{self.height}")
+                # Ensure dimensions are even
+                self.width = self.width - (self.width % 2)
+                self.height = self.height - (self.height % 2)
         
         # Make sure we still have even dimensions (required by the camera)
         if self.width % 2 != 0:

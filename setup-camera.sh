@@ -16,7 +16,7 @@ fi
 
 echo "Step 1: Installing system dependencies..."
 apt update
-apt install -y v4l-utils libcamera-apps python3-yaml curl python3-pip python3-picamera2
+apt install -y v4l-utils libcamera-apps python3-yaml curl python3-pip
 
 echo "Checking libcamera installation..."
 if [ ! -f "/usr/lib/libcamera.so" ] && [ ! -f "/usr/lib/arm-linux-gnueabihf/libcamera.so" ]; then
