@@ -327,7 +327,22 @@ test_camera_capture() {
   # Remove previous test file if it exists
   rm -f "$TEST_OUTPUT"
   
-  libcamera-vid -t 3000 --width 1440 --height 1080 --framerate 30 --codec h264 --output "$TEST_OUTPUT"
+  # First try with more conservative/basic settings
+  echo "Trying with default basic settings..."
+  libcamera-vid -t 3000 --width 1280 --height 720 --framerate 30 --codec h264 --output "$TEST_OUTPUT" --nopreview
+  
+  if [ ! -f "$TEST_OUTPUT" ] || [ ! -s "$TEST_OUTPUT" ]; then
+    echo "First attempt failed, trying with different format..."
+    # Try with a different format that might be more compatible
+    libcamera-vid -t 3000 --width 640 --height 480 --framerate 15 --codec h264 --output "$TEST_OUTPUT" --nopreview
+  fi
+  
+  # Try a third attempt with alternative settings
+  if [ ! -f "$TEST_OUTPUT" ] || [ ! -s "$TEST_OUTPUT" ]; then
+    echo "Second attempt failed, trying with raw format..."
+    # Try YUV format explicitly which might have better compatibility
+    libcamera-vid -t 3000 --width 1280 --height 720 --framerate 15 --codec h264 --output "$TEST_OUTPUT" --nopreview --rawfull
+  fi
   
   if [ -f "$TEST_OUTPUT" ]; then
     local FILE_SIZE=$(du -k "$TEST_OUTPUT" | cut -f1)
@@ -338,10 +353,46 @@ test_camera_capture() {
       return 0
     else
       echo "✗ Camera capture test failed - file size is 0KB."
+      echo "  Checking available camera settings..."
+      
+      # Get camera information to help diagnose the issue
+      echo "Available camera information:"
+      libcamera-hello --list-cameras
+      
+      echo "Checking for v4l2 devices:"
+      v4l2-ctl --list-devices
+      
+      echo "Camera hardware issue detected. Possible solutions:"
+      echo "1. Check the camera's physical connection and ribbon cable"
+      echo "2. Make sure the camera is enabled in raspi-config"
+      echo "3. Try updating the firmware: sudo rpi-update"
+      echo "4. Check that the camera is compatible with your Raspberry Pi model"
+      echo "5. Try increasing GPU memory: edit /boot/config.txt and set gpu_mem=128"
       return 1
     fi
   else
     echo "✗ Camera capture test failed - no output file created."
+    echo "Checking hardware access permissions..."
+    
+    # Check if user has access to video devices
+    if ! groups | grep -qE '(video|plugdev)'; then
+      echo "  Current user may not have access to camera devices."
+      echo "  Run: sudo usermod -a -G video,plugdev $USER"
+      echo "  Then log out and back in to apply the changes."
+    fi
+    
+    # Check if libcamera-apps is installed
+    if ! command -v libcamera-hello &>/dev/null; then
+      echo "  libcamera-apps may not be installed correctly."
+      echo "  Run: sudo apt install -y libcamera-apps"
+    fi
+    
+    # Check for firmware issues
+    if dmesg | grep -iE "(camera|imx296)" | grep -i error &>/dev/null; then
+      echo "  Firmware errors detected in kernel log."
+      echo "  Consider updating firmware: sudo rpi-update"
+    fi
+    
     return 1
   fi
 }

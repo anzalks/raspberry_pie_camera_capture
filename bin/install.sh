@@ -405,12 +405,49 @@ if command -v libcamera-hello >/dev/null; then
   echo "Checking for cameras with libcamera-hello..."
   if libcamera-hello --list-cameras | grep -i "imx296"; then
     echo -e "${GREEN}✓ IMX296 camera found!${NC}"
+    
+    # Check for video group membership
+    if ! groups $SUDO_USER | grep -q "video"; then
+      echo -e "${YELLOW}⚠ User $SUDO_USER is not in the video group. Adding...${NC}"
+      usermod -a -G video $SUDO_USER
+      echo "Added $SUDO_USER to video group. This will take effect after logout/login."
+    fi
+    
+    # Check for proper device permissions
+    if [ -e "/dev/video0" ]; then
+      if [ "$(stat -c '%A' /dev/video0 | cut -c5-6)" != "rw" ]; then
+        echo -e "${YELLOW}⚠ Video device has incorrect permissions. Fixing...${NC}"
+        chmod a+rw /dev/video*
+      fi
+    fi
+    
+    # Check v4l2 driver version
+    echo "Checking V4L2 driver information..."
+    if command -v v4l2-ctl >/dev/null; then
+      v4l2-ctl --info
+      v4l2-ctl --list-formats-ext || true
+    fi
+    
+    # For IMX296 cameras, there might be specific driver settings needed
+    if dmesg | grep -i "imx296" | grep -i "error" >/dev/null; then
+      echo -e "${YELLOW}⚠ Camera driver errors detected. Applying fixes...${NC}"
+      # Attempt to reload the camera module with different parameters
+      if lsmod | grep -q "imx296"; then
+        modprobe -r imx296 || true
+        sleep 1
+        modprobe imx296 || true
+      fi
+    fi
   else
     echo -e "${YELLOW}⚠ No IMX296 camera detected. Please check the hardware connection.${NC}"
     echo "This is normal if you're running on a development machine without the camera."
+    echo "Available cameras:"
+    libcamera-hello --list-cameras || true
   fi
 else
   echo -e "${YELLOW}libcamera-hello not found. Cannot check camera hardware.${NC}"
+  echo "Installing libcamera-apps..."
+  apt install -y libcamera-apps
 fi
 
 # Test liblsl installation
