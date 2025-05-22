@@ -5,14 +5,14 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=pi
-Group=pi
-WorkingDirectory=/home/pi/raspberry_pie_camera_capture
+User=dawg
+Group=dawg
+WorkingDirectory=/home/dawg/Downloads/insha_rpie/raspberry_pie_camera_capture
 # First kill any existing tmux session, then create a new one
 ExecStartPre=/bin/bash -c 'mkdir -p /tmp/imx296-camera-logs'
 ExecStartPre=/bin/bash -c 'tmux kill-session -t imx296-camera 2>/dev/null || true'
 ExecStartPre=/usr/bin/tmux new-session -d -s imx296-camera
-ExecStart=/bin/bash -c 'cd %h/raspberry_pie_camera_capture && source .venv/bin/activate && /usr/bin/tmux send-keys -t imx296-camera "sudo python3 bin/run_imx296_capture.py --sudo" C-m'
+ExecStart=/bin/bash -c 'cd /home/dawg/Downloads/insha_rpie/raspberry_pie_camera_capture && source .venv/bin/activate && /usr/bin/tmux send-keys -t imx296-camera "sudo python3 bin/run_imx296_capture.py --sudo" C-m'
 ExecStop=/usr/bin/tmux send-keys -t imx296-camera C-c
 StandardOutput=journal
 StandardError=journal
