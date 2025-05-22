@@ -58,21 +58,21 @@ build_liblsl_from_source() {
     
     # Change to the build directory
     cd "$BUILD_DIR" || {
-        echo -e "${RED}Failed to change to build directory. Falling back to pip installation.${NC}"
+        echo -e "${RED}Failed to change to build directory.${NC}"
         return 1
     }
     
     # Clone the LSL repository
     echo "Cloning LSL repository..."
     if ! su -c "git clone --depth=1 https://github.com/sccn/liblsl.git" "$SUDO_USER"; then
-        echo -e "${RED}Failed to clone liblsl repository. Attempting to install pylsl via pip instead.${NC}"
+        echo -e "${RED}Failed to clone liblsl repository.${NC}"
         cd "$PROJECT_ROOT"
         rm -rf "$BUILD_DIR"
         return 1
     fi
     
     cd liblsl || {
-        echo -e "${RED}Failed to change to liblsl directory. Falling back to pip installation.${NC}"
+        echo -e "${RED}Failed to change to liblsl directory.${NC}"
         cd "$PROJECT_ROOT"
         rm -rf "$BUILD_DIR"
         return 1
@@ -81,7 +81,7 @@ build_liblsl_from_source() {
     # Create build directory
     mkdir -p build
     cd build || {
-        echo -e "${RED}Failed to create/enter build directory. Falling back to pip installation.${NC}"
+        echo -e "${RED}Failed to create/enter build directory.${NC}"
         cd "$PROJECT_ROOT"
         rm -rf "$BUILD_DIR"
         return 1
@@ -90,14 +90,14 @@ build_liblsl_from_source() {
     # Configure and build
     echo "Configuring and building LSL..."
     if ! su -c "cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local" "$SUDO_USER"; then
-        echo -e "${RED}Failed to configure liblsl build. Attempting to install pylsl via pip instead.${NC}"
+        echo -e "${RED}Failed to configure liblsl build.${NC}"
         cd "$PROJECT_ROOT"
         rm -rf "$BUILD_DIR"
         return 1
     fi
     
     if ! su -c "cmake --build . -j$(nproc)" "$SUDO_USER"; then
-        echo -e "${RED}Failed to build liblsl. Attempting to install pylsl via pip instead.${NC}"
+        echo -e "${RED}Failed to build liblsl.${NC}"
         cd "$PROJECT_ROOT"
         rm -rf "$BUILD_DIR"
         return 1
@@ -106,7 +106,7 @@ build_liblsl_from_source() {
     # Install (this needs to be done as root)
     echo "Installing LSL..."
     if ! make install; then
-        echo -e "${RED}Failed to install liblsl. Attempting to install pylsl via pip instead.${NC}"
+        echo -e "${RED}Failed to install liblsl.${NC}"
         cd "$PROJECT_ROOT"
         rm -rf "$BUILD_DIR"
         return 1
@@ -122,7 +122,7 @@ build_liblsl_from_source() {
     return 0
 }
 
-# Function to create Python virtual environment
+# Function to create Python virtual environment and install packages
 create_virtual_env() {
     echo -e "${YELLOW}Creating Python virtual environment...${NC}"
     
@@ -146,8 +146,11 @@ create_virtual_env() {
     sudo -u "$SUDO_USER" "${VENV_DIR}/bin/pip" install \
         pyyaml \
         requests \
-        pylsl \
         psutil
+    
+    # Install pylsl separately - this needs the liblsl library already installed
+    echo "Installing pylsl..."
+    sudo -u "$SUDO_USER" "${VENV_DIR}/bin/pip" install pylsl
     
     echo -e "${GREEN}Python virtual environment created and packages installed.${NC}"
 }
@@ -271,12 +274,15 @@ echo -e "${YELLOW}Starting installation...${NC}"
 install_system_dependencies
 
 # Build liblsl from source for Raspberry Pi OS Bookworm
+echo -e "${YELLOW}Building and installing liblsl (C/C++ LSL library)...${NC}"
 if ! build_liblsl_from_source; then
-    echo -e "${YELLOW}Falling back to pip installation of pylsl...${NC}"
-    # We don't need to do anything special here, as create_virtual_env will handle installing pylsl
+    echo -e "${RED}Failed to build and install liblsl from source.${NC}"
+    echo -e "${RED}LSL functionality may not work correctly without the native library.${NC}"
+    echo -e "${YELLOW}Will continue with installation, but you may need to build liblsl manually later.${NC}"
 fi
 
-# Create Python virtual environment
+# Create Python virtual environment and install pylsl
+echo -e "${YELLOW}Setting up Python environment with pylsl (Python LSL bindings)...${NC}"
 create_virtual_env
 
 # Detect camera and update configuration
