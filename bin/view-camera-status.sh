@@ -340,6 +340,9 @@ show_dashboard() {
                     printf "%-20s %s\n" "Frames Recorded:" "$count_value"
                 fi
             fi
+            
+            # Update file list - always check for the latest file
+            update_file_list
         else
             printf "%-20s %s\n" "Status:" "○ INACTIVE [Press S to start]"
             
@@ -362,13 +365,7 @@ show_dashboard() {
             fi
             
             # Show last file saved
-            if [ -n "$LAST_FILE" ]; then
-                printf "%-20s %s\n" "Last File:" "$(truncate_text "$(basename "$LAST_FILE")" 55)"
-                if [ -f "$LAST_FILE" ]; then
-                    file_size=$(sudo du -h "$LAST_FILE" 2>/dev/null | cut -f1 || echo "Unknown")
-                    printf "%-20s %s\n" "Last File Size:" "$file_size"
-                fi
-            fi
+            update_file_list
         fi
         
         # Get disk space info
@@ -429,76 +426,120 @@ show_dashboard() {
             lsl_text=$(echo "$lsl_setup" | sed -E 's/.*INFO - //g')
             printf "%-20s %s\n" "LSL Stream:" "$(truncate_text "$lsl_text" 55)"
             
-            # Get raw LSL output first - get more entries to find actual data patterns
-            lsl_raw=$(sudo journalctl -u $SERVICE_NAME -n 1000 2>/dev/null | grep -iE "lsl output|sending lsl|lsl data|metadata" | grep -v "Error" | tail -10)
+            # Check if the stream explicitly mentions channel count
+            channel_count=0
+            if [[ "$lsl_text" =~ with\ ([0-9]+)\ channels ]]; then
+                channel_count=${BASH_REMATCH[1]}
+                printf "%-20s %s\n" "Channel Count:" "$channel_count"
+            fi
             
-            # First try with the expected format
+            # Check for any channel names mentioned in the logs
+            channel_info=$(sudo journalctl -u $SERVICE_NAME -n 500 2>/dev/null | grep -iE "channel|stream.*name|metadata|channel.*name" | grep -v "Error|Warning" | tail -1)
+            if [ -n "$channel_info" ]; then
+                printf "%-20s %s\n" "Channel Info:" "$(truncate_text "$(echo "$channel_info" | sed -E 's/.*INFO - //g')" 55)"
+            fi
+            
+            # More comprehensive search for LSL data by checking multiple patterns
             echo
-            echo "Recent LSL data:"
+            echo "Searching for LSL data..."
             
-            # Examine some raw entries to help diagnose the format
-            raw_samples=$(echo "$lsl_raw" | head -3)
-            echo "Format examples:"
-            echo "$raw_samples" | sed 's/^/  /'
-            echo
+            # Try different patterns to find LSL data
+            lsl_data_patterns=(
+                # Pattern 1: Look for LSL output lines
+                "$(sudo journalctl -u $SERVICE_NAME -n 1000 2>/dev/null | grep -iE "lsl output|sending lsl|lsl data" | grep -v "setup|create|created|with" | tail -10)"
+                # Pattern 2: Look for any arrays in logs
+                "$(sudo journalctl -u $SERVICE_NAME -n 1000 2>/dev/null | grep -E "\[[0-9,. ]+\]" | tail -10)"
+                # Pattern 3: Look for trigger or marker mentions
+                "$(sudo journalctl -u $SERVICE_NAME -n 500 2>/dev/null | grep -iE "trigger|marker|timestamp" | grep -v "setup|create" | tail -10)"
+            )
             
-            # Try different parsing approaches
+            # Combine all pattern results
+            lsl_data=""
+            for pattern in "${lsl_data_patterns[@]}"; do
+                if [ -n "$pattern" ] && [ -z "$lsl_data" ]; then
+                    lsl_data="$pattern"
+                fi
+            done
             
-            # Try to find any arrays in the data
-            array_data=$(echo "$lsl_raw" | grep -Eo "\[[0-9.,]+\]" | tail -5)
-            if [ -n "$array_data" ]; then
-                printf "%-15s %-12s %-15s\n" "TIMESTAMP" "REC_STATUS" "FRAME_NUM" 
-                echo "------------------------------------------------"
+            if [ -n "$lsl_data" ]; then
+                # Show some raw samples for debugging
+                raw_samples=$(echo "$lsl_data" | head -2)
+                echo "Format examples:"
+                echo "$raw_samples" | sed 's/^/  /'
+                echo
                 
-                # Try to parse each array
-                echo "$array_data" | while read -r array; do
-                    # Remove brackets
-                    values=$(echo "$array" | sed 's/\[//;s/\]//')
+                # Headers for the expected format (always show all 4 columns)
+                printf "%-15s %-10s %-15s %-15s\n" "TIME" "FRAME_NO" "TRIGGER_STATUS" "TRIGGER_SOURCE"
+                echo "--------------------------------------------------------------"
+                
+                # Parse each line
+                echo "$lsl_data" | tail -5 | while read -r line; do
+                    # Extract inside square brackets or parentheses
+                    data_part=$(echo "$line" | grep -oE "\[[^]]+\]|\([^)]+\)" | head -1)
                     
-                    # Split by comma if they exist
-                    IFS=',' read -ra fields <<< "$values" 2>/dev/null
-                    
-                    # If we have multiple fields
-                    if [ ${#fields[@]} -ge 3 ]; then
-                        timestamp="${fields[0]}"
-                        recording="${fields[1]}"
-                        frame="${fields[2]}"
+                    if [ -n "$data_part" ]; then
+                        # Remove brackets and split by comma or space
+                        clean_data=$(echo "$data_part" | sed 's/[\[\]()]//g')
                         
-                        # Format recording status
-                        if [ "$recording" = "1" ] || [ "$recording" = "1.0" ]; then
-                            rec_status="YES"
+                        # Try comma-separated values first
+                        if [[ "$clean_data" == *","* ]]; then
+                            IFS=',' read -ra values <<< "$clean_data" 2>/dev/null
+                            
+                            # Extract values with placeholders for missing values
+                            time="${values[0]:-N/A}"
+                            frame="${values[1]:-N/A}"
+                            trigger="${values[2]:-N/A}"
+                            source="${values[3]:-N/A}"
+                            
+                            # Format time nicely if it's a timestamp
+                            if [[ "$time" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+                                time_str=$(date -d "@$time" '+%H:%M:%S.%3N' 2>/dev/null || echo "$time")
+                            else
+                                time_str="$time"
+                            fi
+                            
+                            printf "%-15s %-10s %-15s %-15s\n" "$time_str" "$frame" "$trigger" "$source"
                         else
-                            rec_status="NO"
+                            # Space-separated values
+                            read -r time frame trigger source <<< "$clean_data" 2>/dev/null
+                            
+                            # Use placeholders for missing values
+                            printf "%-15s %-10s %-15s %-15s\n" "${time:-N/A}" "${frame:-N/A}" "${trigger:-N/A}" "${source:-N/A}"
                         fi
-                        
-                        printf "%-15s %-12s %-15s\n" "$timestamp" "$rec_status" "$frame"
                     else
-                        # Single number - try to show what it might be
-                        echo "  Value: $values (unknown format)"
+                        # Try to extract any numbers as a fallback
+                        data_values=$(echo "$line" | grep -oE "[0-9]+(\.[0-9]+)?" | head -4)
+                        if [ -n "$data_values" ]; then
+                            # Read up to 4 values
+                            read -r time frame trigger source <<< "$data_values" 2>/dev/null
+                            printf "%-15s %-10s %-15s %-15s\n" "${time:-N/A}" "${frame:-N/A}" "${trigger:-N/A}" "${source:-N/A}"
+                        else
+                            # Last resort - just show the content of the line
+                            msg=$(echo "$line" | sed -E 's/.*INFO - //g')
+                            echo "  Raw: $(truncate_text "$msg" 60)"
+                        fi
                     fi
                 done
-            else
-                # Try to extract data from text descriptions
-                data_lines=$(echo "$lsl_raw" | grep -iE "frame|sample|marker|timestamp" | tail -5)
-                if [ -n "$data_lines" ]; then
-                    echo "LSL Data (text format):"
-                    echo "$data_lines" | while read -r line; do
-                        # Try to extract meaningful parts
-                        timestamp=$(echo "$line" | grep -oE "[0-9]+\.[0-9]+" | head -1)
-                        frame=$(echo "$line" | grep -oE "frame [0-9]+" | grep -oE "[0-9]+")
-                        
-                        if [ -n "$timestamp" ] || [ -n "$frame" ]; then
-                            data_text=$(echo "$line" | sed -E 's/.*INFO - //g')
-                            echo "  $(truncate_text "$data_text" 70)"
-                        fi
-                    done
-                else
-                    echo "No structured LSL data found. Check data format."
-                    echo "Expected format: [timestamp, recording_status, frame_number]"
+                
+                # Add info about adding columns if needed
+                if [ "$channel_count" != "4" ] && [ "$channel_count" -gt 0 ]; then
+                    echo
+                    echo "NOTE: LSL stream has $channel_count channels, but 4 are expected."
+                    echo "Expected columns are: time, frame_no, trigger_status, trigger_source"
                 fi
+            else
+                echo "No LSL data found in logs. If data should be streaming, check:"
+                echo "1. LSL stream is properly initialized with 4 channels"
+                echo "2. Data is being sent to the stream regularly"
+                echo "3. Logger level includes LSL data (INFO or DEBUG)"
+                echo
+                echo "Expected format: time, frame_no, trigger_status, trigger_source"
             fi
         else
             echo "No LSL stream configuration found"
+            echo
+            echo "To enable LSL streaming, ensure LSL is properly configured"
+            echo "with all 4 required channels (time, frame_no, trigger_status, trigger_source)"
         fi
         
         echo
@@ -650,6 +691,20 @@ EOF
 
     sudo systemctl daemon-reload
     echo "Auto-launch configured. Dashboard will open when service starts."
+}
+
+# Always update file list regardless of recording status
+update_file_list() {
+    # Get the most recent file 
+    latest_file=$(sudo find "$RECORDINGS_DIR" -name "*.mkv" -type f -printf "%T@ %p\n" 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2- || echo "")
+    if [ -n "$latest_file" ] && [ -f "$latest_file" ]; then
+        LAST_FILE="$latest_file"
+        file_size=$(sudo du -h "$LAST_FILE" 2>/dev/null | cut -f1 || echo "Unknown")
+        file_time=$(sudo stat -c "%y" "$LAST_FILE" 2>/dev/null | cut -d'.' -f1 || echo "Unknown")
+        printf "%-20s %s\n" "Last File:" "$(truncate_text "$(basename "$LAST_FILE")" 55)"
+        printf "%-20s %s\n" "File Size:" "$file_size"
+        printf "%-20s %s\n" "Created:" "$(truncate_text "$file_time" 55)"
+    fi
 }
 
 # Main logic - determine what to do based on arguments
