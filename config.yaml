@@ -8,7 +8,7 @@ camera:
   codec: mjpg
   container: mkv
   preview: true  # Enable preview window by default
-  enable_crop: auto  # Can be true, false, or auto (detect Global Shutter Camera)
+  enable_crop: true  # Enable Global Shutter Camera support by default
 
 # Storage settings
 storage:

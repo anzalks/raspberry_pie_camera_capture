@@ -71,6 +71,9 @@ For standard Raspberry Pi Camera modules:
 For Global Shutter Camera (IMX296):
 1. Connect the camera to the CSI port
 2. No additional configuration is needed - the system will automatically detect and configure the Global Shutter Camera
+3. Global Shutter Camera support is **enabled by default** for optimal compatibility
+
+Note: The system is optimized for Global Shutter Camera usage with default settings of 400x400 resolution at 200fps.
 
 ## Usage
 

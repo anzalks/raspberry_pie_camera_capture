@@ -567,6 +567,8 @@ else
     width=400
     height=400
     fps=200
+    update_status "Using default camera parameters with Global Shutter support enabled: ${width}x${height} @ ${fps}fps"
+    update_status "Note: Global Shutter Camera support is ALWAYS enabled by default"
 fi
 
 # Create a temporary Python script that directly uses the LSLCameraStreamer class
@@ -704,7 +706,7 @@ try:
         use_buffer=True,
         buffer_size_seconds=20.0,
         ntfy_topic="raspie-camera-test",
-        enable_crop=True if "${GS_CAMERA_CONFIGURED}" == "true" else False,
+        enable_crop=True,  # Always enable Global Shutter Camera support
         camera_id=0
     )
     
