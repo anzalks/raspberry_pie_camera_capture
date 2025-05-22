@@ -22,35 +22,25 @@ echo "Updating package list..."
 apt update
 
 echo "Installing required system packages (including build tools, python3-dev, picamera2, and potentially useful extras)..."
-# Add filesystem utils and hardware encoding deps here
-apt install -y --no-install-recommends \
-    build-essential \
-    python3-dev \
-    python3-pip \
-    python3-venv \
-    python3-opencv \
-    python3-picamera2 \
-    python3-yaml \
-    libatlas-base-dev \
-    libhdf5-dev \
-    libhdf5-serial-dev \
-    libopenjp2-7 \
-    exfat-fuse \
-    exfatprogs \
-    ntfs-3g \
-    libcamera-dev \
-    gstreamer1.0-plugins-good \
-    gstreamer1.0-plugins-bad \
-    gstreamer1.0-libav \
-    curl \
-    autoconf \
-    libtool \
-    pkg-config \
-    libbsd-dev \
-    libasound2-dev \
-    portaudio19-dev \
-    python3-numpy \
-    python3-scipy # Added audio-related packages
+# Install packages one by one to reduce memory usage
+echo "Installing packages one by one to minimize memory usage..."
+for pkg in build-essential python3-dev python3-pip python3-venv python3-opencv python3-picamera2 python3-yaml \
+    libatlas-base-dev libhdf5-dev libhdf5-serial-dev libopenjp2-7 exfat-fuse exfatprogs ntfs-3g \
+    libcamera-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav curl \
+    autoconf libtool pkg-config libbsd-dev libasound2-dev portaudio19-dev; do
+    echo "Installing $pkg..."
+    apt install -y --no-install-recommends $pkg
+    # Sleep briefly to allow system to recover between installations
+    sleep 2
+done
+
+# Separate numpy and scipy installation to prevent memory issues
+echo "Installing python3-numpy..."
+apt install -y --no-install-recommends python3-numpy
+sleep 2
+echo "Installing python3-scipy..."
+apt install -y --no-install-recommends python3-scipy
+sleep 2
 
 echo "Attempting to install liblsl-dev (LabStreamingLayer library) via apt..."
 if apt install -y liblsl-dev; then
@@ -214,23 +204,57 @@ else
       echo "ERROR: Virtual environment activation script not found at '$VENV_DIR/bin/activate'."
       echo "Cannot proceed with Python package installation."
   else
-      echo "Upgrading pip, setuptools, and wheel in the virtual environment..."
+      echo "Upgrading pip in the virtual environment..."
       # Run pip install as the original user using the venv's pip
-      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install --upgrade pip setuptools wheel
+      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install --upgrade pip
+      sleep 2
+      
+      echo "Upgrading setuptools..."
+      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install --upgrade setuptools
+      sleep 2
+      
+      echo "Upgrading wheel..."
+      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install --upgrade wheel
+      sleep 2
       
       echo "Installing PyYAML for configuration file support..."
       sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install pyyaml
+      sleep 2
       
-      echo "Installing project 'raspberry-pi-lsl-stream' in editable mode..."
+      # Install dependencies in batches to reduce memory pressure
+      echo "Installing Python dependencies in batches to reduce memory usage..."
+      
+      echo "Installing basic dependencies (batch 1)..."
+      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install requests
+      sleep 2
+      
+      echo "Installing core dependencies (batch 2)..."
+      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install numpy
+      sleep 2
+      
+      echo "Installing core dependencies (batch 3)..."
+      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install opencv-python-headless
+      sleep 2
+      
+      echo "Installing core dependencies (batch 4)..."
+      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install pylsl
+      sleep 2
+      
+      echo "Installing additional dependencies (batch 5)..."
+      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install ntfy psutil
+      sleep 2
+      
+      echo "Installing project 'raspberry-pi-lsl-stream' in editable mode with minimal build..."
       # Install the project itself as the original user
-      # Ensure we are in the correct directory before running pip install -e .
+      # Use --no-build-isolation to reduce memory requirements
       cd "$PROJECT_DIR"
-      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install -e .
+      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install -e . --no-build-isolation
       
       if [ $? -eq 0 ]; then
           echo "Project installed successfully into the virtual environment."
       else
           echo "ERROR: Failed to install project using pip."
+          echo "If you're seeing out-of-memory errors, try running the install-low-memory.sh script instead."
       fi
   fi
 fi
