@@ -169,18 +169,14 @@ pip_install_as_user() {
 echo "Installing Python dependencies..."
 pip_install_as_user install --upgrade pip setuptools wheel
 
-# First try to install exact dependencies that match the installed liblsl version
-if [ -f "/usr/local/lib/liblsl.so" ]; then
-  echo "Installing pylsl to match installed liblsl..."
-  # Try to detect the version from the library
-  LSL_VER=$(strings /usr/local/lib/liblsl.so 2>/dev/null | grep -E "^[0-9]+\.[0-9]+\.[0-9]+$" | head -1 || echo "1.13.0")
-  echo "Detected liblsl version: $LSL_VER"
-  
-  # Try to install matching pylsl version first, then fallback to any version
-  pip_install_as_user install "pylsl==$LSL_VER" || pip_install_as_user install pylsl
-else
-  echo "Installing pylsl version 1.13.0 to match liblsl build..."
-  pip_install_as_user install "pylsl==1.13.0" || pip_install_as_user install pylsl
+# Install pylsl with explicit version
+echo "Installing pylsl version 1.13.0 (to match liblsl)..."
+# Always use the explicit version 1.13.0 to avoid version detection issues
+if ! pip_install_as_user install pylsl==1.13.0; then
+  echo -e "${YELLOW}Failed to install pylsl 1.13.0, trying latest version...${NC}"
+  if ! pip_install_as_user install pylsl; then
+    echo -e "${RED}ERROR: Failed to install pylsl. LSL functionality will not work.${NC}"
+  fi
 fi
 
 # Install additional Python dependencies from requirements
@@ -310,12 +306,6 @@ fi
 echo -e "${YELLOW}----- Testing LSL Installation -----${NC}"
 if ldconfig -p | grep -q "liblsl\.so" || [ -f "/usr/local/lib/liblsl.so" ]; then
   echo -e "${GREEN}✓ liblsl library found${NC}"
-  
-  # Try to get the version
-  if [ -f "/usr/local/lib/liblsl.so" ]; then
-    LSL_VER=$(strings /usr/local/lib/liblsl.so 2>/dev/null | grep -E "^[0-9]+\.[0-9]+\.[0-9]+$" | head -1 || echo "unknown")
-    echo "liblsl version: $LSL_VER"
-  fi
 else
   echo -e "${RED}⚠ liblsl library not found. LSL functionality may not work.${NC}"
 fi
@@ -349,7 +339,7 @@ if [ -d "$PROJECT_ROOT/.venv" ]; then
   else
     echo -e "${RED}⚠ pylsl package test failed. LSL functionality will not work.${NC}"
     echo "Try reinstalling with:"
-    echo "  cd $PROJECT_ROOT && .venv/bin/pip install pylsl"
+    echo "  cd $PROJECT_ROOT && .venv/bin/pip install pylsl==1.13.0"
   fi
 fi
 
