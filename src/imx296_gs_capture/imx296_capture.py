@@ -36,6 +36,7 @@ import pylsl
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 import psutil  # Optional, for system monitoring
+import glob
 
 # Global variables for threading coordination
 stop_event = threading.Event()
@@ -988,6 +989,72 @@ def video_writer_thread(config):
         logger.info("Video writer thread exited")
 
 # =============================================================================
+# Keyboard Trigger Detection
+# =============================================================================
+
+def keyboard_trigger_thread(config):
+    """Thread to monitor for keyboard trigger marker files created by the dashboard."""
+    global is_recording_active, last_trigger_source
+    
+    logger = logging.getLogger('imx296_capture')
+    logger.info("Starting keyboard trigger monitor thread")
+    
+    # Look for marker files with pattern /tmp/camera_recording_*_$PID.tmp
+    marker_pattern = "/tmp/camera_recording_*_*.tmp"
+    
+    while not stop_event.is_set():
+        try:
+            # Check for start marker files
+            start_markers = glob.glob("/tmp/camera_recording_start_*.tmp")
+            if start_markers:
+                logger.info(f"Found keyboard start marker: {start_markers[0]}")
+                
+                # Set trigger source to keyboard
+                last_trigger_source = 2
+                
+                # If not already recording, start recording
+                if not is_recording_active:
+                    logger.info("Starting recording via keyboard trigger")
+                    handle_start_notification(config)
+                
+                # Remove the marker
+                for marker in start_markers:
+                    try:
+                        os.remove(marker)
+                        logger.debug(f"Removed start marker: {marker}")
+                    except:
+                        logger.warning(f"Failed to remove start marker: {marker}")
+            
+            # Check for stop marker files
+            stop_markers = glob.glob("/tmp/camera_recording_stop_*.tmp")
+            if stop_markers:
+                logger.info(f"Found keyboard stop marker: {stop_markers[0]}")
+                
+                # Set trigger source to keyboard
+                last_trigger_source = 2
+                
+                # If recording, stop recording
+                if is_recording_active:
+                    logger.info("Stopping recording via keyboard trigger")
+                    handle_stop_notification()
+                
+                # Remove the marker
+                for marker in stop_markers:
+                    try:
+                        os.remove(marker)
+                        logger.debug(f"Removed stop marker: {marker}")
+                    except:
+                        logger.warning(f"Failed to remove stop marker: {marker}")
+            
+        except Exception as e:
+            logger.error(f"Error in keyboard trigger thread: {e}")
+        
+        # Sleep briefly before checking again
+        time.sleep(0.2)
+    
+    logger.info("Keyboard trigger thread exited")
+
+# =============================================================================
 # Signal Handling and Cleanup
 # =============================================================================
 
@@ -1105,8 +1172,17 @@ def main():
             )
             ntfy_thread_obj.start()
             
+            # Start keyboard trigger thread
+            logger.info("Starting keyboard trigger thread...")
+            keyboard_thread_obj = threading.Thread(
+                target=keyboard_trigger_thread,
+                args=(config,),
+                daemon=True
+            )
+            keyboard_thread_obj.start()
+            
             # Main thread just waits for stop event
-            logger.info("System ready and listening for ntfy notifications")
+            logger.info("System ready and listening for notifications (ntfy and keyboard)")
             while not stop_event.is_set():
                 time.sleep(0.1)
             
@@ -1114,6 +1190,7 @@ def main():
             logger.info("Waiting for threads to exit...")
             ntfy_thread_obj.join(timeout=10)
             camera_thread_obj.join(timeout=10)
+            keyboard_thread_obj.join(timeout=10)
             
         except Exception as e:
             logger.error(f"Unhandled exception in main: {e}")

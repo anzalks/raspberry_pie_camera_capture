@@ -51,7 +51,7 @@ ntfy:
 lsl:
   stream_name: "IMX296_Metadata"
   stream_type: "CameraEvents"
-  channel_count: 3  # CaptureTimeUnix, ntfy_notification_active, session_frame_no
+  channel_count: 4  # CaptureTimeUnix, ntfy_notification_active, session_frame_no, trigger_source
   nominal_srate: 100  # Matches camera FPS
 
 # Logging settings
