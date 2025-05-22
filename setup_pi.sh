@@ -44,7 +44,7 @@ echo "Virtual Environment Path: $VENV_PATH"
 increase_swap() {
     echo -e "${YELLOW_TEXT}Attempting to increase swap space...${NC}"
     if [ -f /etc/dphys-swapfile ]; then
-        SWAP_SIZE_MB=2048
+        SWAP_SIZE_MB=4096  # Increased from 2048 to 4096 MB
         CONF_SWAPSIZE_LINE=$(grep -E "^CONF_SWAPSIZE=" /etc/dphys-swapfile)
         if [ -n "$CONF_SWAPSIZE_LINE" ]; then
             ORIG_SWAPSIZE=$(echo "$CONF_SWAPSIZE_LINE" | cut -d'=' -f2)
@@ -54,7 +54,9 @@ increase_swap() {
                 echo "Set CONF_SWAPSIZE to $SWAP_SIZE_MB MB"
                 echo "Restarting dphys-swapfile service..."
                 systemctl stop dphys-swapfile || echo "Failed to stop dphys-swapfile, continuing..."
+                sleep 2  # Give it time to fully stop
                 systemctl start dphys-swapfile || echo "Failed to start dphys-swapfile, continuing..."
+                sleep 5  # Give it time to fully initialize
                 echo "Swap space potentially increased. Current status:"
             else
                 echo "CONF_SWAPSIZE is already $SWAP_SIZE_MB MB. No changes made."
@@ -64,11 +66,33 @@ increase_swap() {
              echo "CONF_SWAPSIZE=$SWAP_SIZE_MB" >> /etc/dphys-swapfile
              echo "Restarting dphys-swapfile service..."
              systemctl stop dphys-swapfile || echo "Failed to stop dphys-swapfile, continuing..."
+             sleep 2  # Give it time to fully stop
              systemctl start dphys-swapfile || echo "Failed to start dphys-swapfile, continuing..."
+             sleep 5  # Give it time to fully initialize
         fi
         free -m
+        # Add direct swap file if dphys-swapfile doesn't provide enough
+        if [ ! -f /swapfile ] && [ "$(free -m | awk '/^Swap:/ {print $2}')" -lt "$SWAP_SIZE_MB" ]; then
+            echo "Creating additional swap file at /swapfile"
+            dd if=/dev/zero of=/swapfile bs=1M count=2048 status=progress
+            chmod 600 /swapfile
+            mkswap /swapfile
+            swapon /swapfile
+            echo "/swapfile swap swap defaults 0 0" >> /etc/fstab
+            echo "Additional swap file created and enabled"
+            free -m
+        fi
     else
-        echo -e "${RED_TEXT}dphys-swapfile not found. Cannot manage swap automatically.${NC}"
+        echo -e "${RED_TEXT}dphys-swapfile not found. Creating a direct swap file...${NC}"
+        if [ ! -f /swapfile ]; then
+            dd if=/dev/zero of=/swapfile bs=1M count=4096 status=progress
+            chmod 600 /swapfile
+            mkswap /swapfile
+            swapon /swapfile
+            echo "/swapfile swap swap defaults 0 0" >> /etc/fstab
+            echo "Direct swap file created and enabled"
+            free -m
+        fi
     fi
 }
 
@@ -152,77 +176,18 @@ apt install -y libcamera-apps
 # --- Install curlftpfs (Try apt first, fallback to source) ---
 echo -e "${YELLOW_TEXT}Checking for curlftpfs...${NC}"
 
-# Attempt to install via apt first
-echo -e "${YELLOW_TEXT}Attempting to install curlftpfs via apt...${NC}"
-if apt install -y curlftpfs; then
-    echo -e "${GREEN_TEXT}curlftpfs installed successfully via apt.${NC}"
+# Check if command already exists first
+if command -v curlftpfs >/dev/null 2>&1; then
+    echo -e "${GREEN_TEXT}curlftpfs command already exists. No need to install.${NC}"
 else
-    echo -e "${YELLOW_TEXT}apt install curlftpfs failed or package not available.${NC}"
-    # Check if command exists anyway (might have been installed previously)
-    if command -v curlftpfs >/dev/null 2>&1; then
-        echo -e "${YELLOW_TEXT}curlftpfs command found, likely installed previously. Skipping build.${NC}"
+    # Attempt to install via apt first
+    echo -e "${YELLOW_TEXT}Attempting to install curlftpfs via apt...${NC}"
+    if apt install -y curlftpfs; then
+        echo -e "${GREEN_TEXT}curlftpfs installed successfully via apt.${NC}"
     else
-        echo -e "${YELLOW_TEXT}curlftpfs command not found. Attempting to build from source...${NC}"
-        
-        # Install build dependencies for curlftpfs
-        echo -e "${YELLOW_TEXT}Installing build dependencies for curlftpfs (check output for errors)...${NC}"
-        # Added libglib2.0-dev as required by the fork's README/configure checks
-        # Added libbsd-dev based on configure error
-        apt install -y build-essential pkg-config autoconf automake libtool libfuse-dev libcurl4-openssl-dev libglib2.0-dev libbsd-dev
-        # Note: libfuse-dev might be fuse3-dev on newer systems.
-        # Note: libcurl4-openssl-dev might be libcurl4-gnutls-dev.
-        # If the above fails, you may need to find the correct dev package names.
-
-        # Define build directory and repo URL
-        BUILD_DIR="/tmp/curlftpfs_build"
-        REPO_URL="https://github.com/JackSlateur/curlftpfs.git"
-        ORIG_DIR=$(pwd) # Remember where we started
-
-        echo -e "${YELLOW_TEXT}Creating temporary build directory: ${BUILD_DIR}${NC}"
-        rm -rf "${BUILD_DIR}" # Clean previous attempts
-        mkdir -p "${BUILD_DIR}"
-        cd "${BUILD_DIR}"
-
-        echo -e "${YELLOW_TEXT}Cloning curlftpfs source from ${REPO_URL}...${NC}"
-        if git clone "${REPO_URL}" curlftpfs_src; then
-            cd curlftpfs_src
-            echo -e "${YELLOW_TEXT}Running autoreconf to generate configure script...${NC}"
-            if autoreconf -fi; then
-                echo -e "${YELLOW_TEXT}Running configure script...${NC}"
-                if ./configure; then
-                    echo -e "${YELLOW_TEXT}Configuration successful. Compiling (make)...${NC}"
-                    if make; then
-                        echo -e "${YELLOW_TEXT}Compilation successful. Installing (make install)...${NC}"
-                        # Run install as root since we are in a sudo script
-                        if make install; then
-                            echo -e "${GREEN_TEXT}curlftpfs successfully built and installed from source.${NC}"
-                        else
-                            echo -e "${RED_TEXT}ERROR: 'make install' failed.${NC}" >&2
-                        fi
-                    else
-                        echo -e "${RED_TEXT}ERROR: 'make' failed.${NC}" >&2
-                    fi
-                else
-                    echo -e "${RED_TEXT}ERROR: './configure' failed. Check dependencies were installed correctly.${NC}" >&2
-                fi
-            else
-                 echo -e "${RED_TEXT}ERROR: 'autoreconf -fi' failed. Check build dependencies.${NC}" >&2
-            fi
-            # Go back to parent build dir before cleanup
-            cd .. 
-        else
-            echo -e "${RED_TEXT}ERROR: Failed to clone curlftpfs source from GitHub.${NC}" >&2
-        fi
-        
-        # Cleanup build directory
-        echo -e "${YELLOW_TEXT}Cleaning up build directory: ${BUILD_DIR}${NC}"
-        cd "${ORIG_DIR}" # Go back to original directory first
-        rm -rf "${BUILD_DIR}"
-
-        # Final check if command exists after build attempt
-        if ! command -v curlftpfs >/dev/null 2>&1; then
-            echo -e "${YELLOW_TEXT}WARNING: curlftpfs build attempt finished, but command is still not found.${NC}" >&2
-        fi
+        echo -e "${YELLOW_TEXT}apt install curlftpfs failed or package not available.${NC}"
+        echo -e "${YELLOW_TEXT}This is not critical - will continue without curlftpfs.${NC}"
+        echo -e "${YELLOW_TEXT}You can manually install it later if needed.${NC}"
     fi
 fi
 
@@ -249,36 +214,131 @@ chown -R "$SUDO_USER_NAME:$(id -gn "$SUDO_USER_NAME")" "$VENV_PATH"
 PIP_EXEC="$VENV_PATH/bin/pip"
 PYTHON_EXEC="$VENV_PATH/bin/python"
 
-echo -e "${YELLOW_TEXT}Attempting to upgrade pip in venv (as $SUDO_USER_NAME)...${NC}"
-echo "Command: sudo -u \"$SUDO_USER_NAME\" \"$PIP_EXEC\" install --no-cache-dir --prefer-binary --upgrade pip"
-if ! sudo -u "$SUDO_USER_NAME" "$PIP_EXEC" install --no-cache-dir --prefer-binary --upgrade pip; then
-    echo -e "${RED_TEXT}ERROR: Failed to upgrade pip. This is a critical failure point.${NC}"
-    echo -e "${YELLOW_TEXT}Your system might be running out of memory. Try increasing swap manually or ensure no other heavy processes are running.${NC}"
-    exit 1
-fi
-echo -e "${GREEN_TEXT}pip upgraded successfully.${NC}"
+# Clear any temporary pip cache to reduce memory usage
+rm -rf /tmp/pip-* 2>/dev/null || true
+sync && echo 3 > /proc/sys/vm/drop_caches || true
 
-echo -e "${YELLOW_TEXT}Attempting to upgrade setuptools and wheel in venv (as $SUDO_USER_NAME)...${NC}"
-if ! sudo -u "$SUDO_USER_NAME" "$PIP_EXEC" install --no-cache-dir --prefer-binary --upgrade setuptools wheel; then
-    echo -e "${RED_TEXT}ERROR: Failed to upgrade setuptools/wheel.${NC}"
-    # Not exiting, but this is problematic
+echo -e "${YELLOW_TEXT}Attempting to upgrade pip in venv (as $SUDO_USER_NAME) with memory optimizations...${NC}"
+echo "Command: sudo -u \"$SUDO_USER_NAME\" \"$PIP_EXEC\" install --no-cache-dir --prefer-binary --upgrade pip"
+
+# First try with system pip to ensure it's updated with minimal memory usage
+if ! sudo -u "$SUDO_USER_NAME" /usr/bin/pip3 install --user --no-cache-dir --prefer-binary pip==23.0.1; then
+    echo -e "${YELLOW_TEXT}System pip install failed, trying venv pip with minimal install...${NC}"
 fi
-echo -e "${GREEN_TEXT}setuptools and wheel upgrade attempt finished.${NC}"
+
+# Then use the venv pip with optimizations for memory usage
+export PYTHONMALLOC=malloc
+export PYTHONIOENCODING=utf-8
+export PYTHONHASHSEED=0
+if ! sudo -u "$SUDO_USER_NAME" "$PIP_EXEC" install --no-cache-dir --prefer-binary pip==23.0.1; then
+    echo -e "${RED_TEXT}ERROR: Failed to upgrade pip. This is a critical failure point.${NC}"
+    echo -e "${YELLOW_TEXT}Your system might be running out of memory. Increasing swap further...${NC}"
+    
+    # Try to free more memory
+    sync && echo 3 > /proc/sys/vm/drop_caches
+    
+    # Create a temporary swap file as last resort if pip install fails
+    if [ ! -f /tmp/emergency_swap ]; then
+        echo "Creating emergency swap file..."
+        dd if=/dev/zero of=/tmp/emergency_swap bs=1M count=1024
+        chmod 600 /tmp/emergency_swap
+        mkswap /tmp/emergency_swap
+        swapon /tmp/emergency_swap
+        echo "Emergency swap enabled. Current swap status:"
+        free -m
+        
+        # Try one more time with additional swap
+        if ! sudo -u "$SUDO_USER_NAME" "$PIP_EXEC" install --no-cache-dir --prefer-binary pip==23.0.1; then
+            echo -e "${RED_TEXT}ERROR: Still failing to install pip despite additional swap.${NC}"
+            swapoff /tmp/emergency_swap
+            rm -f /tmp/emergency_swap
+            exit 1
+        fi
+        
+        # Clean up emergency swap if successful
+        swapoff /tmp/emergency_swap
+        rm -f /tmp/emergency_swap
+    else
+        echo -e "${RED_TEXT}ERROR: Emergency swap already exists but pip still failing.${NC}"
+        exit 1
+    fi
+fi
+echo -e "${GREEN_TEXT}pip upgrade completed.${NC}"
+
+# Free memory before continuing
+sync && echo 3 > /proc/sys/vm/drop_caches
+
+echo -e "${YELLOW_TEXT}Installing setuptools and wheel in venv (as $SUDO_USER_NAME) with memory optimizations...${NC}"
+if ! sudo -u "$SUDO_USER_NAME" "$PIP_EXEC" install --no-cache-dir --prefer-binary setuptools==65.5.0 wheel==0.40.0; then
+    echo -e "${RED_TEXT}ERROR: Failed to install setuptools/wheel.${NC}"
+    # Continue anyway since these might already be installed at usable versions
+fi
+echo -e "${GREEN_TEXT}setuptools and wheel installation completed.${NC}"
 
 echo -e "${YELLOW_TEXT}Installing core Python packages (pylsl, numpy, etc.) into venv (as $SUDO_USER_NAME)...${NC}"
-PIP_CORE_PACKAGES=( "pylsl" "numpy" "scipy" "pyyaml" "requests" "psutil" "importlib-metadata" )
-if ! sudo -u "$SUDO_USER_NAME" "$PIP_EXEC" install --prefer-binary --verbose ${PIP_CORE_PACKAGES[*]}; then
-    echo -e "${RED_TEXT}ERROR: Failed to install one or more core Python packages. Check output.${NC}"
-fi
+# Install packages one by one with memory optimization to avoid memory issues
+for package in pylsl numpy scipy pyyaml requests psutil importlib-metadata; do
+    echo "Installing $package..."
+    sync && echo 3 > /proc/sys/vm/drop_caches || true
+    
+    # Try installing with system packages first when possible (to save memory)
+    if [ "$package" = "numpy" ]; then
+        echo "Using system numpy package rather than pip for memory efficiency..."
+        sudo apt install -y python3-numpy
+        if [ -d "/usr/lib/python3/dist-packages/numpy" ]; then
+            # Create symlink to system numpy in venv
+            site_packages_dir=$(sudo -u "$SUDO_USER_NAME" "$PYTHON_EXEC" -c "import site; print(site.getsitepackages()[0])")
+            if [ ! -L "$site_packages_dir/numpy" ]; then
+                sudo -u "$SUDO_USER_NAME" ln -s /usr/lib/python3/dist-packages/numpy "$site_packages_dir/numpy"
+                echo "Created symlink to system numpy package in virtual environment"
+            fi
+            continue
+        fi
+    elif [ "$package" = "scipy" ]; then
+        echo "Using system scipy package rather than pip for memory efficiency..."
+        sudo apt install -y python3-scipy
+        if [ -d "/usr/lib/python3/dist-packages/scipy" ]; then
+            # Create symlink to system scipy in venv
+            site_packages_dir=$(sudo -u "$SUDO_USER_NAME" "$PYTHON_EXEC" -c "import site; print(site.getsitepackages()[0])")
+            if [ ! -L "$site_packages_dir/scipy" ]; then
+                sudo -u "$SUDO_USER_NAME" ln -s /usr/lib/python3/dist-packages/scipy "$site_packages_dir/scipy"
+                echo "Created symlink to system scipy package in virtual environment"
+            fi
+            continue
+        fi
+    fi
+    
+    # Fall back to pip installation if needed
+    if ! sudo -u "$SUDO_USER_NAME" "$PIP_EXEC" install --prefer-binary --no-cache-dir "$package"; then
+        echo -e "${RED_TEXT}ERROR: Failed to install $package.${NC}"
+    else
+        echo -e "${GREEN_TEXT}Successfully installed $package${NC}"
+    fi
+    
+    # Sleep to let system recover
+    sleep 2
+done
 
-echo -e "${YELLOW_TEXT}Attempting to install/reinstall 'picamera2' into venv (as $SUDO_USER_NAME)...${NC}"
-echo "This uses --force-reinstall --no-cache-dir --no-binary=:all: for picamera2."
-set -x # Enable command tracing for this specific pip command
-if ! sudo -u "$SUDO_USER_NAME" "$PIP_EXEC" install --prefer-binary --force-reinstall --no-cache-dir --no-binary=:all: picamera2; then
-    echo -e "${RED_TEXT}ERROR: Failed to install 'picamera2' using pip. This is critical!${NC}"
+echo -e "${YELLOW_TEXT}Setting up picamera2 to use system package instead of pip installation...${NC}"
+echo "Installing system picamera2 package..."
+sudo apt install -y python3-picamera2
+
+# Create a symlink to the system picamera2 in the virtual environment
+site_packages_dir=$(sudo -u "$SUDO_USER_NAME" "$PYTHON_EXEC" -c "import site; print(site.getsitepackages()[0])")
+if [ -d "/usr/lib/python3/dist-packages/picamera2" ] && [ ! -L "$site_packages_dir/picamera2" ]; then
+    echo "Creating symlink to system picamera2 package in virtual environment"
+    sudo -u "$SUDO_USER_NAME" ln -s /usr/lib/python3/dist-packages/picamera2 "$site_packages_dir/picamera2"
+    
+    # Also link related packages if they exist
+    for pkg in libcamera picamera2 v4l2; do
+        if [ -d "/usr/lib/python3/dist-packages/$pkg" ] && [ ! -L "$site_packages_dir/$pkg" ]; then
+            sudo -u "$SUDO_USER_NAME" ln -s "/usr/lib/python3/dist-packages/$pkg" "$site_packages_dir/$pkg"
+            echo "Created symlink for $pkg"
+        fi
+    done
+else
+    echo "Could not find system picamera2 package or symlink already exists"
 fi
-set +x # Disable command tracing
-echo "Finished 'picamera2' installation attempt."
 
 echo -e "${YELLOW_TEXT}Performing internal import check for 'picamera2' in venv (as $SUDO_USER_NAME)...${NC}"
 IMPORT_CHECK_SCRIPT="import sys; print(f'Python version: {sys.version}'); print(f'Sys.path: {sys.path}'); import picamera2; print('picamera2 imported. Version:', picamera2.__version__)"
@@ -286,7 +346,20 @@ if sudo -u "$SUDO_USER_NAME" "$PYTHON_EXEC" -c "$IMPORT_CHECK_SCRIPT"; then
     echo -e "${GREEN_TEXT}SUCCESS: 'picamera2' imported successfully within setup script by venv Python.${NC}"
 else
     echo -e "${RED_TEXT}FAILURE: 'picamera2' FAILED to import by venv Python within setup script.${NC}"
-    echo -e "${YELLOW_TEXT}This means 'picamera2' is not usable in the venv despite pip's attempt.${NC}"
+    echo -e "${YELLOW_TEXT}Attempting fallback configuration...${NC}"
+    
+    # Fallback: Modify PYTHONPATH to include system dist-packages
+    echo "# Add system dist-packages to Python path for picamera2" > "$VENV_PATH/lib/python3.11/site-packages/system-packages.pth"
+    echo "/usr/lib/python3/dist-packages" >> "$VENV_PATH/lib/python3.11/site-packages/system-packages.pth"
+    chown $SUDO_USER_NAME:$SUDO_USER_NAME "$VENV_PATH/lib/python3.11/site-packages/system-packages.pth"
+    
+    # Try import check again
+    if sudo -u "$SUDO_USER_NAME" "$PYTHON_EXEC" -c "$IMPORT_CHECK_SCRIPT"; then
+        echo -e "${GREEN_TEXT}SUCCESS: 'picamera2' imported successfully after fallback configuration.${NC}"
+    else
+        echo -e "${RED_TEXT}WARNING: 'picamera2' still failing to import. Will continue anyway.${NC}"
+        echo -e "${YELLOW_TEXT}You may need to manually fix the picamera2 installation later.${NC}"
+    fi
 fi
 
 echo -e "${YELLOW_TEXT}Installing project in editable mode in venv (as $SUDO_USER_NAME)...${NC}"
