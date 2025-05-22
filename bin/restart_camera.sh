@@ -63,13 +63,24 @@ if [ -d "$PROJECT_ROOT/.venv" ]; then
     echo "pylsl not found in virtual environment."
     read -p "Do you want to install it now? (y/n): " install_pylsl
     if [[ "$install_pylsl" == "y" || "$install_pylsl" == "Y" ]]; then
-      "$PROJECT_ROOT/.venv/bin/pip" install pylsl
+      # Try multiple versions of pylsl in case earlier ones fail
+      if ! "$PROJECT_ROOT/.venv/bin/pip" install pylsl==1.12.2; then
+        echo "Trying alternate version..."
+        if ! "$PROJECT_ROOT/.venv/bin/pip" install pylsl==1.15.0; then
+          echo "Trying alternate version..."
+          if ! "$PROJECT_ROOT/.venv/bin/pip" install pylsl==1.16.1; then
+            echo "Trying latest version..."
+            "$PROJECT_ROOT/.venv/bin/pip" install pylsl
+          fi
+        fi
+      fi
       echo "pylsl installed successfully."
     else
       echo "Warning: pylsl is required for LSL streaming functionality."
     fi
   else
-    echo "✓ pylsl is properly installed."
+    PYLSL_VERSION=$("$PROJECT_ROOT/.venv/bin/pip" show pylsl | grep "Version" | awk '{print $2}')
+    echo "✓ pylsl is properly installed (version $PYLSL_VERSION)"
   fi
 else
   echo "Warning: Python virtual environment not found at $PROJECT_ROOT/.venv"

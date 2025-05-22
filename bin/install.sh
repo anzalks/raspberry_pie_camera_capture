@@ -169,14 +169,30 @@ pip_install_as_user() {
 echo "Installing Python dependencies..."
 pip_install_as_user install --upgrade pip setuptools wheel
 
-# Install pylsl with explicit version
-echo "Installing pylsl version 1.13.0 (to match liblsl)..."
-# Always use the explicit version 1.13.0 to avoid version detection issues
-if ! pip_install_as_user install pylsl==1.13.0; then
-  echo -e "${YELLOW}Failed to install pylsl 1.13.0, trying latest version...${NC}"
-  if ! pip_install_as_user install pylsl; then
-    echo -e "${RED}ERROR: Failed to install pylsl. LSL functionality will not work.${NC}"
+# Install pylsl with appropriate version
+echo "Installing pylsl (compatible with older liblsl)..."
+# Try several older versions of pylsl that are actually available in PyPI
+# If these fail, fall back to the latest version
+if ! pip_install_as_user install pylsl==1.12.2; then
+  echo -e "${YELLOW}Failed to install pylsl 1.12.2, trying version 1.15.0...${NC}"
+  if ! pip_install_as_user install pylsl==1.15.0; then
+    echo -e "${YELLOW}Failed to install pylsl 1.15.0, trying version 1.16.1...${NC}"
+    if ! pip_install_as_user install pylsl==1.16.1; then
+      echo -e "${YELLOW}Failed to install specific pylsl versions, trying latest version...${NC}"
+      if ! pip_install_as_user install pylsl; then
+        echo -e "${RED}ERROR: Failed to install pylsl. LSL functionality will not work.${NC}"
+      else
+        echo -e "${GREEN}Installed latest pylsl version.${NC}"
+        echo -e "${YELLOW}Note: Using the latest pylsl with an older liblsl may cause compatibility issues.${NC}"
+      fi
+    else
+      echo -e "${GREEN}Successfully installed pylsl 1.16.1${NC}"
+    fi
+  else
+    echo -e "${GREEN}Successfully installed pylsl 1.15.0${NC}"
   fi
+else
+  echo -e "${GREEN}Successfully installed pylsl 1.12.2${NC}"
 fi
 
 # Install additional Python dependencies from requirements

@@ -79,7 +79,7 @@ check_lsl_compatibility() {
   echo "Checking LSL compatibility..."
   
   # Only check if both prerequisites are installed
-  if ! ldconfig -p | grep -q "liblsl.so" && [ ! -f "/usr/local/lib/liblsl.so" ] && [ ! -f "/usr/lib/liblsl.so" ]; then
+  if ! ldconfig -p | grep -q "liblsl\.so" && [ ! -f "/usr/local/lib/liblsl.so" ] && [ ! -f "/usr/lib/liblsl.so" ]; then
     echo "✗ Cannot check LSL compatibility: liblsl not installed"
     return 1
   fi
@@ -91,8 +91,13 @@ check_lsl_compatibility() {
   
   if ! "$PROJECT_ROOT/.venv/bin/pip" list | grep -q "pylsl"; then
     echo "✗ Cannot check LSL compatibility: pylsl not installed"
+    echo "  Try installing it with: $PROJECT_ROOT/.venv/bin/pip install pylsl==1.12.2"
     return 1
   fi
+  
+  # Check the installed pylsl version
+  PYLSL_VERSION=$("$PROJECT_ROOT/.venv/bin/pip" show pylsl | grep "Version" | awk '{print $2}')
+  echo "Detected pylsl version: $PYLSL_VERSION"
   
   # Create a simple test script
   local TEST_SCRIPT="/tmp/test_lsl_$$.py"
@@ -121,7 +126,10 @@ EOF
   else
     echo "✗ LSL compatibility test failed."
     echo "  This may indicate version incompatibility between liblsl and pylsl."
-    echo "  Try reinstalling both with: sudo bin/install.sh"
+    echo "  Try reinstalling pylsl with a compatible version:"
+    echo "  $PROJECT_ROOT/.venv/bin/pip install pylsl==1.12.2"
+    echo "  If that fails, try: $PROJECT_ROOT/.venv/bin/pip install pylsl==1.15.0"
+    echo "  Or: $PROJECT_ROOT/.venv/bin/pip install pylsl==1.16.1"
     rm -f "$TEST_SCRIPT"
     return 1
   fi

@@ -166,9 +166,15 @@ If you encounter errors with LSL functionality:
    .venv/bin/pip show pylsl
    ```
 
-3. Reinstall liblsl and pylsl if needed:
+3. If you need to reinstall pylsl with a compatible version, try these commands in order:
    ```bash
-   sudo bin/install.sh
+   # Try these versions in sequence until one works
+   .venv/bin/pip install pylsl==1.12.2
+   .venv/bin/pip install pylsl==1.15.0
+   .venv/bin/pip install pylsl==1.16.1
+   
+   # As a last resort, try the latest version
+   .venv/bin/pip install pylsl
    ```
 
 4. Test compatibility:
