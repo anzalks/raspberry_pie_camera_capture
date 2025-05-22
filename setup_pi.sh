@@ -169,6 +169,27 @@ fi
 
 # --- Python Virtual Environment and Project Installation ---
 
+echo "Setting up Python virtual environment and project..."
+
+# --- Setup Recordings Directory Structure ---
+echo "Setting up recordings directory structure..."
+RECORDINGS_DIR="$(pwd)/recordings"
+TODAY_DIR="$RECORDINGS_DIR/$(date +%Y-%m-%d)"
+
+# Create directories with proper permissions
+echo "Creating recordings directories: $TODAY_DIR"
+mkdir -p "$TODAY_DIR"
+
+# Set proper ownership and permissions
+if [ -n "$SUDO_USER" ]; then
+  echo "Setting ownership to $SUDO_USER for recordings directory"
+  chown -R "$SUDO_USER:$SUDO_USER" "$RECORDINGS_DIR"
+fi
+chmod -R 755 "$RECORDINGS_DIR"
+echo "Set proper permissions for recordings directory"
+
+# --- Python Virtual Environment and Project Installation ---
+
 echo "Attempting to set up Python virtual environment and install project..."
 
 # Check if running via sudo and get the original user
@@ -342,7 +363,7 @@ echo "Setting up camera permissions and dependencies..."
 
 # Install necessary camera-related packages if not already installed
 echo "Installing camera utilities and tools..."
-apt install -y v4l-utils libcamera-apps libcamera-tools media-ctl python3-libcamera
+apt install -y v4l-utils libcamera-apps libcamera-tools python3-libcamera
 
 # Set camera group permissions to allow non-root access
 echo "Setting camera group permissions..."
