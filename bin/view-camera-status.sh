@@ -244,7 +244,7 @@ show_dashboard() {
         echo
         
         #
-        # RECORDING STATUS SECTION - IMPROVED DETECTION
+        # RECORDING STATUS SECTION - More reliable detection
         #
         echo "=== RECORDING STATUS ==="
         
@@ -258,28 +258,48 @@ show_dashboard() {
             rm -f "/tmp/camera_recording_stop_$$.tmp"
         fi
         
-        # Also check logs for recording status
-        recent_start=$(sudo journalctl -u $SERVICE_NAME -n 200 2>/dev/null | grep -iE "recording started|notification.*start|ntfy.*start|start recording" | grep -v "Error|timed out" | tail -1)
-        recent_stop=$(sudo journalctl -u $SERVICE_NAME -n 50 2>/dev/null | grep -iE "recording stopped|notification.*stop|ntfy.*stop|stop recording" | grep -v "Error|timed out" | tail -1)
+        # Search logs with improved patterns
+        recent_start=$(sudo journalctl -u $SERVICE_NAME -n 200 2>/dev/null | grep -iE "recording (started|active)|ntfy.*start|notification.*start" | grep -v "Error|timed out|To start recording" | tail -1)
+        recent_stop=$(sudo journalctl -u $SERVICE_NAME -n 100 2>/dev/null | grep -iE "recording stopped|ntfy.*stop|notification.*stop" | grep -v "Error|timed out|To stop recording" | tail -1)
         
-        # Determine status based on timestamps
+        # Parse timestamps and determine status
         if [ -n "$recent_start" ]; then
-            start_time=$(date -d "$(echo "$recent_start" | grep -oE "[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}" | tail -1)" +%s 2>/dev/null || echo 0)
-            if [ -n "$recent_stop" ]; then
-                stop_time=$(date -d "$(echo "$recent_stop" | grep -oE "[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}" | tail -1)" +%s 2>/dev/null || echo 0)
-                if [ $start_time -gt $stop_time ]; then
+            start_timestamp=$(echo "$recent_start" | grep -oE "[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}" | head -1)
+            if [ -n "$start_timestamp" ]; then
+                start_time=$(date -d "$start_timestamp" +%s 2>/dev/null || echo "0")
+                
+                if [ -n "$recent_stop" ]; then
+                    stop_timestamp=$(echo "$recent_stop" | grep -oE "[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}" | head -1)
+                    if [ -n "$stop_timestamp" ]; then
+                        stop_time=$(date -d "$stop_timestamp" +%s 2>/dev/null || echo "0")
+                        
+                        # Compare timestamps
+                        if [ "$start_time" -gt "$stop_time" ]; then
+                            RECORDING_STATUS="active"
+                            REC_START_TIME=$start_time
+                        else
+                            RECORDING_STATUS="inactive"
+                        fi
+                    else
+                        # No valid stop timestamp, assume active
+                        RECORDING_STATUS="active"
+                        REC_START_TIME=$start_time
+                    fi
+                else
+                    # No stop message at all, assume active
                     RECORDING_STATUS="active"
                     REC_START_TIME=$start_time
-                else
-                    RECORDING_STATUS="inactive"
                 fi
-            else
-                RECORDING_STATUS="active"
-                REC_START_TIME=$start_time
             fi
         fi
         
-        # Display recording status with appropriate visuals
+        # Additional direct check for current recording status
+        recording_check=$(sudo journalctl -u $SERVICE_NAME -n 50 2>/dev/null | grep -iE "currently recording|active recording|recording in progress|writing frame" | tail -1)
+        if [ -n "$recording_check" ]; then
+            RECORDING_STATUS="active"
+        fi
+        
+        # Display based on final status determination
         if [ "$RECORDING_STATUS" = "active" ]; then
             printf "%-20s %s\n" "Status:" "⚫ ACTIVE [Press P to stop]"
             
@@ -409,46 +429,73 @@ show_dashboard() {
             lsl_text=$(echo "$lsl_setup" | sed -E 's/.*INFO - //g')
             printf "%-20s %s\n" "LSL Stream:" "$(truncate_text "$lsl_text" 55)"
             
-            # Get actual LSL data with 0.5s window (extract latest entries)
-            lsl_data=$(sudo journalctl -u $SERVICE_NAME -n 1000 2>/dev/null | grep -iE "lsl output|sending lsl|lsl data|metadata" | grep -v "Error" | grep -E "\[.*\]" | tail -5)
-            if [ -n "$lsl_data" ]; then
-                echo
-                echo "Recent LSL data (last 0.5s window):"
-                printf "%-15s %-12s %-15s\n" "TIMESTAMP" "REC_STATUS" "FRAME_NUM"
+            # Get raw LSL output first - get more entries to find actual data patterns
+            lsl_raw=$(sudo journalctl -u $SERVICE_NAME -n 1000 2>/dev/null | grep -iE "lsl output|sending lsl|lsl data|metadata" | grep -v "Error" | tail -10)
+            
+            # First try with the expected format
+            echo
+            echo "Recent LSL data:"
+            
+            # Examine some raw entries to help diagnose the format
+            raw_samples=$(echo "$lsl_raw" | head -3)
+            echo "Format examples:"
+            echo "$raw_samples" | sed 's/^/  /'
+            echo
+            
+            # Try different parsing approaches
+            
+            # Try to find any arrays in the data
+            array_data=$(echo "$lsl_raw" | grep -Eo "\[[0-9.,]+\]" | tail -5)
+            if [ -n "$array_data" ]; then
+                printf "%-15s %-12s %-15s\n" "TIMESTAMP" "REC_STATUS" "FRAME_NUM" 
                 echo "------------------------------------------------"
                 
-                # Parse and format LSL data into table
-                echo "$lsl_data" | while read line; do
-                    # Extract the data inside brackets
-                    data=$(echo "$line" | grep -oE "\[.*\]")
-                    if [ -n "$data" ]; then
-                        # Extract individual values from array
-                        timestamp=$(echo "$data" | grep -oE "[0-9]+\.[0-9]+" | head -1)
-                        is_recording=$(echo "$data" | grep -oE "[0-9]+\.[0-9]+" | sed -n '2p')
-                        frame_num=$(echo "$data" | grep -oE "[0-9]+\.[0-9]+" | sed -n '3p')
+                # Try to parse each array
+                echo "$array_data" | while read -r array; do
+                    # Remove brackets
+                    values=$(echo "$array" | sed 's/\[//;s/\]//')
+                    
+                    # Split by comma if they exist
+                    IFS=',' read -ra fields <<< "$values" 2>/dev/null
+                    
+                    # If we have multiple fields
+                    if [ ${#fields[@]} -ge 3 ]; then
+                        timestamp="${fields[0]}"
+                        recording="${fields[1]}"
+                        frame="${fields[2]}"
                         
-                        if [ -n "$timestamp" ] && [ -n "$is_recording" ] && [ -n "$frame_num" ]; then
-                            # Format time for display
-                            time_display=$(date -d "@$timestamp" '+%H:%M:%S.%3N' 2>/dev/null || echo "$timestamp")
-                            
-                            # Format recording status
-                            if [ "$is_recording" = "1" ] || [ "$is_recording" = "1.0" ]; then
-                                rec_display="YES"
-                            else
-                                rec_display="NO"
-                            fi
-                            
-                            # Display as table row
-                            printf "%-15s %-12s %-15s\n" "$time_display" "$rec_display" "$frame_num"
+                        # Format recording status
+                        if [ "$recording" = "1" ] || [ "$recording" = "1.0" ]; then
+                            rec_status="YES"
                         else
-                            # Just show raw data if parsing failed
-                            echo "  Data: $data"
+                            rec_status="NO"
                         fi
+                        
+                        printf "%-15s %-12s %-15s\n" "$timestamp" "$rec_status" "$frame"
+                    else
+                        # Single number - try to show what it might be
+                        echo "  Value: $values (unknown format)"
                     fi
                 done
             else
-                echo "No recent LSL data transmissions found"
-                echo "LSL data should appear as [timestamp, recording_status, frame_number]"
+                # Try to extract data from text descriptions
+                data_lines=$(echo "$lsl_raw" | grep -iE "frame|sample|marker|timestamp" | tail -5)
+                if [ -n "$data_lines" ]; then
+                    echo "LSL Data (text format):"
+                    echo "$data_lines" | while read -r line; do
+                        # Try to extract meaningful parts
+                        timestamp=$(echo "$line" | grep -oE "[0-9]+\.[0-9]+" | head -1)
+                        frame=$(echo "$line" | grep -oE "frame [0-9]+" | grep -oE "[0-9]+")
+                        
+                        if [ -n "$timestamp" ] || [ -n "$frame" ]; then
+                            data_text=$(echo "$line" | sed -E 's/.*INFO - //g')
+                            echo "  $(truncate_text "$data_text" 70)"
+                        fi
+                    done
+                else
+                    echo "No structured LSL data found. Check data format."
+                    echo "Expected format: [timestamp, recording_status, frame_number]"
+                fi
             fi
         else
             echo "No LSL stream configuration found"
