@@ -2,18 +2,18 @@
 
 # Camera settings
 camera:
-  width: 1280
-  height: 720
-  fps: 30
+  width: 400
+  height: 400
+  fps: 100
   codec: h264
-  container: mp4
-  preview: true  # Enable preview window by default
+  container: mkv
+  preview: true
   enable_crop: true  # Enable Global Shutter Camera support by default
 
 # Storage settings
 storage:
   save_video: true
-  output_dir: recordings/  # Will be updated with date folder
+  output_dir: recordings/
   create_date_folders: true
 
 # Buffer settings
@@ -31,7 +31,7 @@ lsl:
 
 # Performance settings
 performance:
-  capture_cpu_core: null  # null means no specific core assignment
+  capture_cpu_core: null
   writer_cpu_core: null
   lsl_cpu_core: null
   ntfy_cpu_core: null
@@ -48,5 +48,5 @@ audio:
 # Terminal UI settings
 terminal:
   colors_enabled: true
-  use_unicode: true  # Enable unicode characters for better display
-  update_frequency: 0.2  # Update 5 times per second for smooth display 
+  use_unicode: true
+  update_frequency: 0.2 

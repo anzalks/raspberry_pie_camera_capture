@@ -414,10 +414,7 @@ class LSLCameraStreamer:
         if self.codec.lower() == 'h264' or self.codec.lower() == 'libx264':
             # Try common H.264 fourccs, prefer 'X264' if available, fallback to 'H264'
             # Note: OpenCV's VideoWriter might have limited FourCC support on some platforms.
-            # Using 'mp4v' for .mp4 or relying on container to imply might be more robust
-            # if direct H.264 doesn't work.
             self.fourcc = cv2.VideoWriter_fourcc(*'X264') 
-            # self.fourcc = cv2.VideoWriter_fourcc(*'H264')
         elif self.codec.lower() == 'h265':
             self.fourcc = cv2.VideoWriter_fourcc(*'HEVC')
         elif self.codec.lower() == 'mjpg':
@@ -427,6 +424,8 @@ class LSLCameraStreamer:
 
         # Generate a unique filename for each recording session
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Ensure we're using MKV container for robustness
         self.output_filename = os.path.join(self.output_path, f"recording_{timestamp}.mkv")
         
         print(f"Video writer initialized. Output to: {self.output_filename}, Codec: {self.codec}, FPS: {self.actual_fps:.2f}")
@@ -492,7 +491,7 @@ class LSLCameraStreamer:
         # Video stream info
         # Using BGR8 for pixel format as OpenCV uses BGR by default
         info = StreamInfo(name=self.stream_name, type='Video', channel_count=self.num_channels, 
-                          nominal_srate=self.target_fps, channel_format=cf_double, # Use direct cf_double
+                          nominal_srate=self.target_fps, channel_format=cf_double, 
                           source_id=self.source_id)
         
         # Add metadata to the stream info
@@ -507,16 +506,18 @@ class LSLCameraStreamer:
         desc.append_child_value("output_path", self.output_path if self.output_path else "N/A")
         desc.append_child_value("codec", self.codec)
         desc.append_child_value("is_global_shutter", str(self.is_global_shutter))
+        desc.append_child_value("ntfy_notification_active", "False")  # Initial state is False
 
         self.outlet = StreamOutlet(info)
         print(f"LSL video stream '{self.stream_name}' created.")
 
         # Recording status stream info
-        status_info = StreamInfo(name=f"{self.stream_name}_Status", type='Markers', channel_count=1,
-                                 nominal_srate=0, channel_format=cf_string, # Use direct cf_string
+        status_info = StreamInfo(name=f"{self.stream_name}_Status", type='Markers', channel_count=3,
+                                 nominal_srate=0, channel_format=cf_string,
                                  source_id=f"{self.source_id}_status")
         status_desc = status_info.desc()
-        status_desc.append_child_value("description", "Indicates recording status (RECORDING_START, RECORDING_STOP) and frame drops.")
+        status_desc.append_child_value("description", "Indicates recording status (RECORDING_START, RECORDING_STOP), frame drops, and ntfy notification active status.")
+        status_desc.append_child_value("column_names", "event,ntfy_notification_active,camera_frame_no")
         self.status_outlet = StreamOutlet(status_info)
         print(f"LSL status stream '{self.stream_name}_Status' created.")
 
@@ -684,7 +685,11 @@ class LSLCameraStreamer:
             except Full:
                 self.frames_dropped_count += 1
                 if self.status_outlet and self.frame_count % (int(self.actual_fps) * 5) == 0: # Log every 5s
-                    self.status_outlet.push_sample([f"FRAME_DROPPED_QUEUE_FULL_Count_{self.frames_dropped_count}"], local_clock())
+                    self.status_outlet.push_sample([
+                        f"FRAME_DROPPED_QUEUE_FULL_Count_{self.frames_dropped_count}",
+                        str(self.recording_triggered),
+                        str(self.frame_count)
+                    ], local_clock())
                 # print(f"Warning: Frame queue full. Dropped frame {self.frame_count}. Total dropped: {self.frames_dropped_count}")
 
         # Push to LSL if enabled
@@ -698,11 +703,16 @@ class LSLCameraStreamer:
                 # Frame is HxWxC (e.g., 480x640x3). Flatten to 1D array.
                 flat_frame = frame.flatten().astype(float).tolist()
                 self.outlet.push_sample(flat_frame, timestamp)
+                
+                # Also push frame metadata to status outlet
+                if self.status_outlet and self.frame_count % 10 == 0:  # Every 10th frame to reduce data volume
+                    self.status_outlet.push_sample([
+                        "FRAME_INFO",
+                        str(self.recording_triggered),
+                        str(self.frame_count)
+                    ], timestamp)
             except Exception as e:
                 print(f"Error pushing frame to LSL: {e}")
-                # traceback.print_exc() # Potentially too verbose
-                # Attempt to re-initialize LSL outlet on error?
-                # For now, just print error and continue.
 
     def _initialize_buffer_trigger(self):
         """Initialize the buffer trigger manager."""
@@ -744,7 +754,11 @@ class LSLCameraStreamer:
              self._initialize_video_writer()
 
         if self.status_outlet:
-            self.status_outlet.push_sample(["RECORDING_START"], local_clock())
+            self.status_outlet.push_sample([
+                "RECORDING_START",
+                "True",  # Set ntfy_notification_active to True
+                str(self.frame_count)
+            ], local_clock())
         
         # Write buffered frames
         if self.save_video and self.frame_queue is not None:
@@ -757,7 +771,11 @@ class LSLCameraStreamer:
                     self.frames_dropped_count += 1
                     print(f"Warning: Frame queue full while writing buffered frames. Dropped. Total dropped: {self.frames_dropped_count}")
                     if self.status_outlet:
-                         self.status_outlet.push_sample([f"FRAME_DROPPED_BUFFER_QUEUE_FULL_Count_{self.frames_dropped_count}"], local_clock())
+                         self.status_outlet.push_sample([
+                             f"FRAME_DROPPED_BUFFER_QUEUE_FULL_Count_{self.frames_dropped_count}",
+                             "True",  # ntfy_notification_active is True
+                             str(self.frame_count)
+                         ], local_clock())
             print(f"Added {num_buffered_written} buffered frames to writer queue.")
         
         # Push buffered frames to LSL
@@ -776,7 +794,11 @@ class LSLCameraStreamer:
         self.waiting_for_trigger = True # Go back to waiting for a trigger
 
         if self.status_outlet:
-            self.status_outlet.push_sample(["RECORDING_STOP"], local_clock())
+            self.status_outlet.push_sample([
+                "RECORDING_STOP", 
+                "False",  # Set ntfy_notification_active to False
+                str(self.frame_count)
+            ], local_clock())
         
         # If we were saving video, the writer thread handles its own closure based on stop_writer_event.
         # However, if we want to finalize the current file and start a new one on next trigger:
