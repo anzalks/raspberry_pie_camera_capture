@@ -166,15 +166,25 @@ def check_global_shutter_camera():
             media_devices = glob.glob('/dev/media*')
             for m_dev in media_devices:
                 try:
-                    # This command is kept for detailed topology, but primary detection is v4l2-ctl
-                    media_output = subprocess.check_output(['media-ctl', '-d', m_dev, '-p'],
+                    # On Bookworm media-ctl functionality moved to v4l2-ctl
+                    # Try v4l2-ctl first, fallback to media-ctl if available
+                    try:
+                        media_output = subprocess.check_output(['v4l2-ctl', '--device', m_dev, '--info'],
                                                            text=True, stderr=subprocess.PIPE)
+                    except (subprocess.CalledProcessError, FileNotFoundError):
+                        # Fallback to media-ctl for older systems
+                        try:
+                            media_output = subprocess.check_output(['media-ctl', '-d', m_dev, '-p'],
+                                                               text=True, stderr=subprocess.PIPE)
+                        except (subprocess.CalledProcessError, FileNotFoundError):
+                            continue  # Skip to next device if both commands fail
+                            
                     if 'imx296' in media_output.lower():
                         print(f"\nSensor details from {m_dev}:")
                         print(media_output)
-                        break # Show details for the first GS camera found via media-ctl
+                        break # Show details for the first GS camera found
                 except (subprocess.CalledProcessError, FileNotFoundError):
-                    pass # media-ctl might not be installed or device not found
+                    pass # Command might not be installed or device not found
                     
         if not gs_detected:
             # Fallback: Try libcamera-hello for detection if v4l2-ctl fails
