@@ -176,28 +176,34 @@ fi
 echo "Setting up Python virtual environment and project..."
 
 # Create Python virtual environment
-echo "Creating Python virtual environment..."
+echo "Creating Python virtual environment at $PROJECT_DIR/$VENV_DIR..."
 python3 -m venv "$PROJECT_DIR/$VENV_DIR"
-echo "Virtual environment created at $PROJECT_DIR/$VENV_DIR"
+echo "Virtual environment created."
 
-# Set proper ownership
+# Set proper ownership if SUDO_USER is set
 if [ -n "$SUDO_USER" ]; then
-  echo "Setting ownership for virtual environment"
+  echo "Setting ownership for virtual environment to $SUDO_USER"
   chown -R "$SUDO_USER:$SUDO_USER" "$PROJECT_DIR/$VENV_DIR"
 fi
 
-# Install required Python packages in the virtual environment
-echo "Installing required Python packages in virtual environment..."
-# Use the Python interpreter from the virtual environment
+# Install/Upgrade pip, wheel, setuptools in the virtual environment
+echo "Upgrading pip and installing wheel, setuptools in virtual environment..."
 "$PROJECT_DIR/$VENV_DIR/bin/pip" install --upgrade pip
 "$PROJECT_DIR/$VENV_DIR/bin/pip" install wheel setuptools
+
+# Install picamera2 and importlib-metadata within the virtual environment
+echo "Installing picamera2 and importlib-metadata in virtual environment..."
+"$PROJECT_DIR/$VENV_DIR/bin/pip" install picamera2 importlib-metadata
+
+# Install other Python packages listed in requirements.txt or directly
+echo "Installing other Python packages (pylsl, numpy, scipy) in virtual environment..."
 "$PROJECT_DIR/$VENV_DIR/bin/pip" install pylsl numpy scipy
+
+# Install the project itself in editable mode
+echo "Installing project in editable mode..."
 "$PROJECT_DIR/$VENV_DIR/bin/pip" install -e "$PROJECT_DIR"
 
-echo "Installing picamera2 in virtual environment..."
-"$PROJECT_DIR/$VENV_DIR/bin/pip" install picamera2
-
-echo "Python virtual environment setup complete with pylsl installed."
+echo "Python virtual environment setup complete."
 
 # --- Setup Recordings Directory Structure ---
 echo "Setting up recordings directory structure..."
@@ -353,243 +359,66 @@ echo "Camera setup complete. A reboot is recommended to ensure camera detection.
 # --- Automatic Service Installation ---
 echo "Installing camera capture service to start automatically at boot..."
 
+# Define PROJECT_DIR absolutely for the service file
+ABS_PROJECT_DIR=$(readlink -f "$PROJECT_DIR")
+ABS_VENV_DIR="$ABS_PROJECT_DIR/$VENV_DIR"
+ABS_CONFIG_FILE="$ABS_PROJECT_DIR/config.yaml"
+# Define the ExecStart command carefully
+EXEC_START_COMMAND="$ABS_VENV_DIR/bin/python $ABS_PROJECT_DIR/src/raspberry_pi_lsl_stream/camera_capture.py --config $ABS_CONFIG_FILE"
+
+
 # Check if the service file already exists
 if [ -f "/etc/systemd/system/raspie-capture.service" ]; then
     echo "Service file already exists. Reinstalling..."
-    # Stop the service if it's running
     systemctl stop raspie-capture.service 2>/dev/null || true
+    systemctl disable raspie-capture.service 2>/dev/null || true # Ensure it's disabled before re-creating
 fi
 
-# Use the raspie-capture-service.sh script if it exists
-if [ -f "$PROJECT_DIR/raspie-capture-service.sh" ]; then
-    echo "Running service installation script..."
-    bash "$PROJECT_DIR/raspie-capture-service.sh"
-else
-    echo "WARNING: raspie-capture-service.sh not found. Creating service directly..."
-    
-    # Create the systemd service file
-    cat << EOF > "/etc/systemd/system/raspie-capture.service"
+echo "Creating systemd service file: /etc/systemd/system/raspie-capture.service"
+# Create the systemd service file
+cat << EOF > "/etc/systemd/system/raspie-capture.service"
 [Unit]
-Description=Raspberry Pi Audio/Video Capture Service
-After=network.target
+Description=Raspberry Pi LSL Camera Capture Service
+After=network.target multi-user.target
+Requires=network.target
 
 [Service]
 Type=simple
 User=$SUDO_USER
-WorkingDirectory=$PROJECT_DIR
-ExecStart=$PROJECT_DIR/$VENV_DIR/bin/python $PROJECT_DIR/src/raspberry_pi_lsl_stream/camera_capture.py --config $CONFIG_FILE
-Environment="PATH=$PROJECT_DIR/$VENV_DIR/bin:/usr/local/bin:/usr/bin:/bin"
+Group=$(id -gn $SUDO_USER)
+WorkingDirectory=$ABS_PROJECT_DIR
+ExecStart=$EXEC_START_COMMAND
+Environment="PATH=$ABS_VENV_DIR/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 Environment="PYTHONUNBUFFERED=1"
-Environment="PYTHONPATH=$PROJECT_DIR"
-Environment="TERM=xterm-256color"
+Environment="PYTHONPATH=$ABS_PROJECT_DIR"
+Environment="DISPLAY=:0" # May be needed if picamera2 preview is on and service runs headless
 StandardOutput=journal+console
 StandardError=journal+console
 Restart=on-failure
-RestartSec=5s
+RestartSec=10s
+TimeoutStopSec=30s
+Nice=-5 # Give it a bit more priority if needed
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-    # Set appropriate permissions
-    chmod 644 "/etc/systemd/system/raspie-capture.service"
+# Set appropriate permissions for the service file
+chmod 644 "/etc/systemd/system/raspie-capture.service"
 
-    # Create management script
-    cat << 'EOF' > "$PROJECT_DIR/raspie-service.sh"
-#!/bin/bash
+echo "Reloading systemd daemon..."
+systemctl daemon-reload
 
-# Define colors for output
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+echo "Enabling the raspie-capture service to start on boot..."
+systemctl enable raspie-capture.service
 
-# Function to check if the service is running
-check_status() {
-    status=$(systemctl is-active raspie-capture.service)
-    if [ "$status" = "active" ]; then
-        echo -e "${GREEN}Capture service is running.${NC}"
-    else
-        echo -e "${RED}Capture service is not running.${NC}"
-    fi
-    
-    # Show detailed status
-    echo -e "${YELLOW}Detailed status:${NC}"
-    systemctl status raspie-capture.service
-}
+echo "Attempting to start the raspie-capture service..."
+systemctl start raspie-capture.service
 
-# Function to show live monitoring
-show_monitor() {
-    # Set terminal to support color and unicode
-    export TERM=xterm-256color
-    
-    echo -e "${GREEN}=== Raspberry Pi Camera Status Monitor ===${NC}"
-    echo -e "${YELLOW}Press Ctrl+C to exit${NC}"
-    echo ""
-    
-    # Show current recordings directory
-    TODAY=$(date +%Y-%m-%d)
-    RECORDINGS_DIR="$HOME/raspie_recordings/$TODAY"
-    if [ -d "$RECORDINGS_DIR" ]; then
-        echo -e "${CYAN}Today's recordings (${TODAY}):${NC}"
-        find "$RECORDINGS_DIR" -type f | sort
-        echo ""
-    else
-        echo -e "${YELLOW}No recordings yet today.${NC}"
-        echo ""
-    fi
-    
-    # Show live logs with camera status
-    echo -e "${GREEN}Showing live camera output:${NC}"
-    sudo journalctl -u raspie-capture.service -f -o cat
-}
-
-# Main command processing
-case "$1" in
-    start)
-        echo -e "${GREEN}Starting capture service...${NC}"
-        sudo systemctl start raspie-capture.service
-        check_status
-        ;;
-    stop)
-        echo -e "${YELLOW}Stopping capture service...${NC}"
-        sudo systemctl stop raspie-capture.service
-        check_status
-        ;;
-    restart)
-        echo -e "${YELLOW}Restarting capture service...${NC}"
-        sudo systemctl restart raspie-capture.service
-        check_status
-        ;;
-    status)
-        check_status
-        ;;
-    logs)
-        echo -e "${GREEN}Showing logs:${NC}"
-        sudo journalctl -u raspie-capture.service -f
-        ;;
-    monitor)
-        echo -e "${GREEN}Starting live monitoring mode...${NC}"
-        "$(dirname "$0")/watch-raspie.sh"
-        ;;
-    enable)
-        echo -e "${GREEN}Enabling capture service to start on boot...${NC}"
-        sudo systemctl enable raspie-capture.service
-        echo -e "${GREEN}Service will now start automatically on boot.${NC}"
-        ;;
-    disable)
-        echo -e "${YELLOW}Disabling capture service from starting on boot...${NC}"
-        sudo systemctl disable raspie-capture.service
-        echo -e "${YELLOW}Service will no longer start automatically on boot.${NC}"
-        ;;
-    trigger)
-        echo -e "${GREEN}Sending start trigger notification...${NC}"
-        # Read topic from config.yaml if possible
-        if command -v python3 > /dev/null && [ -f "$PROJECT_DIR/config.yaml" ]; then
-            ntfy_topic=$(python3 -c "import yaml; print(yaml.safe_load(open('$PROJECT_DIR/config.yaml', 'r'))['remote']['ntfy_topic'])")
-        else
-            ntfy_topic="raspie-camera-test"
-        fi
-        curl -d "start recording" ntfy.sh/$ntfy_topic
-        echo -e "${GREEN}Trigger sent to topic '$ntfy_topic'. Audio/video capture should start recording.${NC}"
-        ;;
-    stop-recording)
-        echo -e "${YELLOW}Sending stop recording notification...${NC}"
-        # Read topic from config.yaml if possible
-        if command -v python3 > /dev/null && [ -f "$PROJECT_DIR/config.yaml" ]; then
-            ntfy_topic=$(python3 -c "import yaml; print(yaml.safe_load(open('$PROJECT_DIR/config.yaml', 'r'))['remote']['ntfy_topic'])")
-        else
-            ntfy_topic="raspie-camera-test"
-        fi
-        curl -d "stop recording" ntfy.sh/$ntfy_topic
-        echo -e "${YELLOW}Stop signal sent to topic '$ntfy_topic'. Audio/video capture should stop recording.${NC}"
-        ;;
-    *)
-        echo "Usage: $0 {start|stop|restart|status|logs|monitor|enable|disable|trigger|stop-recording}"
-        exit 1
-        ;;
-esac
-
-exit 0
-EOF
-
-    # Make management script executable
-    chmod +x "$PROJECT_DIR/raspie-service.sh"
-    chown $SUDO_USER:$SUDO_USER "$PROJECT_DIR/raspie-service.sh"
-    
-    # Enable and start the service
-    echo "Enabling the service to start at boot..."
-    systemctl daemon-reload
-    systemctl enable raspie-capture.service
-fi
-
-# Start the service immediately
-echo "Starting the service now..."
-
-# Create the base recordings directory
-echo "Creating base recordings directory..."
-RECORDINGS_DIR="/home/$SUDO_USER/raspie_recordings"
-mkdir -p "$RECORDINGS_DIR"
-chown $SUDO_USER:$SUDO_USER "$RECORDINGS_DIR"
-echo "Recordings will be saved to $RECORDINGS_DIR/YYYY-MM-DD/{videos|audio}/"
-
-# --- Setup Camera Permissions ---
-echo "Setting up camera permissions and dependencies..."
-
-# Install necessary camera-related packages if not already installed
-echo "Installing camera utilities and tools..."
-apt install -y v4l-utils libcamera-apps libcamera-tools python3-libcamera
-
-# Set proper permissions for camera access
-echo "Setting camera group permissions..."
-usermod -a -G video $SUDO_USER
-usermod -a -G input $SUDO_USER
-echo "Added $SUDO_USER to video and input groups"
-
-# Create and set up camera lock file with proper permissions
-echo "Setting up camera lock file with proper permissions..."
-rm -f /tmp/raspie_camera.lock
-touch /tmp/raspie_camera.lock
-chmod 666 /tmp/raspie_camera.lock
-chown $SUDO_USER:$SUDO_USER /tmp/raspie_camera.lock
-echo "Camera lock file created with proper permissions"
-
-# Fix permissions for camera device nodes if they exist
-echo "Setting permissions for ALL camera devices..."
-for dev in /dev/video*; do
-    if [ -e "$dev" ]; then
-        echo "Setting permissions for $dev"
-        chmod 666 "$dev"
-    fi
-done
-
-# Ensure camera modules are loaded
-echo "Checking if camera modules are loaded..."
-if ! lsmod | grep -q "^videodev"; then
-    echo "Loading camera modules..."
-    modprobe videodev 2>/dev/null || true
-    modprobe v4l2_common 2>/dev/null || true
-fi
-
-# Ensure camera is enabled in config
-echo "Checking if camera is enabled in raspi-config..."
-if command -v raspi-config > /dev/null; then
-    echo "Enabling camera interface via raspi-config..."
-    raspi-config nonint do_camera 0
-    echo "Camera interface enabled"
-fi
-
-# Enable preview in config
-echo "Updating config to enable preview..."
-if [ -f "$CONFIG_FILE" ]; then
-    sed -i 's/preview: false/preview: true/' "$CONFIG_FILE"
-    echo "Updated preview setting in config file"
-else
-    echo "WARNING: Config file not found, skipping preview update"
-fi
-
-echo "Camera setup complete. A reboot is recommended to ensure camera detection."
+# Give it a moment and check status
+sleep 5
+echo "Current status of raspie-capture.service:"
+systemctl status raspie-capture.service --no-pager || echo "Service might still be initializing or failed."
 
 # --- Camera Enablement Reminder --- 
 echo "-----------------------------------------------------" 
@@ -671,7 +500,7 @@ if systemctl is-active --quiet raspie-capture.service; then
     
     # Start showing live logs with timestamps
     echo -e "${GREEN}Live service output:${NC}"
-    sudo journalctl -u raspie-capture.service -f -o cat --output-fields=MESSAGE
+    sudo journalctl -u raspie-capture.service -f -o cat
 else
     # If not running as a service, check for direct process
     CAMERA_PID=$(pgrep -f "python.*camera_capture")
@@ -853,3 +682,11 @@ echo ""
 echo "A system reboot is recommended if you changed camera settings:"
 echo "sudo reboot"
 echo "-----------------------------------------------------" 
+
+echo "-----------------------------------------------------\" 
+echo "Installation script finished."
+echo "IMPORTANT: A REBOOT IS HIGHLY RECOMMENDED (sudo reboot)"
+echo " especially if this is a fresh install or camera settings were changed."
+echo "After reboot, check service status: sudo systemctl status raspie-capture.service"
+echo "And check logs: sudo journalctl -fu raspie-capture.service"
+echo "-----------------------------------------------------\" 
