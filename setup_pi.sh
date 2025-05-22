@@ -178,7 +178,7 @@ TODAY_DIR="$RECORDINGS_DIR/$(date +%Y-%m-%d)"
 
 # Create directories with proper permissions
 echo "Creating recordings directories: $TODAY_DIR"
-mkdir -p "$TODAY_DIR"
+mkdir -y "$TODAY_DIR"
 
 # Set proper ownership and permissions
 if [ -n "$SUDO_USER" ]; then
@@ -188,196 +188,18 @@ fi
 chmod -R 755 "$RECORDINGS_DIR"
 echo "Set proper permissions for recordings directory"
 
-# --- Python Virtual Environment and Project Installation ---
-
-echo "Attempting to set up Python virtual environment and install project..."
-
-# Check if running via sudo and get the original user
-if [ -z "$SUDO_USER" ]; then
-  echo "Warning: SUDO_USER variable not set. Cannot determine original user."
-  echo "Python environment setup will be skipped. Please run Phase 2 manually (see README)."
-else
-  echo "Running Python setup steps as user: $SUDO_USER"
-  
-  # Define the virtual environment path relative to the script's assumed location
-  # This assumes the script is run from the project root directory
-  VENV_DIR=".venv"
-  PROJECT_DIR=$(pwd) # Assuming the script is run from the project root
-
-  echo "Creating virtual environment in '$PROJECT_DIR/$VENV_DIR'..."
-  # Check if the venv directory already exists
-  if [ -d "$VENV_DIR" ]; then
-      echo "Virtual environment '$VENV_DIR' already exists. Skipping creation."
-  else
-      # Create the venv as the original user only if it doesn't exist
-      sudo -u "$SUDO_USER" python3 -m venv --system-site-packages "$VENV_DIR"
-      if [ $? -eq 0 ]; then
-          echo "Virtual environment created successfully."
-      else
-          echo "ERROR: Failed to create virtual environment."
-          # Exit or handle error appropriately if needed
-          exit 1 # Exit if venv creation fails
-      fi
-  fi
-  
-  # Create a pip.conf file to suppress the send2trash warnings
-  echo "Creating pip configuration to suppress warnings..."
-  mkdir -p "$VENV_DIR/pip"
-  PIP_CONF_DIR="$VENV_DIR/pip/pip.conf"
-  cat << EOF > "$PIP_CONF_DIR"
-[global]
-no-warn-script-location = true
-EOF
-  chown $SUDO_USER:$SUDO_USER "$PIP_CONF_DIR"
-  
-  # Now proceed with checks and installation assuming venv exists or was just created
-  if [ ! -f "$VENV_DIR/bin/activate" ]; then
-      echo "ERROR: Virtual environment activation script not found at '$VENV_DIR/bin/activate'."
-      echo "Cannot proceed with Python package installation."
-  else
-      # MEMORY-EFFICIENT APPROACH: Install packages one by one with pauses
-      echo "Using memory-efficient approach to install packages..."
-      
-      # Upgrade pip separately
-      echo "Upgrading pip..."
-      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install --upgrade pip --no-warn-script-location
-      sleep 2
-      
-      # Upgrade setuptools separately
-      echo "Upgrading setuptools..."
-      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install --upgrade setuptools --no-warn-script-location
-      sleep 2
-      
-      # Upgrade wheel separately
-      echo "Upgrading wheel..."
-      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install --upgrade wheel --no-warn-script-location
-      sleep 2
-      
-      # Install PyYAML
-      echo "Installing PyYAML..."
-      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install pyyaml --no-warn-script-location
-      sleep 2
-      
-      # Install core dependencies one by one to minimize memory usage
-      echo "Installing numpy..."
-      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install numpy
-      sleep 3
-      
-      echo "Installing OpenCV (headless version)..."
-      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install opencv-python-headless
-      sleep 3
-      
-      echo "Installing pylsl..."
-      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install pylsl
-      sleep 3
-      
-      echo "Installing additional dependencies..."
-      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install requests
-      sleep 2
-      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install ntfy
-      sleep 2
-      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install psutil
-      sleep 2
-      
-      echo "Installing project 'raspberry-pi-lsl-stream' in editable mode with reduced memory usage..."
-      # Install the project itself as the original user
-      # Use --no-build-isolation to reduce memory requirements
-      cd "$PROJECT_DIR"
-      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install -e . --no-build-isolation
-      
-      if [ $? -eq 0 ]; then
-          echo "Project installed successfully into the virtual environment."
-      else
-          echo "ERROR: Failed to install project using pip."
-          echo "If you're still experiencing memory issues, try installing dependencies manually one by one."
-          echo "Example: .venv/bin/pip install numpy && .venv/bin/pip install opencv-python-headless && .venv/bin/pip install pylsl"
-      fi
-  fi
-fi
-
-# --- Create default configuration file ---
-echo "Creating default configuration file..."
-CONFIG_FILE="$PROJECT_DIR/config.yaml"
-
-if [ -f "$CONFIG_FILE" ]; then
-    echo "Configuration file already exists. Backing up existing file..."
-    cp "$CONFIG_FILE" "$CONFIG_FILE.bak"
-fi
-
-# Create the default configuration file
-cat << EOF > "$CONFIG_FILE"
-# Raspberry Pi Camera Capture Configuration
-
-# Camera settings
-camera:
-  width: 400
-  height: 400
-  fps: 100
-  codec: mjpg
-  container: mkv
-  preview: true  # Enable preview by default
-  enable_crop: auto  # Can be true, false, or auto (detect Global Shutter Camera)
-
-# Storage settings
-storage:
-  save_video: true
-  output_dir: recordings
-  create_date_folders: true
-
-# Buffer settings
-buffer:
-  size: 20.0  # seconds
-  enabled: true
-
-# Remote control
-remote:
-  ntfy_topic: raspie-camera-test
-  
-# LSL settings
-lsl:
-  stream_name: VideoStream
-
-# Performance settings
-performance:
-  capture_cpu_core: null  # null means no specific core assignment
-  writer_cpu_core: null
-  lsl_cpu_core: null
-  ntfy_cpu_core: null
-
-# Audio settings
-audio:
-  sample_rate: 44100
-  channels: 1
-  bit_depth: 16
-  save_audio: true
-  audio_format: wav
-  show_preview: false
-EOF
-
-# Set appropriate permissions
-chown $SUDO_USER:$SUDO_USER "$CONFIG_FILE"
-echo "Default configuration file created at $CONFIG_FILE"
-
-# --- Camera Permissions Setup ---
+# --- Setup Camera Permissions ---
 echo "Setting up camera permissions and dependencies..."
 
 # Install necessary camera-related packages if not already installed
 echo "Installing camera utilities and tools..."
-apt install -y v4l-utils libcamera-apps libcamera-tools python3-libcamera
+apt install -y v4l-utils libcamera-apps libcamera-tools
 
-# Set camera group permissions to allow non-root access
+# Set proper permissions for camera access
 echo "Setting camera group permissions..."
-if getent group video > /dev/null; then
-    # Add user to the video group for camera access
-    usermod -a -G video $SUDO_USER
-    echo "Added $SUDO_USER to the video group for camera access"
-fi
-
-if getent group input > /dev/null; then
-    # Add user to the input group for camera access
-    usermod -a -G input $SUDO_USER
-    echo "Added $SUDO_USER to the input group for camera access"
-fi
+usermod -a -G video $SUDO_USER
+usermod -a -G input $SUDO_USER
+echo "Added $SUDO_USER to video and input groups"
 
 # Create and set up camera lock file with proper permissions
 echo "Setting up camera lock file with proper permissions..."
