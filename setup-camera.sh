@@ -16,7 +16,13 @@ fi
 
 echo "Step 1: Installing system dependencies..."
 apt update
-apt install -y v4l-utils libcamera-apps python3-yaml curl python3-pip
+apt install -y v4l-utils libcamera-apps python3-yaml curl python3-pip python3-picamera2
+
+echo "Checking libcamera installation..."
+if [ ! -f "/usr/lib/libcamera.so" ] && [ ! -f "/usr/lib/arm-linux-gnueabihf/libcamera.so" ]; then
+  echo "Installing additional libcamera dependencies..."
+  apt install -y libcamera0 libcamera-dev libcamera-apps-lite
+fi
 
 echo "Step 2: Setting up Python environment..."
 # Create virtual environment if it doesn't exist
@@ -30,6 +36,12 @@ echo "Installing Python dependencies..."
 source .venv/bin/activate
 pip install --upgrade pip
 pip install pyyaml pylsl opencv-python numpy requests psutil sounddevice
+
+# Check if we need to install picamera2 via pip
+if ! python -c "import picamera2" &>/dev/null; then
+  echo "Installing picamera2 via pip (fallback)..."
+  pip install picamera2
+fi
 
 echo "Step 3: Setting up permissions..."
 # Add user to video group
@@ -94,7 +106,10 @@ echo "Step 5: Creating storage directories..."
 mkdir -p recordings
 chown $username:$username recordings
 
-echo "Step 6: Running environment check..."
+echo "Step 6: Making scripts executable..."
+chmod +x run-camera.sh
+
+echo "Step 7: Running environment check..."
 # Run environment check script
 source .venv/bin/activate
 python check-camera-env.py

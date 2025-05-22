@@ -5,6 +5,29 @@
 # Change to the directory containing this script
 cd "$(dirname "$0")"
 
+# Check if running as root/sudo for system package installation
+if [ "$(id -u)" -eq 0 ]; then
+    # Running as root, can install system packages if needed
+    echo "Checking for required system packages..."
+    packages_to_install=""
+    
+    # Check for v4l-utils
+    if ! dpkg -s v4l-utils >/dev/null 2>&1; then
+        packages_to_install="$packages_to_install v4l-utils"
+    fi
+    
+    # Check for libcamera-apps
+    if ! dpkg -s libcamera-apps >/dev/null 2>&1; then
+        packages_to_install="$packages_to_install libcamera-apps"
+    fi
+    
+    # Install missing packages
+    if [ -n "$packages_to_install" ]; then
+        echo "Installing missing packages:$packages_to_install"
+        apt update && apt install -y $packages_to_install
+    fi
+fi
+
 # Check if a Python virtual environment exists and activate it
 if [ -d ".venv" ]; then
     echo "Activating virtual environment..."

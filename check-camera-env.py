@@ -256,6 +256,7 @@ def check_picamera2_support():
     
     try:
         import picamera2
+        # Use getattr to safely get version with a fallback
         version = getattr(picamera2, '__version__', 'unknown')
         print_status("picamera2", True, f"Version {version}")
         
@@ -359,7 +360,9 @@ def check_camera_modules():
     try:
         # Try to import picamera2
         import picamera2
-        print_status("picamera2", True, f"Version {picamera2.__version__}")
+        # Use getattr to safely get version with a fallback
+        version = getattr(picamera2, '__version__', 'unknown')
+        print_status("picamera2", True, f"Version {version}")
     except ImportError:
         print_status("picamera2", False, "Not installed")
         print("Please install picamera2 with: sudo apt install -y python3-picamera2")

@@ -13,6 +13,7 @@ import platform
 from pathlib import Path
 import logging
 import datetime
+import shutil
 
 # Configure logging
 logging.basicConfig(
@@ -96,6 +97,26 @@ def force_cleanup_previous_instances():
     
     logger.info("Cleanup complete")
 
+def check_system_packages():
+    """Check that all required system packages are installed."""
+    if platform.system() != "Linux":
+        # Only check on Linux
+        return True
+        
+    packages = {
+        "v4l-utils": "video4linux utilities (install with 'sudo apt install v4l-utils')",
+        "libcamera-apps": "camera interface library (install with 'sudo apt install libcamera-apps')"
+    }
+    
+    all_installed = True
+    for package, description in packages.items():
+        is_installed = shutil.which(package) is not None
+        if not is_installed:
+            logger.warning(f"Required system package '{package}' is not installed: {description}")
+            all_installed = False
+            
+    return all_installed
+
 def set_cpu_affinity(cpu_core):
     """Set CPU affinity for the current process if psutil is available.
     
@@ -169,6 +190,10 @@ def main():
     
     # Force cleanup previous instances
     force_cleanup_previous_instances()
+    
+    # Check system packages
+    if not check_system_packages():
+        logger.warning("Some required system packages are missing. Camera functionality may be limited.")
     
     # Set CPU affinity for main process if requested
     capture_cpu_core = performance_config.get('capture_cpu_core')

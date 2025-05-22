@@ -19,7 +19,12 @@ print("DEBUG: Importing picamera2 for Raspberry Pi Camera...")
 try:
     from picamera2 import Picamera2
     PICAMERA2_AVAILABLE = True
-    print("DEBUG: picamera2 imported successfully.")
+    # Check if we can get the version
+    try:
+        picamera2_version = Picamera2.__version__
+        print(f"DEBUG: picamera2 imported successfully. Version: {picamera2_version}")
+    except AttributeError:
+        print("DEBUG: picamera2 imported successfully but version information not available.")
 except ImportError as e:
     print(f"ERROR: Failed to import picamera2: {e}")
     print("This application requires picamera2 to be installed.")
