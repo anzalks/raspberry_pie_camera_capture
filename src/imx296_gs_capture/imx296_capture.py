@@ -347,12 +347,37 @@ def setup_lsl_stream(config):
     global lsl_outlet
     
     logger = logging.getLogger('imx296_capture')
+    
+    # Log that we're setting up LSL
+    logger.info("Setting up LSL stream...")
+    
+    try:
+        import pylsl
+        logger.info(f"Using pylsl version: {pylsl.__version__ if hasattr(pylsl, '__version__') else 'unknown'}")
+    except ImportError:
+        logger.error("Failed to import pylsl. Is it installed?")
+        return False
+    except Exception as e:
+        logger.error(f"Error importing pylsl: {e}")
+        return False
+    
+    # Get LSL configuration from config file
     lsl_config = config.get('lsl', {})
+    
+    # Log the LSL configuration
+    logger.info(f"LSL Configuration: {lsl_config}")
     
     stream_name = lsl_config.get('stream_name', 'IMX296_Metadata')
     stream_type = lsl_config.get('stream_type', 'CameraEvents')
     channel_count = lsl_config.get('channel_count', 4)  # Updated to 4 channels
     nominal_srate = lsl_config.get('nominal_srate', 100)
+    
+    # Log the LSL stream parameters
+    logger.info(f"LSL Stream Parameters:")
+    logger.info(f"  stream_name: {stream_name}")
+    logger.info(f"  stream_type: {stream_type}")
+    logger.info(f"  channel_count: {channel_count}")
+    logger.info(f"  nominal_srate: {nominal_srate}")
     
     # Create channel format
     channel_format = pylsl.cf_double64  # Use double precision for all channels
@@ -360,8 +385,12 @@ def setup_lsl_stream(config):
     # Create channel names - Added trigger_source as 4th channel
     channel_names = ["CaptureTimeUnix", "ntfy_notification_active", "session_frame_no", "trigger_source"]
     
+    # Log the channel names
+    logger.info(f"LSL Channels: {', '.join(channel_names)}")
+    
     try:
         # Create LSL StreamInfo
+        logger.info("Creating LSL StreamInfo")
         info = pylsl.StreamInfo(
             name=stream_name,
             type=stream_type,
@@ -372,6 +401,7 @@ def setup_lsl_stream(config):
         )
         
         # Add channel metadata
+        logger.info("Adding channel metadata")
         channels = info.desc().append_child("channels")
         for name in channel_names:
             channels.append_child("channel").append_child_value("label", name)
@@ -383,11 +413,24 @@ def setup_lsl_stream(config):
         info.desc().append_child("acquisition").append_child_value("resolution", f"{config['camera']['width']}x{config['camera']['height']}")
         
         # Create outlet
+        logger.info("Creating LSL outlet")
         lsl_outlet = pylsl.StreamOutlet(info)
+        
+        # Send a test sample to verify the stream is working
+        test_sample = [time.time(), 0.0, 0.0, 0.0]  # unix_time, recording_status, frame_num, trigger_source
+        lsl_outlet.push_sample(test_sample)
+        logger.info(f"Sent test LSL sample: {test_sample}")
+        
         logger.info(f"Created LSL stream '{stream_name}' with {channel_count} channels at {nominal_srate} Hz")
+        
+        # Log a success message that the dashboard can easily find
+        logger.info(f"LSL_STREAM_READY: stream_name={stream_name}, channels={channel_count}, rate={nominal_srate}")
+        
         return True
     except Exception as e:
         logger.error(f"Failed to create LSL stream: {e}")
+        import traceback
+        logger.error(f"LSL setup traceback: {traceback.format_exc()}")
         return False
 
 # =============================================================================
@@ -439,6 +482,9 @@ def camera_thread(config):
     max_frames = config['buffer']['max_frames']
     frame_buffer = collections.deque(maxlen=max_frames)
     
+    # Flag to track if we've switched to simulation mode
+    using_simulation = False
+    
     # First test if basic libcamera-vid works
     logger.info("Testing basic libcamera-vid functionality...")
     test_cmd = [
@@ -449,29 +495,51 @@ def camera_thread(config):
         logger.info(f"Running test command: {' '.join(test_cmd)}")
         output = subprocess.check_output(test_cmd, universal_newlines=True, stderr=subprocess.STDOUT)
         logger.info(f"libcamera-vid test output:\n{output}")
+        
+        # Check if output contains IMX296
+        if "imx296" not in output.lower():
+            logger.error("IMX296 camera not found in libcamera-vid output")
+            logger.warning("Switching to simulation mode")
+            using_simulation = True
+            start_simulation_thread(frame_buffer, config)
+            return
     except subprocess.CalledProcessError as e:
         logger.error(f"Error testing libcamera-vid: {e}")
         logger.error(f"Output: {e.output if hasattr(e, 'output') else 'No output'}")
+        logger.warning("Switching to simulation mode")
+        using_simulation = True
+        start_simulation_thread(frame_buffer, config)
+        return
     
     # Test with simple capture
-    logger.info("Testing simple capture with libcamera-vid...")
-    test_cmd = [
-        libcamera_vid_path,
-        "--width", str(width),
-        "--height", str(height),
-        "--framerate", str(fps),
-        "--timeout", "1000",  # 1 second timeout
-        "--output", "/dev/null"
-    ]
-    try:
-        logger.info(f"Running test capture: {' '.join(test_cmd)}")
-        output = subprocess.check_output(test_cmd, universal_newlines=True, stderr=subprocess.STDOUT)
-        logger.info(f"libcamera-vid test capture output:\n{output}")
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Error testing simple capture: {e}")
-        logger.error(f"Output: {e.output if hasattr(e, 'output') else 'No output'}")
-        logger.warning("Will proceed with full command but expect issues...")
+    if not using_simulation:
+        logger.info("Testing simple capture with libcamera-vid...")
+        test_cmd = [
+            libcamera_vid_path,
+            "--width", str(width),
+            "--height", str(height),
+            "--framerate", str(fps),
+            "--timeout", "1000",  # 1 second timeout
+            "--output", "/dev/null"
+        ]
+        try:
+            logger.info(f"Running test capture: {' '.join(test_cmd)}")
+            output = subprocess.check_output(test_cmd, universal_newlines=True, stderr=subprocess.STDOUT)
+            logger.info(f"libcamera-vid test capture output:\n{output}")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Error testing simple capture: {e}")
+            logger.error(f"Output: {e.output if hasattr(e, 'output') else 'No output'}")
+            logger.warning("Switching to simulation mode")
+            using_simulation = True
+            start_simulation_thread(frame_buffer, config)
+            return
     
+    # If we've switched to simulation mode, exit this thread
+    if using_simulation:
+        logger.info("Camera thread exiting as we're using simulation")
+        return
+    
+    # Continue with real camera implementation if not using simulation
     # Build libcamera-vid command
     cmd = [
         libcamera_vid_path,
@@ -570,18 +638,6 @@ def camera_thread(config):
         last_pts_read_time = 0
         pts_data = []
         
-        # Create simulated frames for testing LSL if camera fails to produce real ones
-        use_simulated_frames = False
-        if use_simulated_frames:
-            logger.info("Using simulated frames for LSL testing")
-            # Start a thread to generate simulated frames
-            sim_thread = threading.Thread(
-                target=simulate_frames,
-                args=(frame_buffer, config),
-                daemon=True
-            )
-            sim_thread.start()
-        
         # Track time for FPS calculation
         last_fps_time = time.time()
         last_fps_count = 0
@@ -593,16 +649,6 @@ def camera_thread(config):
             # Check if process is still running
             if libcamera_vid_process.poll() is not None:
                 logger.error("libcamera-vid process terminated unexpectedly")
-                if not use_simulated_frames:
-                    # Switch to simulated frames
-                    logger.info("Switching to simulated frames mode")
-                    use_simulated_frames = True
-                    sim_thread = threading.Thread(
-                        target=simulate_frames,
-                        args=(frame_buffer, config),
-                        daemon=True
-                    )
-                    sim_thread.start()
                 time.sleep(0.1)  # Short sleep before checking again
                 continue
             
@@ -676,6 +722,26 @@ def camera_thread(config):
             libcamera_vid_process = None
         
         logger.info("Camera thread exited")
+
+def start_simulation_thread(frame_buffer, config):
+    """Start a thread to generate simulated frames."""
+    logger = logging.getLogger('imx296_capture')
+    logger.info("Starting simulation thread for frame generation")
+    
+    sim_thread = threading.Thread(
+        target=simulate_frames,
+        args=(frame_buffer, config),
+        daemon=True
+    )
+    sim_thread.start()
+    
+    # Send a test LSL sample
+    if lsl_outlet:
+        sample = [time.time(), 0.0, 0.0, 3.0]  # timestamp, recording=false, frame=0, trigger=simulated
+        lsl_outlet.push_sample(sample)
+        logger.info(f"Sent LSL simulation test sample: {sample}")
+    
+    return sim_thread
 
 def simulate_frames(frame_buffer, config):
     """Generate simulated frames for testing when real camera fails."""

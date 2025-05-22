@@ -421,7 +421,7 @@ show_dashboard() {
         echo "=== LSL STREAM DATA ==="
         
         # Get LSL setup information
-        lsl_setup=$(sudo journalctl -u $SERVICE_NAME -n 300 2>/dev/null | grep -iE "created lsl stream|setting up lsl" | grep -v "Error" | tail -1)
+        lsl_setup=$(sudo journalctl -u $SERVICE_NAME -n 500 2>/dev/null | grep -iE "created lsl stream|setting up lsl|lsl.* stream|stream_name|LSL_STREAM_READY" | grep -v "Error|Failed" | tail -1)
         if [ -n "$lsl_setup" ]; then
             lsl_text=$(echo "$lsl_setup" | sed -E 's/.*INFO - //g')
             printf "%-20s %s\n" "LSL Stream:" "$(truncate_text "$lsl_text" 55)"
@@ -431,6 +431,22 @@ show_dashboard() {
             if [[ "$lsl_text" =~ with\ ([0-9]+)\ channels ]]; then
                 channel_count=${BASH_REMATCH[1]}
                 printf "%-20s %s\n" "Channel Count:" "$channel_count"
+            elif [[ "$lsl_text" =~ channels=([0-9]+) ]]; then
+                channel_count=${BASH_REMATCH[1]}
+                printf "%-20s %s\n" "Channel Count:" "$channel_count"
+            fi
+            
+            # Try to find channel count from grep if not in the stream text
+            if [ "$channel_count" = "0" ]; then
+                channel_info=$(sudo journalctl -u $SERVICE_NAME -n 1000 2>/dev/null | grep -iE "channel_count|channels.*[0-9]" | grep -v "Error|Warning" | tail -1)
+                if [ -n "$channel_info" ]; then
+                    # Extract number from the line
+                    ch_count=$(echo "$channel_info" | grep -oE "[0-9]+" | head -1)
+                    if [ -n "$ch_count" ]; then
+                        channel_count=$ch_count
+                        printf "%-20s %s\n" "Channel Count:" "$channel_count"
+                    fi
+                fi
             fi
             
             # Check for any channel names mentioned in the logs
@@ -446,13 +462,15 @@ show_dashboard() {
             # Try different patterns to find LSL data
             lsl_data_patterns=(
                 # Pattern 1: Look for LSL output lines
-                "$(sudo journalctl -u $SERVICE_NAME -n 1000 2>/dev/null | grep -iE "lsl output|sending lsl|lsl data" | grep -v "setup|create|created|with" | tail -10)"
+                "$(sudo journalctl -u $SERVICE_NAME -n 1000 2>/dev/null | grep -iE "lsl output|sending lsl|lsl data|Sent LSL|test LSL" | grep -v "setup|create|created|with" | tail -10)"
                 # Pattern 2: Look for any arrays in logs
                 "$(sudo journalctl -u $SERVICE_NAME -n 1000 2>/dev/null | grep -E "\[[0-9,. ]+\]" | tail -10)"
                 # Pattern 3: Look for trigger or marker mentions
                 "$(sudo journalctl -u $SERVICE_NAME -n 500 2>/dev/null | grep -iE "trigger|marker|timestamp" | grep -v "setup|create" | tail -10)"
                 # Pattern 4: Look for more detailed LSL data logs 
                 "$(sudo journalctl -u $SERVICE_NAME -n 500 2>/dev/null | grep -iE "LSL data sent:" | tail -10)"
+                # Pattern 5: Look for raw LSL test sample output
+                "$(sudo journalctl -u $SERVICE_NAME -n 500 2>/dev/null | grep -iE "test LSL sample" | tail -5)"
             )
             
             # Combine all pattern results
