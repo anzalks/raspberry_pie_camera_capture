@@ -21,11 +21,27 @@ if [ "$(id -u)" -eq 0 ]; then
         packages_to_install="$packages_to_install libcamera-apps"
     fi
     
+    # Check for media-ctl (required for Global Shutter Camera)
+    if ! command -v media-ctl &> /dev/null; then
+        packages_to_install="$packages_to_install libcamera-tools"
+    fi
+    
     # Install missing packages
     if [ -n "$packages_to_install" ]; then
         echo "Installing missing packages:$packages_to_install"
         apt update && apt install -y $packages_to_install
     fi
+    
+    # Setup camera lock file with proper permissions
+    echo "Setting up camera lock file with proper permissions..."
+    rm -f /tmp/raspie_camera.lock
+    touch /tmp/raspie_camera.lock
+    chmod 666 /tmp/raspie_camera.lock
+    echo "Camera lock file created with proper permissions"
+    
+    # Tell user they should run this script as normal user
+    echo "Please run this script as a normal user (without sudo) for interactive mode."
+    exit 0
 fi
 
 # Check if a Python virtual environment exists and activate it
@@ -47,7 +63,7 @@ camera:
   fps: 100
   codec: mjpg
   container: mkv
-  preview: false
+  preview: true  # Enable preview window by default
   enable_crop: auto  # Can be true, false, or auto (detect Global Shutter Camera)
 
 # Storage settings
@@ -79,13 +95,20 @@ performance:
 # Terminal UI settings
 terminal:
   colors_enabled: true
-  use_unicode: false  # Set to false for better compatibility
+  use_unicode: true  # Enable unicode characters for better display
   update_frequency: 0.5
 EOF
-    echo "Created default config.yaml"
+    echo "Created default config.yaml with preview enabled"
+else
+    # Make sure preview is enabled in the config
+    if grep -q "preview: false" config.yaml; then
+        echo "Enabling preview in config.yaml..."
+        sed -i 's/preview: false/preview: true/' config.yaml
+    fi
 fi
 
-# Force unbuffered Python output
+# Force terminal settings for proper display
+export TERM=xterm-256color
 export PYTHONUNBUFFERED=1
 
 # Run environment check
@@ -99,39 +122,32 @@ if [[ $continue_capture != "y" && $continue_capture != "Y" ]]; then
     exit 0
 fi
 
-# Run camera capture
-echo "Starting camera capture with default settings from config.yaml..."
-python -m src.raspberry_pi_lsl_stream.camera_capture &
-CAMERA_PID=$!
+# Set extra parameters
+EXTRA_PARAMS=""
 
-# Check if camera process is running
-if ! ps -p $CAMERA_PID > /dev/null; then
-    echo "Error: Camera process failed to start."
-    exit 1
+# Ask if user wants to customize parameters
+read -p "Use custom resolution and FPS? (y/n): " custom_params
+if [[ $custom_params == "y" || $custom_params == "Y" ]]; then
+    read -p "Enter width (default: 640): " width
+    read -p "Enter height (default: 480): " height
+    read -p "Enter FPS (default: 30): " fps
+    
+    # Use defaults if empty
+    width=${width:-640}
+    height=${height:-480}
+    fps=${fps:-30}
+    
+    EXTRA_PARAMS="--width $width --height $height --fps $fps"
+    echo "Using custom parameters: $EXTRA_PARAMS"
 fi
 
-# Wait a moment for startup
-sleep 2
-
-# Monitor process and display fallback status if needed
-trap "kill $CAMERA_PID 2>/dev/null; exit" INT TERM
-
-# Loop to check if process is still running and display fallback status
-echo "Camera process running with PID: $CAMERA_PID"
+# Run camera capture
+echo "Starting camera capture with default settings from config.yaml..."
 echo "Press Ctrl+C to stop"
+echo "============================================================"
 
-while ps -p $CAMERA_PID > /dev/null; do
-    # Check if fallback status file exists (indicates UI problems)
-    if [ -f "/tmp/raspie_camera_status" ]; then
-        echo ""
-        echo "===== Status Update $(date +%H:%M:%S) ====="
-        cat /tmp/raspie_camera_status
-    fi
-    sleep 5
-done
-
-echo "Camera process has exited."
+# Run with parameters, ensuring preview is enabled
+python -m src.raspberry_pi_lsl_stream.camera_capture $EXTRA_PARAMS --preview
 
 # Exit with the same status as the camera capture
-wait $CAMERA_PID
 exit $? 

@@ -163,6 +163,31 @@ This will:
 4. Listen for notifications on the ntfy.sh topic
 5. Start capturing frames and displaying the status dashboard
 
+### Running on Raspberry Pi (Recommended Method)
+For the best experience on Raspberry Pi, use the provided run script which ensures both preview and status display are visible:
+
+```bash
+# Run with a single command (recommended)
+./run-camera.sh
+```
+
+This script will:
+1. Activate the virtual environment automatically
+2. Check that all required packages are installed
+3. Run a diagnostic check of your camera system
+4. Allow you to customize resolution and frame rate interactively
+5. Show both the video preview window AND the terminal status display
+6. Handle Ctrl+C gracefully for clean shutdown
+
+For Global Shutter Camera users, simply select "y" when asked to customize parameters, then enter your desired dimensions and frame rate:
+
+```
+Use custom resolution and FPS? (y/n): y
+Enter width (default: 640): 688
+Enter height (default: 136): 
+Enter FPS (default: 30): 400
+```
+
 ### Environment Check
 Always run the diagnostic script first to verify your setup:
 ```bash
@@ -177,9 +202,23 @@ You can override any configuration file settings using command-line arguments:
 # Override resolution and frame rate
 python -m src.raspberry_pi_lsl_stream.camera_capture --width 640 --height 480 --fps 30
 
+# Enable video preview window
+python -m src.raspberry_pi_lsl_stream.camera_capture --preview
+
+# Run with both custom resolution and preview enabled
+python -m src.raspberry_pi_lsl_stream.camera_capture --width 800 --height 600 --fps 30 --preview
+
 # Override ntfy topic for remote triggering
 python -m src.raspberry_pi_lsl_stream.camera_capture --ntfy-topic your-topic-name
 ```
+
+### Using the Preview Window
+When preview is enabled (either via `--preview` flag or in config.yaml), a window will open showing the live camera feed. The preview window supports these keyboard controls:
+- **S**: Start recording manually
+- **P** or **Space**: Stop recording
+- **Q** or **ESC**: Quit the application
+
+This is especially useful for testing the camera setup without needing remote triggers.
 
 #### Global Shutter Camera Examples
 The system will automatically detect and configure the Global Shutter Camera. Just specify your desired dimensions and frame rate:
@@ -197,6 +236,21 @@ python -m src.raspberry_pi_lsl_stream.camera_capture --width 600 --height 600 --
 # Small ROI for high speed (500fps)
 python -m src.raspberry_pi_lsl_stream.camera_capture --width 224 --height 96 --fps 500
 ```
+
+#### Global Shutter Camera Implementation Details
+This system uses advanced media-ctl techniques (based on Hermann-SW's research) to configure the Raspberry Pi Global Shutter Camera for optimal performance:
+
+1. **Automatic Detection**: The system detects the IMX296 sensor used in the Global Shutter Camera
+2. **Intelligent Cropping**: Configures the sensor's crop region based on requested dimensions and frame rate
+3. **Low-level Configuration**: Uses media-ctl commands to directly configure the camera sensor
+4. **Optimized Settings**: Automatically adjusts settings for the best balance between resolution and frame rate
+
+When using a Global Shutter Camera, the best way to run is through the interactive script:
+```bash
+./run-camera.sh
+```
+
+Select "y" when asked to customize parameters, and specify your desired width, height, and FPS. The system will automatically optimize the configuration for your camera.
 
 ### Audio Recording
 ```bash
@@ -228,6 +282,23 @@ If you used the setup_pi.sh script, you can manage the service with:
 ./raspie-service.sh trigger       # Start recording
 ./raspie-service.sh stop-recording # Stop recording
 ```
+
+### Monitoring the Camera
+When running as a service, you can monitor the camera status with:
+
+```bash
+# Full live monitoring with status display
+./watch-raspie.sh
+```
+
+This shows the real-time status of the camera, including:
+- Current recording state 
+- Buffer fill level
+- Frame rates
+- Error messages
+- Recording statistics
+
+Use this to verify your camera is working correctly when running as a background service.
 
 ### Triggering Recording via ntfy.sh
 Send notifications to start/stop recording:

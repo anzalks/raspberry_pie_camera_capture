@@ -644,3 +644,78 @@ EOF
 chmod +x "$PROJECT_DIR/run-camera.sh"
 chown $SUDO_USER:$SUDO_USER "$PROJECT_DIR/run-camera.sh"
 echo "Created run-camera.sh script for easy manual starting" 
+
+# --- Camera Permissions Setup ---
+echo "Setting up camera permissions and dependencies..."
+
+# Install necessary camera-related packages if not already installed
+echo "Installing camera utilities and tools..."
+apt install -y v4l-utils libcamera-apps libcamera-tools media-ctl
+
+# Set proper permissions for camera access
+echo "Setting camera group permissions..."
+usermod -a -G video $SUDO_USER
+usermod -a -G input $SUDO_USER
+echo "Added $SUDO_USER to video and input groups"
+
+# Create and set up camera lock file with proper permissions
+echo "Setting up camera lock file with proper permissions..."
+rm -f /tmp/raspie_camera.lock
+touch /tmp/raspie_camera.lock
+chmod 666 /tmp/raspie_camera.lock
+chown $SUDO_USER:$SUDO_USER /tmp/raspie_camera.lock
+echo "Camera lock file created with proper permissions"
+
+# Fix permissions for camera device nodes if they exist
+echo "Setting permissions for camera devices..."
+if [ -e "/dev/video0" ]; then
+  chmod 666 /dev/video0
+fi
+
+# Enable preview in config
+echo "Updating config to enable preview..."
+sed -i 's/preview: false/preview: true/' "$CONFIG_FILE"
+
+# --- Camera Enablement Reminder --- 
+echo "-----------------------------------------------------" 
+echo "Installation Complete! System is now configured to:"
+echo ""
+echo "1. Stream video from your Raspberry Pi camera"
+echo "2. Start automatically on boot"
+echo "3. Accept recording triggers via ntfy.sh"
+echo "4. Use configuration from config.yaml"
+echo ""
+echo "Current Service Status:"
+systemctl status raspie-capture.service --no-pager
+echo ""
+echo "IMPORTANT: Ensure the camera is ENABLED using 'sudo raspi-config'" 
+echo "(Interface Options -> Camera -> Enable, and ensure Legacy Camera is DISABLED)."
+echo ""
+echo "Control Commands:"
+echo "- Start recording:   ./raspie-service.sh trigger"
+echo "- Stop recording:    ./raspie-service.sh stop-recording"
+echo "- Check status:      ./raspie-service.sh status"
+echo "- View logs:         ./raspie-service.sh logs"
+echo "- Live monitoring:   ./watch-raspie.sh"
+echo ""
+echo "Configuration:"
+echo "- Edit settings in:  $PROJECT_DIR/config.yaml"
+echo ""
+echo "File Storage:"
+echo "- All recordings are automatically organized by date"
+echo "- Videos saved to: ~/raspie_recordings/YYYY-MM-DD/videos/"
+echo "- Audio saved to:  ~/raspie_recordings/YYYY-MM-DD/audio/"
+echo ""
+echo "Remote Trigger (from any device):"
+if command -v python3 > /dev/null && [ -f "$PROJECT_DIR/config.yaml" ]; then
+    ntfy_topic=$(python3 -c "import yaml; print(yaml.safe_load(open('$PROJECT_DIR/config.yaml', 'r'))['remote']['ntfy_topic'])")
+    echo "curl -d \"start recording\" ntfy.sh/$ntfy_topic"
+    echo "curl -d \"stop recording\" ntfy.sh/$ntfy_topic"
+else
+    echo "curl -d \"start recording\" ntfy.sh/raspie-camera-test"
+    echo "curl -d \"stop recording\" ntfy.sh/raspie-camera-test"
+fi
+echo ""
+echo "A system reboot is recommended if you changed camera settings:"
+echo "sudo reboot"
+echo "-----------------------------------------------------" 
