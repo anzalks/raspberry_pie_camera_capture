@@ -398,14 +398,30 @@ def setup_lsl_stream(config):
     try:
         # Create LSL StreamInfo
         logger.info("Creating LSL StreamInfo")
-        info = pylsl.StreamInfo(
-            name=stream_name,
-            type=stream_type,
-            channel_count=channel_count,
-            nominal_srate=nominal_srate,
-            channel_format=pylsl.cf_mixed,  # Use mixed format
-            source_id=f"imx296_{os.getpid()}"
-        )
+        try:
+            # Try to use cf_mixed if available (newer pylsl versions)
+            channel_format = pylsl.cf_mixed if hasattr(pylsl, 'cf_mixed') else pylsl.cf_double64
+            logger.info(f"Using channel format: {channel_format}")
+            
+            info = pylsl.StreamInfo(
+                name=stream_name,
+                type=stream_type,
+                channel_count=channel_count,
+                nominal_srate=nominal_srate,
+                channel_format=channel_format,  # Use mixed format if available, otherwise double
+                source_id=f"imx296_{os.getpid()}"
+            )
+        except AttributeError:
+            # Fall back to double format for all channels if cf_mixed isn't available
+            logger.warning("pylsl.cf_mixed not available, falling back to double format")
+            info = pylsl.StreamInfo(
+                name=stream_name,
+                type=stream_type,
+                channel_count=channel_count,
+                nominal_srate=nominal_srate,
+                channel_format=pylsl.cf_double64,  # Use double format for all channels
+                source_id=f"imx296_{os.getpid()}"
+            )
         
         # Add channel metadata
         logger.info("Adding channel metadata")
@@ -522,12 +538,18 @@ def camera_thread(config):
         "--height", str(height),
         "--framerate", str(fps),
         "--timeout", "1000",  # 1 second timeout
-        "--output", "/dev/null"
+        "--output", "/tmp/test_capture.h264"  # Use a real file path with format
     ]
     try:
         logger.info(f"Running test capture: {' '.join(test_cmd)}")
         output = subprocess.check_output(test_cmd, universal_newlines=True, stderr=subprocess.STDOUT)
         logger.info(f"libcamera-vid test capture output:\n{output}")
+        # Clean up the test file
+        try:
+            if os.path.exists("/tmp/test_capture.h264"):
+                os.remove("/tmp/test_capture.h264")
+        except:
+            pass
     except subprocess.CalledProcessError as e:
         logger.error(f"Error testing simple capture: {e}")
         logger.error(f"Output: {e.output if hasattr(e, 'output') else 'No output'}")
