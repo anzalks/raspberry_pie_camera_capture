@@ -46,6 +46,7 @@ lsl_outlet = None  # LSL outlet for metadata
 session_frame_counter = 0  # Frame counter for the current recording session
 libcamera_vid_process = None
 ffmpeg_process = None
+last_trigger_source = 0  # 0=none, 1=ntfy, 2=keyboard
 
 # =============================================================================
 # Configuration Management
@@ -349,14 +350,14 @@ def setup_lsl_stream(config):
     
     stream_name = lsl_config.get('stream_name', 'IMX296_Metadata')
     stream_type = lsl_config.get('stream_type', 'CameraEvents')
-    channel_count = lsl_config.get('channel_count', 3)
+    channel_count = lsl_config.get('channel_count', 4)  # Updated to 4 channels
     nominal_srate = lsl_config.get('nominal_srate', 100)
     
     # Create channel format
     channel_format = pylsl.cf_double64  # Use double precision for all channels
     
-    # Create channel names
-    channel_names = ["CaptureTimeUnix", "ntfy_notification_active", "session_frame_no"]
+    # Create channel names - Added trigger_source as 4th channel
+    channel_names = ["CaptureTimeUnix", "ntfy_notification_active", "session_frame_no", "trigger_source"]
     
     try:
         # Create LSL StreamInfo
@@ -667,27 +668,29 @@ def camera_thread(config):
         logger.info("Camera thread exited")
 
 def process_frame(frame_data, frame_num, start_time, frame_buffer, pts_data):
-    """Process a captured frame - store in buffer and handle recording if active."""
-    global session_frame_counter
+    """Process a frame from libcamera-vid."""
+    global session_frame_counter, frame_queue, last_trigger_source
     
-    # Get the timestamp for this frame
+    # Generate timestamp for the frame
     frame_timestamp = find_timestamp_for_frame(frame_num, pts_data, start_time)
     
-    # Add frame to the circular buffer
-    frame_buffer.append((frame_timestamp, bytes(frame_data)))
+    # Store frame in buffer as (timestamp, frame_data) tuple
+    frame_buffer.append((frame_timestamp, frame_data))
     
-    # If recording is active, push frame to the queue for writing
+    # If recording is active, add frame to the output queue
     if recording_event.is_set():
+        # Increment session frame counter for this recording
         session_frame_counter += 1
         
-        # Put the frame in the queue for the ffmpeg thread
         try:
-            # Use non-blocking put with a short timeout to avoid hanging
-            frame_queue.put((frame_timestamp, bytes(frame_data)), block=True, timeout=0.1)
-            # Every 100 frames, log LSL data being transmitted
+            # Add to frame queue for writing to file
+            frame_queue.put((frame_timestamp, frame_data), block=False)
+            
+            # Log frame count periodically
             if session_frame_counter % 100 == 0:
                 logger = logging.getLogger('imx296_capture')
-                data = [frame_timestamp, int(recording_event.is_set()), session_frame_counter]
+                # Updated to include trigger_source
+                data = [frame_timestamp, int(recording_event.is_set()), session_frame_counter, last_trigger_source]
                 logger.info(f"LSL output: {data}")
         except queue.Full:
             # If queue is full, we're probably too slow to write frames, log warning
@@ -696,8 +699,9 @@ def process_frame(frame_data, frame_num, start_time, frame_buffer, pts_data):
     
     # Send metadata to LSL regardless of recording status
     if lsl_outlet:
-        # Prepare sample: [unix_timestamp, recording_active, frame_number]
-        sample = [frame_timestamp, float(recording_event.is_set()), float(frame_num)]
+        # Prepare sample: [unix_timestamp, recording_active, frame_number, trigger_source]
+        # Added trigger_source (1 for ntfy, 2 for keyboard)
+        sample = [frame_timestamp, float(recording_event.is_set()), float(frame_num), float(last_trigger_source)]
         lsl_outlet.push_sample(sample, frame_timestamp)
     
     return frame_timestamp
@@ -811,7 +815,7 @@ def ntfy_thread(config):
 
 def handle_start_notification(config):
     """Handle a 'start' notification from ntfy.sh."""
-    global is_recording_active, session_frame_counter, frame_queue
+    global is_recording_active, session_frame_counter, frame_queue, last_trigger_source
     
     logger = logging.getLogger('imx296_capture')
     
@@ -821,6 +825,9 @@ def handle_start_notification(config):
         return
     
     logger.info("Handling 'start' notification - beginning recording")
+    
+    # Set trigger source to ntfy
+    last_trigger_source = 1
     
     # Reset session frame counter
     session_frame_counter = 0
@@ -848,7 +855,7 @@ def handle_start_notification(config):
 
 def handle_stop_notification():
     """Handle a 'stop' notification from ntfy.sh."""
-    global is_recording_active
+    global is_recording_active, last_trigger_source
     
     logger = logging.getLogger('imx296_capture')
     
@@ -858,6 +865,9 @@ def handle_stop_notification():
         return
     
     logger.info("Handling 'stop' notification - ending recording")
+    
+    # Set trigger source to ntfy
+    last_trigger_source = 1
     
     # Stop recording
     is_recording_active = False
