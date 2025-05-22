@@ -1,75 +1,62 @@
-# Configuration for IMX296 Global Shutter Camera Capture System
-# Author: Anzal KS
-# Date: May 22, 2025
+# IMX296 Global Shutter Camera Configuration
+# Author: Anzal KS <anzal.ks@gmail.com>
+
+# System paths and tools
+system:
+  libcamera_vid_path: "/usr/bin/libcamera-vid"
+  libcamera_hello_path: "/usr/bin/libcamera-hello"
+  media_ctl_path: "/usr/bin/media-ctl"
+  ffmpeg_path: "/usr/bin/ffmpeg"
 
 # Camera settings
 camera:
-  # Target resolution and frame rate
-  width: 400
-  height: 400
-  fps: 100
-  
-  # Original sensor resolution for crop calculation
+  # Physical sensor specs
   sensor_width: 1456
   sensor_height: 1088
   
-  # Exposure time in microseconds (9000 is good for 100fps)
-  exposure_time_us: 9000
+  # Target capture specifications
+  width: 400 
+  height: 400
+  fps: 100
+  exposure_time_us: 5000 # Set to 5ms for high-speed capture
   
-  # Media controller settings
+  # PTS file for timestamp tracking
+  pts_file_path: "/tmp/camera_timestamps.pts"
+  
+  # Media-ctl configuration for hardware cropping
   media_ctl:
-    device_pattern: "/dev/media%d"  # Use a pattern to allow searching through all devices
-    entity_pattern: "imx296 %s-001a"
-    bayer_format: "SBGGR10_1X10"  # Format appropriate for IMX296
-  
-  # PTS file path for timestamp tracking
-  pts_file_path: "/tmp/camera_live.pts"
+    device_pattern: "/dev/media%d"
+    entity_pattern: "imx296 [0-9]+-[0-9]+"
+    bayer_format: "SRGGB10_1X10"
 
-# RAM buffer settings
+# RAM buffer settings for pre-trigger storage
 buffer:
-  # Duration in seconds (10-20 seconds recommended)
-  duration_seconds: 15
-  # Maximum size in frames (as a safety backup)
-  max_frames: 1500  # ~15 seconds at 100fps
+  duration_seconds: 15  # Keep 15 seconds of footage in RAM
+  max_frames: 1500      # Maximum number of frames to store in buffer
 
-# Recording settings
-recording:
-  # Directory where recordings will be stored
-  output_dir: "recordings"
-  # File format (mkv recommended for robustness)
-  format: "mkv"
-  # Codec settings for ffmpeg
-  codec: "copy"  # Just copy the H.264 stream, no re-encoding
-
-# ntfy.sh notification settings
-ntfy:
-  server: "https://ntfy.sh"
-  topic: "raspie-camera-dawg-123"  # Updated to a unique value
-  poll_interval_sec: 30  # Long polling interval
-
-# LSL (Lab Streaming Layer) settings
+# LSL stream configuration
 lsl:
   stream_name: "IMX296_Metadata"
   stream_type: "CameraEvents"
-  channel_count: 4  # CaptureTimeUnix, ntfy_notification_active, session_frame_no, trigger_source
-  nominal_srate: 100  # Matches camera FPS
+  channel_count: 4
+  nominal_srate: 100
 
-# Logging settings
+# Recording settings
+recording:
+  output_dir: "recordings"
+  format: "mkv"  # MKV container format
+
+# ntfy.sh notifications for remote control
+ntfy:
+  server: "https://ntfy.sh"
+  topic: "raspie-camera-dawg-123"
+  poll_interval_sec: 5.0
+
+# Logging configuration
 logging:
-  level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  file: "logs/imx296_capture.log"
+  level: "INFO"
   console: true
+  file: "logs/imx296_capture.log"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
   max_size_mb: 10
-  backup_count: 5
-
-# System settings
-system:
-  # Path to libcamera-vid executable
-  libcamera_vid_path: "/usr/bin/libcamera-vid"
-  # Path to ffmpeg executable
-  ffmpeg_path: "/usr/bin/ffmpeg"
-  # Path to media-ctl executable
-  media_ctl_path: "/usr/bin/media-ctl"
-  # Path to libcamera-hello executable (for verification)
-  libcamera_hello_path: "/usr/bin/libcamera-hello" 
+  backup_count: 5 
