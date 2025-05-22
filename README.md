@@ -227,4 +227,53 @@ Anzal KS <anzal.ks@gmail.com>
 ## Acknowledgments
 
 - Raspberry Pi Foundation for libcamera
-- Lab Streaming Layer (LSL) community 
+- Lab Streaming Layer (LSL) community
+
+## IMX296 Global Shutter Camera Support
+
+This project provides scripts to capture video from the IMX296 global shutter camera on Raspberry Pi.
+
+### Setup and Troubleshooting
+
+The IMX296 camera requires specific configuration to work properly. We've created two scripts to help:
+
+1. **Fix IMX296 Camera Configuration**:
+   ```bash
+   sudo bin/fix_imx296_camera.sh
+   ```
+   This script:
+   - Configures the IMX296 camera module with compatible_mode=1
+   - Sets up the correct 400x400 pixel ROI that the camera natively supports
+   - Creates proper udev rules and permissions
+   - Ensures proper device tree overlay in /boot/config.txt
+
+2. **Capture Video**:
+   ```bash
+   sudo bin/capture_imx296.sh [width] [height] [framerate] [duration_ms] [shutter_us]
+   ```
+   
+   Example for 10-second capture at 400x400 resolution with 30fps:
+   ```bash
+   sudo bin/capture_imx296.sh 400 400 30 10000
+   ```
+   
+   The script automatically:
+   - Detects if you're running Debian Bullseye or Bookworm and adjusts format accordingly
+   - Uses RAM disk (/dev/shm) for fast recording
+   - Handles the appropriate format for your system (MKV/MJPEG for Bookworm, MP4/H264 for Bullseye)
+   - Copies completed recordings to ~/recordings directory
+
+### Common IMX296 Camera Issues and Solutions
+
+1. **Invalid Argument Error**: If you see "Failed to start streaming: Invalid argument", it means the camera configuration doesn't match its native capabilities. Run the fix script.
+
+2. **Zero-byte Files**: If your recordings result in 0-byte files, this is usually a format/resolution mismatch. The IMX296 reports a native 400x400-SBGGR10_1X10 format, which is what our scripts configure.
+
+3. **Black Frames**: If you get video files with black frames, try adjusting exposure with the shutter parameter: `capture_imx296.sh 400 400 30 5000 8000`
+
+4. **Incompatible Format**: On newer Debian Bookworm, use MKV/MJPEG format instead of MP4/H264 (our scripts detect this automatically).
+
+### Additional Tools
+
+- `bin/diagnose_camera.sh` - Comprehensive diagnostic tool
+- `bin/install.sh` - Complete installation script 

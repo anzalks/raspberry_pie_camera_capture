@@ -326,10 +326,12 @@ test_camera_capture() {
   fix_media_ctl_roi
   
   local TEST_OUTPUT="$PROJECT_ROOT/recordings/test_capture.mkv"
+  local PTS_FILE="/dev/shm/tst.pts"
   
-  # Remove previous test file if it exists
+  # Remove previous test files
   rm -f "$TEST_OUTPUT"
   rm -f "$PROJECT_ROOT/recordings/test_capture.mp4"
+  rm -f "$PTS_FILE"
   
   # Install missing pyyaml package if needed
   if ! "$PROJECT_ROOT/.venv/bin/pip" list | grep -q "pyyaml"; then
@@ -337,100 +339,119 @@ test_camera_capture() {
     "$PROJECT_ROOT/.venv/bin/pip" install pyyaml
   fi
   
-  # First try with H.264/AVC1 and MKV container
-  echo "Trying with H.264/AVC1 codec and MKV container..."
-  libcamera-vid -t 3000 --width 1280 --height 720 --framerate 30 --codec h264 --output "$TEST_OUTPUT" --nopreview
-  
-  if [ ! -f "$TEST_OUTPUT" ] || [ ! -s "$TEST_OUTPUT" ]; then
-    echo "First attempt failed, trying with MJPG codec..."
-    # Try with MJPG codec which has better hardware compatibility
-    libcamera-vid -t 3000 --width 640 --height 480 --framerate 15 --codec mjpeg --output "$TEST_OUTPUT" --nopreview
+  # Check for Bookworm OS and set workaround
+  WORKAROUND=""
+  if [ "" != "$(grep '=bookworm' /etc/os-release 2>/dev/null)" ]; then
+    echo "Detected Debian Bookworm, using --no-raw workaround"
+    WORKAROUND="--no-raw"
   fi
   
-  # Try a third attempt with YUV format which is often more compatible
-  if [ ! -f "$TEST_OUTPUT" ] || [ ! -s "$TEST_OUTPUT" ]; then
-    echo "Second attempt failed, trying with YUV format..."
-    # Use --inline to use YUV format directly
-    libcamera-vid -t 3000 --width 640 --height 480 --framerate 15 --codec mjpeg --output "$TEST_OUTPUT" --nopreview --inline
-  fi
+  # Set width, height, and other parameters
+  WIDTH=400
+  HEIGHT=400
+  FRAMERATE=30
+  DURATION=3000
   
-  # Try a fourth attempt with specific sensor mode
-  if [ ! -f "$TEST_OUTPUT" ] || [ ! -s "$TEST_OUTPUT" ]; then
-    echo "Third attempt failed, trying with specific sensor mode..."
-    # Use direct sensor mode
-    libcamera-vid -t 3000 --mode 1456:1088:10 --codec mjpeg --output "$TEST_OUTPUT" --nopreview
-  fi
+  # Use similar approach to working script
+  echo "Trying capture with matched approach from working script..."
   
-  # Last attempt using direct v4l2 commands with ffmpeg
-  if [ ! -f "$TEST_OUTPUT" ] || [ ! -s "$TEST_OUTPUT" ]; then
-    echo "All libcamera attempts failed, trying with direct ffmpeg capture..."
-    if command -v ffmpeg >/dev/null && [ -e "/dev/video0" ]; then
-      # Try using ffmpeg directly with v4l2 and MJPG codec
-      ffmpeg -f v4l2 -input_format mjpeg -video_size 640x480 -i /dev/video0 -t 3 -c:v copy -y "$TEST_OUTPUT" 2>/dev/null || \
-      ffmpeg -f v4l2 -video_size 640x480 -i /dev/video0 -t 3 -c:v libx264 -y "$TEST_OUTPUT" 2>/dev/null
-    fi
-  fi
-  
-  if [ -f "$TEST_OUTPUT" ]; then
-    local FILE_SIZE=$(du -k "$TEST_OUTPUT" | cut -f1)
-    if [ "$FILE_SIZE" -gt 0 ]; then
-      echo "✓ Camera capture test successful."
-      echo "  Test file saved at: $TEST_OUTPUT"
-      echo "  File size: ${FILE_SIZE}KB"
-      return 0
+  # Check if this is a Pi5 (revision ending with 17 or similar)
+  if [ "" != "$(grep "Revision.*: ...17.$" /proc/cpuinfo)" ]; then
+    echo "Detected Raspberry Pi 5, using rpicam-vid for capture..."
+    
+    # Use rpicam-vid for Pi5
+    rpicam-vid $WORKAROUND --width $WIDTH --height $HEIGHT --denoise cdn_off --framerate $FRAMERATE -t $DURATION -o /dev/shm/test_capture.mp4 -n
+    
+    if [ -f "/dev/shm/test_capture.mp4" ] && [ -s "/dev/shm/test_capture.mp4" ]; then
+      echo "✅ Capture successful with rpicam-vid"
+      # Copy to recordings directory
+      cp /dev/shm/test_capture.mp4 "$TEST_OUTPUT"
+      echo "Copied to $TEST_OUTPUT"
     else
-      echo "✗ Camera capture test failed - file size is 0KB."
-      echo "  Checking available camera settings..."
+      echo "❌ rpicam-vid capture failed, trying with mjpeg codec..."
+      rpicam-vid $WORKAROUND --width $WIDTH --height $HEIGHT --denoise cdn_off --framerate $FRAMERATE --codec mjpeg -t $DURATION -o /dev/shm/test_capture.mkv -n
       
-      # Get camera information to help diagnose the issue
-      echo "Available camera information:"
-      libcamera-hello --list-cameras
-      
-      echo "Checking for v4l2 devices:"
-      v4l2-ctl --list-devices
-      
-      echo "Checking IMX296 kernel module:"
-      if lsmod | grep -q "imx296"; then
-        echo "  IMX296 driver is loaded."
-      else
-        echo "  IMX296 driver is not loaded. Try: sudo modprobe imx296"
+      if [ -f "/dev/shm/test_capture.mkv" ] && [ -s "/dev/shm/test_capture.mkv" ]; then
+        echo "✅ Capture successful with rpicam-vid and mjpeg codec"
+        # Copy to recordings directory
+        cp /dev/shm/test_capture.mkv "$TEST_OUTPUT"
+        echo "Copied to $TEST_OUTPUT"
       fi
-      
-      echo "Camera hardware issue detected. Possible solutions:"
-      echo "1. Check the camera's physical connection and ribbon cable"
-      echo "2. Try 'sudo rpi-update' to get the latest firmware"
-      echo "3. Check 'dmesg | grep imx296' for specific driver errors"
-      echo "4. Try modifying /boot/config.txt with: dtoverlay=imx296"
-      echo "5. Ensure GPU memory is sufficient: gpu_mem=128 in /boot/config.txt"
-      return 1
     fi
   else
-    echo "✗ Camera capture test failed - no output file created."
-    echo "Checking hardware access permissions..."
+    echo "Using libcamera-vid for capture..."
+    # Use libcamera-vid for older Pi models
+    libcamera-vid $WORKAROUND --width $WIDTH --height $HEIGHT --denoise cdn_off --framerate $FRAMERATE --save-pts $PTS_FILE -t $DURATION -o /dev/shm/test_capture.h264 -n
     
-    # Check if user has access to video devices
-    if ! groups | grep -qE '(video|plugdev)'; then
-      echo "  Current user may not have access to camera devices."
-      echo "  Run: sudo usermod -a -G video,plugdev $USER"
-      echo "  Then log out and back in to apply the changes."
+    if [ -f "/dev/shm/test_capture.h264" ] && [ -s "/dev/shm/test_capture.h264" ]; then
+      echo "✅ Capture successful with libcamera-vid"
+      # Convert to mkv for better compatibility
+      ffmpeg -f h264 -i /dev/shm/test_capture.h264 -c:v copy -y "$TEST_OUTPUT" &>/dev/null || true
+      echo "Converted to $TEST_OUTPUT"
+      
+      # Analyze PTS file
+      if [ -f "$PTS_FILE" ]; then
+        echo "Analyzing timestamps..."
+        if command -v ptsanalyze &>/dev/null; then
+          ptsanalyze "$PTS_FILE"
+        else
+          echo "First 5 lines of PTS file:"
+          head -5 "$PTS_FILE"
+        fi
+      fi
+    else
+      echo "❌ libcamera-vid h264 capture failed, trying with mjpeg codec..."
+      libcamera-vid $WORKAROUND --width $WIDTH --height $HEIGHT --denoise cdn_off --framerate $FRAMERATE --codec mjpeg -t $DURATION -o /dev/shm/test_capture.mkv -n
+      
+      if [ -f "/dev/shm/test_capture.mkv" ] && [ -s "/dev/shm/test_capture.mkv" ]; then
+        echo "✅ Capture successful with libcamera-vid and mjpeg codec"
+        # Copy to recordings directory
+        cp /dev/shm/test_capture.mkv "$TEST_OUTPUT"
+        echo "Copied to $TEST_OUTPUT"
+      fi
+    fi
+  fi
+  
+  # Check if any capture succeeded
+  if [ -f "$TEST_OUTPUT" ] && [ -s "$TEST_OUTPUT" ]; then
+    local FILE_SIZE=$(du -k "$TEST_OUTPUT" | cut -f1)
+    echo "✅ Camera capture test successful."
+    echo "  Test file saved at: $TEST_OUTPUT"
+    echo "  File size: ${FILE_SIZE}KB"
+    return 0
+  else
+    echo "✗ Camera capture test failed."
+    echo "Checking more device information..."
+    
+    # Check GPU memory
+    if [ -f "/boot/config.txt" ]; then
+      GPU_MEM=$(grep "gpu_mem" /boot/config.txt || echo "Not found")
+      echo "GPU memory setting: $GPU_MEM"
+      if [ "$GPU_MEM" = "Not found" ]; then
+        echo "Recommend adding 'gpu_mem=128' to /boot/config.txt"
+      fi
     fi
     
-    # Check for v4l2 device errors
-    echo "V4L2 device diagnostics:"
-    if [ -e "/dev/video0" ]; then
-      v4l2-ctl -d /dev/video0 --all || true
-      echo "  Try: sudo v4l2-ctl -d /dev/video0 --set-fmt-video=width=640,height=480,pixelformat=MJPG"
-    fi
+    # Show IMX296 device info
+    IMX_INFO=$(dmesg | grep -i "imx296" || echo "No IMX296 info in dmesg")
+    echo "IMX296 device info from dmesg:"
+    echo "$IMX_INFO"
     
-    # Recommend IMX296-specific fixes
-    echo "IMX296 Global Shutter Camera Fixes:"
-    echo "1. Check /boot/config.txt contains: dtoverlay=imx296"
-    echo "2. Try reloading the driver: sudo modprobe -r imx296 && sudo modprobe imx296"
-    echo "3. Your camera shows the error: 'Failed to start streaming: Invalid argument'"
-    echo "   This usually indicates an incompatible format or driver issue."
-    echo "4. Create a /etc/modprobe.d/imx296.conf file with: options imx296 compatible_mode=1"
-    echo "5. Check if MJPG format is supported: v4l2-ctl --list-formats-ext"
+    # Check v4l2 capabilities
+    echo "Video device capabilities:"
+    for v in /dev/video*; do
+      if [ -e "$v" ]; then
+        echo "Device: $v"
+        v4l2-ctl -d "$v" --list-formats-ext 2>/dev/null || true
+      fi
+    done
     
+    echo "Camera hardware issue detected. Possible solutions:"
+    echo "1. Check the camera's physical connection and ribbon cable"
+    echo "2. Try 'sudo rpi-update' to get the latest firmware"
+    echo "3. Run 'sudo modprobe -r imx296 && sudo modprobe imx296 compatible_mode=1'"
+    echo "4. Make sure /etc/modprobe.d/imx296.conf contains: options imx296 compatible_mode=1"
+    echo "5. Make sure /boot/config.txt contains: dtoverlay=imx296"
     return 1
   fi
 }
@@ -460,35 +481,42 @@ fix_media_ctl_roi() {
   echo "Current media-ctl configuration:"
   media-ctl -d "$MEDIA_DEVICE" -p
   
-  # Find the IMX296 entity
-  local ENTITY_NAME=""
-  ENTITY_NAME=$(media-ctl -d "$MEDIA_DEVICE" -p | grep -i "imx296" | head -1 | grep -o "\".*\"" | tr -d '"' || echo "")
-  
-  if [ -z "$ENTITY_NAME" ]; then
-    echo "❌ Could not find IMX296 entity name. Trying alternate method..."
-    ENTITY_NAME=$(media-ctl -d "$MEDIA_DEVICE" -p | grep -i "entity" | grep -i "imx296" | head -1 | awk -F: '{print $2}' | xargs || echo "imx296")
+  # Determine the device ID based on Raspberry Pi revision
+  local DEVICE_ID="10"
+  if [ "" != "$(grep "Revision.*: ...17.$" /proc/cpuinfo)" ]; then
+    DEVICE_ID="10"  # Default to 10 for first camera
+    if [ -n "$CAM1" ]; then  # Check for CAM1 env var that may be set
+      DEVICE_ID="11"
+    fi
   fi
   
-  if [ -z "$ENTITY_NAME" ]; then
-    echo "Using default entity name: imx296"
-    ENTITY_NAME="imx296"
-  else
-    echo "Found IMX296 entity: $ENTITY_NAME"
-  fi
+  echo "Using device ID: $DEVICE_ID for entity search"
   
-  # Configure proper 400x400 ROI centered in the sensor
-  # The IMX296 seems to be using 400x400 for raw format
-  echo "Setting 400x400 ROI configuration..."
+  # Use the exact entity format from the working script
+  ENTITY_NAME="imx296 $DEVICE_ID-001a"
+  echo "Using entity name: $ENTITY_NAME"
   
-  # Try different quoting styles and formats to find what works
-  # First attempt: quoted entity name with explicit format
-  media-ctl -d "$MEDIA_DEVICE" --set-v4l2 "\"$ENTITY_NAME\":0[fmt:SBGGR10_1X10/400x400]" || true
+  # Configure proper 400x400 ROI centered in the sensor using working script approach
+  # Calculate crop position to center it in the sensor (using 1440x1088 as reference dimensions)
+  WIDTH=400
+  HEIGHT=400
   
-  # Second attempt: without quotes around entity
-  media-ctl -d "$MEDIA_DEVICE" --set-v4l2 "$ENTITY_NAME:0[fmt:SBGGR10_1X10/400x400]" || true
+  # Calculate crop position
+  CROP_X=$(( (1440 - WIDTH) / 2 ))
+  CROP_Y=$(( (1088 - HEIGHT) / 2 ))
   
-  # Third attempt: with crop parameter
-  media-ctl -d "$MEDIA_DEVICE" --set-v4l2 "$ENTITY_NAME:0[fmt:SBGGR10_1X10/400x400 crop:(0,0)/400x400]" || true
+  echo "Setting media-ctl with centered crop: crop:($CROP_X,$CROP_Y)/${WIDTH}x${HEIGHT}"
+  
+  # Try the exact command format from the working script
+  for m in {0..5}; do
+    if [ -e "/dev/media$m" ]; then
+      echo "Trying on /dev/media$m with exact working script format..."
+      media-ctl -d "/dev/media$m" --set-v4l2 "'imx296 $DEVICE_ID-001a':0 [fmt:SBGGR10_1X10/${WIDTH}x${HEIGHT} crop:(${CROP_X},${CROP_Y})/${WIDTH}x${HEIGHT}]" -v && {
+        echo "✅ Successfully configured media$m with exact script format"
+        break
+      }
+    fi
+  done
   
   # Verify the configuration
   echo "Updated media-ctl configuration:"
@@ -502,6 +530,23 @@ fix_media_ctl_roi() {
       v4l2-ctl -d "$v" --list-formats-ext 2>/dev/null || true
     fi
   done
+  
+  # Create modprobe configuration if it doesn't exist
+  if [ ! -f "/etc/modprobe.d/imx296.conf" ]; then
+    echo "Creating IMX296 compatible_mode configuration..."
+    echo "options imx296 compatible_mode=1" | sudo tee /etc/modprobe.d/imx296.conf
+  fi
+  
+  # Check if dtoverlay exists in config.txt
+  if [ -f "/boot/config.txt" ] && ! grep -q "dtoverlay=imx296" "/boot/config.txt"; then
+    echo "Adding IMX296 device tree overlay to /boot/config.txt"
+    echo "dtoverlay=imx296" | sudo tee -a /boot/config.txt
+  fi
+  
+  # Ensure video devices have proper permissions
+  echo "Setting video device permissions..."
+  sudo chmod 666 /dev/video* 2>/dev/null || true
+  sudo chmod 666 /dev/media* 2>/dev/null || true
   
   echo "Media-ctl ROI configuration complete"
 }
