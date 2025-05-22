@@ -2,11 +2,11 @@
 
 # Camera settings
 camera:
-  width: 400
-  height: 400
-  fps: 200
-  codec: mjpg
-  container: mkv
+  width: 1280
+  height: 720
+  fps: 30
+  codec: h264
+  container: mp4
   preview: true  # Enable preview window by default
   enable_crop: true  # Enable Global Shutter Camera support by default
 

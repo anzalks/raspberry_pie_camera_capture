@@ -17,6 +17,9 @@ if [ "$(id -u)" -ne 0 ]; then
   echo "This script must be run as root (use sudo). Exiting." >&2
   exit 1
 fi
+PROJECT_DIR=$(pwd)
+CONFIG_FILE="$PROJECT_DIR/config.yaml"
+VENV_DIR=".venv"
 
 echo "Updating package list..."
 apt update
@@ -188,12 +191,41 @@ fi
 chmod -R 755 "$RECORDINGS_DIR"
 echo "Set proper permissions for recordings directory"
 
+# --- Create default configuration file ---
+echo "Creating default configuration file..."
+
+# Ensure PROJECT_DIR is set to the current directory first
+if [ -z "$PROJECT_DIR" ]; then
+    PROJECT_DIR=$(pwd)
+fi
+CONFIG_FILE="$PROJECT_DIR/config.yaml"
+
+if [ -f "$CONFIG_FILE" ]; then
+    echo "Configuration file already exists. Backing up existing file..."
+    # Backup the existing file
+    mv "$CONFIG_FILE" "$CONFIG_FILE.bak"
+fi
+
 # --- Setup Camera Permissions ---
 echo "Setting up camera permissions and dependencies..."
 
-# Install necessary camera-related packages if not already installed
+# Ensure v4l-utils is installed for camera debugging
+echo "Installing v4l-utils for camera debugging capabilities..."
+apt install -y v4l-utils
+
+# Ensure v4l-utils and libcamera-apps are installed (critical for Global Shutter Camera)
 echo "Installing camera utilities and tools..."
-apt install -y v4l-utils libcamera-apps libcamera-tools
+# Install v4l-utils (which includes v4l2-ctl), libcamera-apps, and python3-libcamera
+# media-ctl is part of v4l-utils on newer systems (like Bookworm)
+# python3-opencv is usually needed for image processing
+# Ensure GStreamer plugins for libcamera are installed if needed for other apps
+# sudo apt install -y v4l-utils libcamera-apps libcamera-tools media-ctl python3-libcamera python3-opencv gstreamer1.0-libcamera
+sudo apt install -y v4l-utils libcamera-apps libcamera-tools python3-libcamera python3-opencv gstreamer1.0-libcamera
+
+# Check if installation was successful (basic check)
+if ! command -v v4l2-ctl &> /dev/null || ! command -v libcamera-hello &> /dev/null; then
+    echo "WARNING: v4l-utils or libcamera-hello not found. Camera utilities might be incomplete." >&2
+fi
 
 # Set proper permissions for camera access
 echo "Setting camera group permissions..."
@@ -272,7 +304,7 @@ After=network.target
 Type=simple
 User=$SUDO_USER
 WorkingDirectory=$PROJECT_DIR
-ExecStart=$PROJECT_DIR/$VENV_DIR/bin/python -m src.raspberry_pi_lsl_stream.camera_capture --config $CONFIG_FILE
+ExecStart=/usr/bin/python3 -m src.raspberry_pi_lsl_stream.camera_capture --config $CONFIG_FILE
 Environment="PATH=$PROJECT_DIR/$VENV_DIR/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="PYTHONUNBUFFERED=1"
 Environment="TERM=xterm-256color"
@@ -365,7 +397,7 @@ case "$1" in
         ;;
     monitor)
         echo -e "${GREEN}Starting live monitoring mode...${NC}"
-        "$PROJECT_DIR/watch-raspie.sh"
+        "$(dirname "$0")/watch-raspie.sh"
         ;;
     enable)
         echo -e "${GREEN}Enabling capture service to start on boot...${NC}"
@@ -431,9 +463,9 @@ echo "Recordings will be saved to $RECORDINGS_DIR/YYYY-MM-DD/{videos|audio}/"
 # --- Setup Camera Permissions ---
 echo "Setting up camera permissions and dependencies..."
 
-# Install necessary camera-related packages
+# Install necessary camera-related packages if not already installed
 echo "Installing camera utilities and tools..."
-apt install -y v4l-utils libcamera-apps libcamera-tools
+apt install -y v4l-utils libcamera-apps libcamera-tools python3-libcamera
 
 # Set proper permissions for camera access
 echo "Setting camera group permissions..."
@@ -449,10 +481,29 @@ chmod 666 /tmp/raspie_camera.lock
 chown $SUDO_USER:$SUDO_USER /tmp/raspie_camera.lock
 echo "Camera lock file created with proper permissions"
 
-# Fix permissions for camera device nodes
-echo "Setting permissions for camera devices..."
-if [ -e "/dev/video0" ]; then
-  chmod 666 /dev/video0
+# Fix permissions for camera device nodes if they exist
+echo "Setting permissions for ALL camera devices..."
+for dev in /dev/video*; do
+    if [ -e "$dev" ]; then
+        echo "Setting permissions for $dev"
+        chmod 666 "$dev"
+    fi
+done
+
+# Ensure camera modules are loaded
+echo "Checking if camera modules are loaded..."
+if ! lsmod | grep -q "^videodev"; then
+    echo "Loading camera modules..."
+    modprobe videodev 2>/dev/null || true
+    modprobe v4l2_common 2>/dev/null || true
+fi
+
+# Ensure camera is enabled in config
+echo "Checking if camera is enabled in raspi-config..."
+if command -v raspi-config > /dev/null; then
+    echo "Enabling camera interface via raspi-config..."
+    raspi-config nonint do_camera 0
+    echo "Camera interface enabled"
 fi
 
 # Enable preview in config
@@ -464,16 +515,7 @@ else
     echo "WARNING: Config file not found, skipping preview update"
 fi
 
-# Start the service
-systemctl start raspie-capture.service
-
-# Apply optional performance optimizations
-echo "Applying performance optimizations..."
-if [ -f "$PROJECT_DIR/raspie-optimize.sh" ]; then
-    bash "$PROJECT_DIR/raspie-optimize.sh"
-else
-    echo "WARNING: Performance optimization script not found. Skipping optimizations."
-fi
+echo "Camera setup complete. A reboot is recommended to ensure camera detection."
 
 # --- Camera Enablement Reminder --- 
 echo "-----------------------------------------------------" 
@@ -642,7 +684,7 @@ echo "Setting up camera permissions and dependencies..."
 
 # Install necessary camera-related packages if not already installed
 echo "Installing camera utilities and tools..."
-apt install -y v4l-utils libcamera-apps libcamera-tools
+apt install -y v4l-utils libcamera-apps libcamera-tools python3-libcamera
 
 # Set proper permissions for camera access
 echo "Setting camera group permissions..."
