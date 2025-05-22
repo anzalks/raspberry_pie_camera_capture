@@ -126,8 +126,10 @@ show_dashboard() {
     # Trap cleanup for graceful exit
     trap cleanup_dashboard SIGINT SIGTERM EXIT
     
-    # Loop to continuously update the dashboard
-    while true; do
+    # Flag to track if dashboard should keep running
+    KEEP_RUNNING=true
+    
+    while $KEEP_RUNNING; do
         # Get service status
         service_status=$(systemctl is-active $SERVICE_NAME 2>/dev/null)
         pid=$(systemctl show -p MainPID $SERVICE_NAME | cut -d= -f2)
@@ -317,56 +319,59 @@ show_dashboard() {
             ntfy_text="No ntfy topic configured\n"
         fi
         
-        # Calculate relative sizes for the widgets based on content
+        # Calculate service status for gauge
         gauge_val=0
         if [ "$service_status" = "active" ]; then
             gauge_val=100
         fi
         
+        # Add exit instructions
+        exit_text="\n\nPress ESC or q to exit, Enter to refresh."
+        
         # Update temporary file with dashboard data
         cat > $TEMP_FILE <<EOF
-<service>
+SERVICE INFORMATION
+------------------
 $status_text
-</service>
 
-<buffer>
+BUFFER STATUS
+------------
 $buffer_text
-</buffer>
 
-<recording>
+RECORDING STATUS
+--------------
 $recording_text
-</recording>
 
-<recordings>
+RECENT RECORDINGS
+---------------
 $recordings_text
-</recordings>
 
-<lsl>
+LSL STREAM DATA
+-------------
 $lsl_text
-</lsl>
 
-<ntfy>
+REMOTE CONTROL
+------------
 $ntfy_text
-</ntfy>
+$exit_text
 EOF
         
-        # Create a dialog dashboard with multiple widgets
-        dialog --clear --colors --title "IMX296 Camera Status Dashboard" \
-               --begin 2 1 --gauge "Service Status" 5 $DIALOG_WIDTH $gauge_val \
-               --and-widget --begin 7 1 --title "Service Information" --cr-wrap --tailboxbg "$TEMP_FILE" 20 $DIALOG_WIDTH 0 "$TEMP_FILE" "service" \
-               --and-widget --begin 7 50 --title "Buffer Status" --cr-wrap --tailboxbg "$TEMP_FILE" 8 50 0 "$TEMP_FILE" "buffer" \
-               --and-widget --begin 15 50 --title "Recording Status" --cr-wrap --tailboxbg "$TEMP_FILE" 8 50 0 "$TEMP_FILE" "recording" \
-               --and-widget --begin 23 1 --title "Recent Recordings" --cr-wrap --tailboxbg "$TEMP_FILE" 10 50 0 "$TEMP_FILE" "recordings" \
-               --and-widget --begin 23 50 --title "LSL Stream Data" --cr-wrap --tailboxbg "$TEMP_FILE" 6 50 0 "$TEMP_FILE" "lsl" \
-               --and-widget --begin 29 50 --title "Remote Control" --cr-wrap --tailboxbg "$TEMP_FILE" 4 50 0 "$TEMP_FILE" "ntfy" \
-               --no-cancel --no-shadow --no-collapse --sleep 2
+        # Clear the screen before showing dialog
+        clear
         
-        # Add key commands at the bottom
-        dialog --title "Key Commands" --infobox "Press 'q' to quit, 's' to start recording, 'p' to stop recording" 3 50
-        
-        # Check for Ctrl+C or other exit
-        if [ $? -ne 0 ]; then
-            break
+        # Create a simple dashboard using textbox (most compatible)
+        if dialog --clear --title "IMX296 Camera Status Dashboard" \
+                 --exit-label "Exit" --no-cancel --cr-wrap \
+                 --textbox "$TEMP_FILE" $(tput lines) $(tput cols); then
+            # Returned normally (via OK button)
+            clear
+            echo "Dashboard closed."
+            KEEP_RUNNING=false
+        else
+            # User pressed ESC or Cancel
+            clear
+            echo "Dashboard closed."
+            KEEP_RUNNING=false
         fi
     done
 }
@@ -455,6 +460,7 @@ cleanup_dashboard() {
     # Remove temporary file
     rm -f "$TEMP_FILE"
     clear
+    echo "Dashboard closed and resources cleaned up."
 }
 
 # Function to display menu
