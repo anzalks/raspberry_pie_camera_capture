@@ -37,10 +37,17 @@ start_recording() {
         curl -s -d "start" https://ntfy.sh/$ntfy_topic
         echo "Start signal sent!"
         
-        # Direct verification of recording state by checking log
-        echo "Verifying recording state..."
-        sleep 2
-        check_recording_state
+        # Direct verification of recording state
+        echo "Checking for recording status changes..."
+        for i in {1..5}; do
+            echo "Check attempt $i..."
+            sleep 1
+            new_status=$(sudo journalctl -u $SERVICE_NAME -n 10 2>/dev/null | grep -iE "recording|started|notification received" | tail -1)
+            if [ -n "$new_status" ]; then
+                echo "Recording status update: $new_status"
+                break
+            fi
+        done
     else
         echo "No ntfy topic configured. Cannot start recording."
     fi
@@ -54,10 +61,17 @@ stop_recording() {
         curl -s -d "stop" https://ntfy.sh/$ntfy_topic
         echo "Stop signal sent!"
         
-        # Direct verification of recording state by checking log
-        echo "Verifying recording state..."
-        sleep 2
-        check_recording_state
+        # Direct verification of recording state
+        echo "Checking for recording status changes..."
+        for i in {1..5}; do
+            echo "Check attempt $i..."
+            sleep 1
+            new_status=$(sudo journalctl -u $SERVICE_NAME -n 10 2>/dev/null | grep -iE "recording stopped|notification received|stop" | tail -1)
+            if [ -n "$new_status" ]; then
+                echo "Recording status update: $new_status"
+                break
+            fi
+        done
     else
         echo "No ntfy topic configured. Cannot stop recording."
     fi
@@ -149,123 +163,91 @@ show_dashboard() {
         echo
         echo "=== BUFFER INFORMATION ==="
         
-        # Get buffer information - EXPANDED SEARCH
-        buffer_info=$(sudo journalctl -u $SERVICE_NAME -n 200 2>/dev/null | grep -E "Captured|buffer contains|Frame buffer|frames received|Current FPS|buffer size" | tail -5)
+        # Get buffer information - FURTHER EXPANDED SEARCH
+        buffer_info=$(sudo journalctl -u $SERVICE_NAME -n 300 2>/dev/null | grep -iE "buffer|fps|frame|captured|libcamera" | grep -v "LSL" | tail -10)
         if [ -n "$buffer_info" ]; then
             # Display raw buffer info for debugging
-            echo "Buffer log entries:"
+            echo "Buffer log entries (last 10):"
             echo "$buffer_info" | sed 's/^/  /'
             echo
             
-            # Try to extract values with more flexible patterns
-            total_frames=$(echo "$buffer_info" | grep -oE "[Cc]aptured [0-9]+" | grep -oE "[0-9]+" || 
-                         echo "$buffer_info" | grep -oE "frames received: [0-9]+" | grep -oE "[0-9]+" || 
-                         echo "?")
-            buffer_frames=$(echo "$buffer_info" | grep -oE "buffer contains [0-9]+" | grep -oE "[0-9]+" || 
-                          echo "$buffer_info" | grep -oE "buffer size: [0-9]+" | grep -oE "[0-9]+" || 
-                          echo "?")
-            
-            echo "Total Frames Captured: $total_frames"
-            echo "Frames Currently in Buffer: $buffer_frames"
-            
-            if [ "$total_frames" != "?" ] && [ "$buffer_frames" != "?" ] && [ "$total_frames" != "0" ]; then
-                buffer_percent=$((buffer_frames * 100 / total_frames))
-                echo "Buffer Fullness: ${buffer_percent}%"
-                echo -n "Buffer: ["
-                for i in $(seq 1 20); do
-                    if [ $i -le $((buffer_percent / 5)) ]; then
-                        echo -n "#"
-                    else
-                        echo -n " "
-                    fi
-                done
-                echo "] ${buffer_percent}%"
+            # Try to extract buffer stats from camera logs
+            camera_stats=$(sudo journalctl -u $SERVICE_NAME -n 600 2>/dev/null | grep -i "statistics" | tail -1)
+            if [ -n "$camera_stats" ]; then
+                echo "Camera statistics: $camera_stats"
             fi
             
-            # Get FPS information with expanded patterns
-            fps_info=$(echo "$buffer_info" | grep -E "FPS:|framerate:")
+            # Try to find frame rate information
+            fps_info=$(echo "$buffer_info" | grep -iE "fps|framerate|rate" | tail -1)
             if [ -n "$fps_info" ]; then
-                current_fps=$(echo "$fps_info" | grep -oE "[Cc]urrent FPS:? [0-9]+" | grep -oE "[0-9]+" || 
-                            echo "$fps_info" | grep -oE "framerate:? [0-9]+" | grep -oE "[0-9]+" || 
-                            echo "N/A")
-                echo "Current FPS: $current_fps"
+                echo "FPS information: $fps_info"
             fi
         else
-            echo "No recent buffer information available"
-            echo "Try running: sudo journalctl -u $SERVICE_NAME -n 50 | grep -E 'buffer|Buffer|frames|FPS'"
+            echo "No buffer information available in logs"
+            echo "Running command to check for any relevant entries:"
+            relevant_entries=$(sudo journalctl -u $SERVICE_NAME -n 30 2>/dev/null | grep -iE "camera|buffer|frame|fps|capture" | tail -5)
+            if [ -n "$relevant_entries" ]; then
+                echo "$relevant_entries" | sed 's/^/  /'
+            else
+                echo "  No relevant entries found in recent logs"
+            fi
         fi
         
         echo
         echo "=== RECORDING STATUS ==="
         
         # Get recording information with expanded search
-        is_recording=$(sudo journalctl -u $SERVICE_NAME -n 100 2>/dev/null | grep -E "Recording active:|Recording started|Recording stopped|ntfy message received|notification.+start|notification.+stop" | tail -3)
-        if [[ "$is_recording" == *"Recording active"* ]] || [[ "$is_recording" == *"Recording started"* ]] || [[ "$is_recording" == *"notification"*"start"* ]]; then
-            echo "Status: ACTIVE [Press P to stop recording]"
-            echo "Recent recording log entries:"
-            echo "$is_recording" | sed 's/^/  /'
+        is_recording_raw=$(sudo journalctl -u $SERVICE_NAME -n 300 2>/dev/null | grep -iE "recording|started|active|notify|notification|ntfy" | tail -15)
+        if [ -n "$is_recording_raw" ]; then
+            echo "Recent recording-related log entries (last 15):"
+            echo "$is_recording_raw" | sed 's/^/  /'
             echo
+        fi
+
+        # Check for positive indicators of an active recording
+        recording_indicators=$(echo "$is_recording_raw" | grep -iE "recording active|started recording|notification.+start|ntfy.+start" | tail -3)
+        if [ -n "$recording_indicators" ] && ! echo "$is_recording_raw" | grep -iE "recording stopped|notification.+stop|ntfy.+stop" | tail -1 > /dev/null; then
+            echo "Status: ACTIVE [Press P to stop recording]"
             
-            # Extract session frame count 
-            session_frame_info=$(echo "$is_recording" | grep -oE "session frame [0-9]+" | grep -oE "[0-9]+" || 
-                                echo "$is_recording" | grep -oE "frame [0-9]+" | grep -oE "[0-9]+" || 
-                                echo "N/A")
+            # Try to extract session frame count with very flexible pattern matching
+            session_frame_info=$(echo "$is_recording_raw" | grep -iE "session frame|frame count|frames:" | grep -oE "[0-9]+" | tail -1 || echo "N/A")
             if [ -n "$session_frame_info" ] && [ "$session_frame_info" != "N/A" ]; then
                 echo "Current session frames: $session_frame_info"
             fi
             
             # Extract queue size with more flexible patterns
-            queue_info=$(echo "$is_recording" | grep -oE "queue size [0-9]+" | grep -oE "[0-9]+" || 
-                       echo "$is_recording" | grep -oE "queue [0-9]+" | grep -oE "[0-9]+" || 
-                       echo "N/A")
+            queue_info=$(echo "$is_recording_raw" | grep -iE "queue size|frame.+queue|queue.+frame" | grep -oE "[0-9]+" | tail -1 || echo "N/A")
             if [ -n "$queue_info" ] && [ "$queue_info" != "N/A" ]; then
                 echo "Frames queued for writing: $queue_info"
             fi
             
+            # Show all frames written info from logs
+            frames_info=$(sudo journalctl -u $SERVICE_NAME -n 100 2>/dev/null | grep -iE "frames written|written.+frames|frame count" | tail -3)
+            if [ -n "$frames_info" ]; then
+                echo "Frames written info:"
+                echo "$frames_info" | sed 's/^/  /'
+            fi
+            
             # Current recording file with expanded search
-            current_file_info=$(sudo journalctl -u $SERVICE_NAME -n 100 2>/dev/null | grep -E "Current output file:|Recording to file|Writing to|saving to|output file" | tail -1)
+            current_file_info=$(sudo journalctl -u $SERVICE_NAME -n 100 2>/dev/null | grep -iE "current output file:|recording to file|writing to|saving to|output file" | tail -1)
             if [ -n "$current_file_info" ]; then
-                # Try to extract filename with more flexible patterns
-                current_file=$(echo "$current_file_info" | grep -oE "recording_[0-9]+_[0-9]+\.mkv" || 
-                             echo "$current_file_info" | grep -oE "[a-zA-Z0-9_]+\.mkv" || 
-                             echo "")
-                if [ -n "$current_file" ]; then
-                    echo "Current file: $RECORDINGS_DIR/$current_file"
-                    LAST_FILE="$RECORDINGS_DIR/$current_file"
-                else
-                    echo "Current output file: $current_file_info"
-                fi
-            fi
-            
-            # Get frame count for this recording with expanded search
-            frames_written=$(sudo journalctl -u $SERVICE_NAME -n 100 2>/dev/null | grep -E "frames written|written [0-9]+ frames|frames saved" | tail -1 | grep -oE "[0-9]+ frames" | grep -oE "[0-9]+" || echo "N/A")
-            if [ -n "$frames_written" ] && [ "$frames_written" != "N/A" ]; then
-                echo "Frames written to file: $frames_written"
-            fi
-            
-            # Disk space info with expanded search
-            disk_info=$(sudo journalctl -u $SERVICE_NAME -n 100 2>/dev/null | grep -E "free space|disk space|available space" | tail -1)
-            if [ -n "$disk_info" ]; then
-                free_space=$(echo "$disk_info" | grep -oE "free space: [0-9]+\.[0-9]+ GB" | grep -oE "[0-9]+\.[0-9]+" || 
-                           echo "$disk_info" | grep -oE "[0-9]+\.[0-9]+ GB free" | grep -oE "[0-9]+\.[0-9]+" || 
-                           echo "N/A")
-                if [ -n "$free_space" ] && [ "$free_space" != "N/A" ]; then
-                    echo "Free disk space: ${free_space} GB"
-                else
-                    echo "Disk space info: $disk_info"
+                echo "Current output file: $current_file_info"
+                file_match=$(echo "$current_file_info" | grep -oE "[a-zA-Z0-9_]+\.mkv")
+                if [ -n "$file_match" ]; then
+                    echo "Extracted filename: $file_match"
+                    LAST_FILE="$RECORDINGS_DIR/$file_match"
                 fi
             fi
         else
             echo "Status: INACTIVE [Press S to start recording]"
-            echo "Recent recording log entries (if any):"
-            recent_status=$(sudo journalctl -u $SERVICE_NAME -n 30 2>/dev/null | grep -E "Recording stopped|ntfy message received|notification.+stop" | tail -1)
-            if [ -n "$recent_status" ]; then
-                echo "  $recent_status"
-            else
-                echo "  No recent recording status changes found"
+            echo "To start recording, press S or use: curl -d \"start\" https://ntfy.sh/$(grep -E "topic:" "$PROJECT_ROOT/config/config.yaml" | awk '{print $2}' | tr -d '"')"
+            
+            # Show any recent stop indicators
+            stop_indicators=$(echo "$is_recording_raw" | grep -iE "recording stopped|notification.+stop|ntfy.+stop" | tail -1)
+            if [ -n "$stop_indicators" ]; then
+                echo "Recent stop event: $stop_indicators"
             fi
-            echo
-
+            
             # Show next recording file
             timestamp=$(date +%s)
             config_file="$PROJECT_ROOT/config/config.yaml"
@@ -282,7 +264,7 @@ show_dashboard() {
             if [ -n "$LAST_FILE" ]; then
                 echo "Last file saved: $LAST_FILE"
                 if [ -f "$LAST_FILE" ]; then
-                    file_size=$(du -h "$LAST_FILE" 2>/dev/null | cut -f1 || echo "Unknown")
+                    file_size=$(sudo du -h "$LAST_FILE" 2>/dev/null | cut -f1 || echo "Unknown")
                     echo "Last file size: $file_size"
                 fi
             fi
@@ -319,57 +301,36 @@ show_dashboard() {
         echo
         echo "=== LSL STREAM DATA ==="
         
-        # Get LSL information - with expanded search and debug output
-        lsl_info=$(sudo journalctl -u $SERVICE_NAME -n 150 2>/dev/null | grep -E "LSL output:|LSL stream|metadata|channel" | tail -5)
+        # Get LSL information - COMPLETELY REVISED APPROACH
+        lsl_info=$(sudo journalctl -u $SERVICE_NAME -n 300 2>/dev/null | grep -iE "LSL|lsl|stream|metadata" | tail -10)
         if [ -n "$lsl_info" ]; then
-            echo "Recent LSL log entries:"
+            echo "Recent LSL log entries (last 10):"
             echo "$lsl_info" | sed 's/^/  /'
             echo
             
-            # Try to parse LSL data more flexibly
-            lsl_data=$(echo "$lsl_info" | grep -E "\[.*\]" | tail -3)
+            # Check for actual data pattern in logs
+            lsl_data=$(sudo journalctl -u $SERVICE_NAME -n 1000 2>/dev/null | grep -E "LSL output:|IMX296_Metadata" | grep -E "\[[0-9\.]+," | tail -3)
             if [ -n "$lsl_data" ]; then
-                printf "%-15s %-10s %-15s\n" "TIMESTAMP" "RECORDING" "FRAME"
-                echo "----------------------------------------------"
-                echo "$lsl_data" | while read line; do
-                    # Extract data from line using more flexible pattern matching
-                    data=$(echo "$line" | grep -oE "\[.*\]")
-                    if [ -n "$data" ]; then
-                        # Try various extraction methods
-                        timestamp=$(echo "$data" | grep -oE "[0-9]+\.[0-9]+" | head -1)
-                        is_recording=$(echo "$data" | grep -oE "[0-9]+\.[0-9]+" | sed -n '2p')
-                        frame_num=$(echo "$data" | grep -oE "[0-9]+\.[0-9]+" | sed -n '3p')
-                        
-                        if [ -n "$timestamp" ] && [ -n "$is_recording" ] && [ -n "$frame_num" ]; then
-                            readable_time=$(date -d "@$timestamp" '+%H:%M:%S' 2>/dev/null || date '+%H:%M:%S')
-                            
-                            rec_status="NO"
-                            if [ "$is_recording" = "1" ]; then
-                                rec_status="YES"
-                            fi
-                            
-                            printf "%-15s %-10s %-15s\n" "$readable_time" "$rec_status" "$frame_num"
-                        else
-                            # If normal extraction failed, try an alternative approach
-                            echo "  Raw data: $data (unable to parse into columns)"
-                        fi
-                    fi
-                done
+                echo "Parsed LSL data:"
+                echo "$lsl_data" | sed 's/^/  /'
             else
-                echo "LSL data found but couldn't extract structured information"
-                echo "Try manually checking: sudo journalctl -u $SERVICE_NAME | grep LSL"
+                # If we can't find standard data patterns, check for any numeric data
+                lsl_numbers=$(echo "$lsl_info" | grep -Eo "[0-9]+\.[0-9]+" | tail -3)
+                if [ -n "$lsl_numbers" ]; then
+                    echo "LSL numeric data found (timestamps or values):"
+                    echo "$lsl_numbers" | sed 's/^/  /'
+                else
+                    echo "No structured LSL data found in logs"
+                fi
             fi
         else
-            # Check if LSL is active at all with broader search
-            lsl_setup=$(sudo journalctl -u $SERVICE_NAME 2>/dev/null | grep -E "Setting up LSL|LSL stream|LSL output" | tail -1)
+            # Report on LSL setup
+            lsl_setup=$(sudo journalctl -u $SERVICE_NAME 2>/dev/null | grep -E "Setting up LSL|Created LSL|LSL stream" | tail -1)
             if [ -n "$lsl_setup" ]; then
-                echo "Stream Name: IMX296_Metadata"
-                echo "Channels: CaptureTimeUnix, ntfy_notification_active, session_frame_no"
-                echo "No recent LSL data available in logs"
-                echo "Check with: sudo journalctl -u $SERVICE_NAME | grep -i lsl"
+                echo "LSL setup detected: $lsl_setup"
+                echo "No recent LSL data transmission found in logs"
             else
-                echo "No LSL stream information available in logs"
-                echo "LSL may not be enabled in this system"
+                echo "No LSL stream setup detected in logs"
             fi
         fi
         
@@ -398,6 +359,18 @@ show_dashboard() {
             sleep 0.2
             check_keyboard
         done
+
+        # Get disk information
+        disk_info=$(sudo journalctl -u $SERVICE_NAME -n 200 2>/dev/null | grep -iE "free space|disk space|available space|space left" | tail -1)
+        if [ -n "$disk_info" ]; then
+            echo "Disk information: $disk_info"
+        else
+            # Try to get disk space directly
+            if [ -d "$RECORDINGS_DIR" ]; then
+                free_space=$(df -h "$RECORDINGS_DIR" | awk 'NR==2 {print $4}')
+                echo "Free space in recordings directory: $free_space"
+            fi
+        fi
     done
 }
 
