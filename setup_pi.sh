@@ -337,16 +337,12 @@ EOF
 chown $SUDO_USER:$SUDO_USER "$CONFIG_FILE"
 echo "Default configuration file created at $CONFIG_FILE"
 
-# --- Setup Camera Permissions ---
+# --- Camera Permissions Setup ---
 echo "Setting up camera permissions and dependencies..."
 
-# Ensure v4l-utils is installed for camera debugging
-echo "Installing v4l-utils for camera debugging capabilities..."
-apt install -y v4l-utils
-
-# Ensure v4l-utils and libcamera-apps are installed (critical for Global Shutter Camera)
-echo "Installing v4l-utils and libcamera-apps (required for camera operation)..."
-apt install -y libcamera-apps libcamera-tools
+# Install necessary camera-related packages if not already installed
+echo "Installing camera utilities and tools..."
+apt install -y v4l-utils libcamera-apps libcamera-tools media-ctl python3-libcamera
 
 # Set camera group permissions to allow non-root access
 echo "Setting camera group permissions..."
@@ -367,7 +363,39 @@ echo "Setting up camera lock file with proper permissions..."
 rm -f /tmp/raspie_camera.lock
 touch /tmp/raspie_camera.lock
 chmod 666 /tmp/raspie_camera.lock
+chown $SUDO_USER:$SUDO_USER /tmp/raspie_camera.lock
 echo "Camera lock file created with proper permissions"
+
+# Fix permissions for camera device nodes if they exist
+echo "Setting permissions for ALL camera devices..."
+for dev in /dev/video*; do
+    if [ -e "$dev" ]; then
+        echo "Setting permissions for $dev"
+        chmod 666 "$dev"
+    fi
+done
+
+# Ensure camera modules are loaded
+echo "Checking if camera modules are loaded..."
+if ! lsmod | grep -q "^videodev"; then
+    echo "Loading camera modules..."
+    modprobe videodev 2>/dev/null || true
+    modprobe v4l2_common 2>/dev/null || true
+fi
+
+# Ensure camera is enabled in config
+echo "Checking if camera is enabled in raspi-config..."
+if command -v raspi-config > /dev/null; then
+    echo "Enabling camera interface via raspi-config..."
+    raspi-config nonint do_camera 0
+    echo "Camera interface enabled"
+fi
+
+# Enable preview in config
+echo "Updating config to enable preview..."
+sed -i 's/preview: false/preview: true/' "$CONFIG_FILE"
+
+echo "Camera setup complete. A reboot is recommended to ensure camera detection."
 
 # --- Automatic Service Installation ---
 echo "Installing camera capture service to start automatically at boot..."
@@ -777,14 +805,35 @@ chown $SUDO_USER:$SUDO_USER /tmp/raspie_camera.lock
 echo "Camera lock file created with proper permissions"
 
 # Fix permissions for camera device nodes if they exist
-echo "Setting permissions for camera devices..."
-if [ -e "/dev/video0" ]; then
-  chmod 666 /dev/video0
+echo "Setting permissions for ALL camera devices..."
+for dev in /dev/video*; do
+    if [ -e "$dev" ]; then
+        echo "Setting permissions for $dev"
+        chmod 666 "$dev"
+    fi
+done
+
+# Ensure camera modules are loaded
+echo "Checking if camera modules are loaded..."
+if ! lsmod | grep -q "^videodev"; then
+    echo "Loading camera modules..."
+    modprobe videodev 2>/dev/null || true
+    modprobe v4l2_common 2>/dev/null || true
+fi
+
+# Ensure camera is enabled in config
+echo "Checking if camera is enabled in raspi-config..."
+if command -v raspi-config > /dev/null; then
+    echo "Enabling camera interface via raspi-config..."
+    raspi-config nonint do_camera 0
+    echo "Camera interface enabled"
 fi
 
 # Enable preview in config
 echo "Updating config to enable preview..."
 sed -i 's/preview: false/preview: true/' "$CONFIG_FILE"
+
+echo "Camera setup complete. A reboot is recommended to ensure camera detection."
 
 # --- Camera Enablement Reminder --- 
 echo "-----------------------------------------------------" 

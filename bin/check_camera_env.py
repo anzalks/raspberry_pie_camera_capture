@@ -99,7 +99,7 @@ def check_camera_devices():
     video_devices = glob.glob('/dev/video*')
     if video_devices:
         print_status(f"Found {len(video_devices)} video devices:", "success")
-        for dev in video_devices:
+        for dev in sorted(video_devices):
             try:
                 # Check permissions
                 stat_info = os.stat(dev)
@@ -122,7 +122,7 @@ def check_camera_devices():
     media_devices = glob.glob('/dev/media*')
     if media_devices:
         print_status(f"Found {len(media_devices)} media devices:", "success")
-        for dev in media_devices:
+        for dev in sorted(media_devices):
             try:
                 # Check permissions
                 stat_info = os.stat(dev)
@@ -138,171 +138,98 @@ def check_camera_devices():
             except Exception as e:
                 print(f"  {dev}: Error checking permissions: {e}")
     else:
-        print_status("No media devices found", False)
-        print_status("Media control may not be available for Global Shutter Camera", "warning")
+        print_status("No media devices found. This is usually fine unless using specific UVC features or Global Shutter advanced config.", "warning")
 
 def check_global_shutter_camera():
-    """Check for Global Shutter Camera."""
+    """Check for Global Shutter Camera using v4l2-ctl."""
     print_status("\n=== Global Shutter Camera Detection ===", True)
     
-    # Check if media-ctl is available
     try:
-        subprocess.check_output(['which', 'media-ctl'])
-        print_status("media-ctl is installed", "success")
+        subprocess.check_output(['which', 'v4l2-ctl'])
+        print_status("v4l2-ctl is installed", "success")
     except subprocess.CalledProcessError:
-        print_status("ERROR: media-ctl is not installed", False)
-        
-        # Check if we're on Bookworm OS
-        is_bookworm = False
-        if os.path.exists('/etc/os-release'):
-            with open('/etc/os-release', 'r') as f:
-                if '=bookworm' in f.read():
-                    is_bookworm = True
-        
-        if is_bookworm:
-            print_status("You are on Raspberry Pi OS Bookworm - first try installing OS packages:", "warning")
-            print("sudo apt install -y v4l-utils")
-            print_status("If OS packages don't work properly, use our script to check and build if needed:", True)
-            print("sudo ./scripts/run-camera.sh")
-        else:
-            print_status("Install with: sudo apt install -y v4l-utils", "warning")
-            print_status("The media-ctl tool is included in the v4l-utils package", True)
+        print_status("v4l2-ctl is not installed", False)
+        print_status("Install with: sudo apt install -y v4l-utils", "warning")
         return
     
-    # Check if media-ctl works with any devices
-    working_with_devices = False
-    for m in range(6):
-        try:
-            if os.path.exists(f"/dev/media{m}"):
-                subprocess.check_output(['media-ctl', '-d', f'/dev/media{m}', '-p'], 
-                                     stderr=subprocess.STDOUT, text=True)
-                working_with_devices = True
-                print_status(f"media-ctl works with /dev/media{m}", "success")
-                break
-        except subprocess.CalledProcessError:
-            pass
-    
-    if not working_with_devices:
-        print_status("media-ctl is installed but doesn't work with any media devices", "warning")
-        print_status("This could indicate a permissions issue or incompatibility", "warning")
-        print_status("Try running with sudo or building from source:", True)
-        print("sudo ./scripts/run-camera.sh")
-    
-    # Check for IMX296 sensor
     gs_detected = False
-    
     try:
-        # Method 1: Try using media-ctl to detect IMX296
-        for m in range(6):  # Try media devices 0-5
-            try:
-                output = subprocess.check_output(['media-ctl', '-d', f'/dev/media{m}', '-p'], 
-                                                text=True, stderr=subprocess.PIPE)
-                if 'imx296' in output.lower():
-                    print_status(f"Found Global Shutter Camera (IMX296) on /dev/media{m}", "success")
-                    gs_detected = True
-                    
-                    # Try to get more details
-                    print("\nSensor details:")
-                    print(output)
-                    
-                    # Check if running on Bookworm OS to warn about --no-raw flag
-                    if os.path.exists('/etc/os-release'):
-                        with open('/etc/os-release', 'r') as f:
-                            if '=bookworm' in f.read():
-                                print_status("NOTE: On Bookworm OS, use --no-raw flag with libcamera commands", "warning")
-                                print("Example: libcamera-hello --no-raw --list-cameras")
-                    break
-            except (subprocess.CalledProcessError, FileNotFoundError):
-                pass
+        output = subprocess.check_output(['v4l2-ctl', '--list-devices'], text=True, stderr=subprocess.PIPE)
+        if 'imx296' in output.lower():
+            print_status("Global Shutter Camera (IMX296) detected through v4l2-ctl", "success")
+            print("\nDevice listing:")
+            print(output)
+            gs_detected = True
         
-        # Method 2: Try v4l2-ctl as a fallback
+        # Additional check for rp1-cfe media device details if GS is found
+        if gs_detected:
+            media_devices = glob.glob('/dev/media*')
+            for m_dev in media_devices:
+                try:
+                    # This command is kept for detailed topology, but primary detection is v4l2-ctl
+                    media_output = subprocess.check_output(['media-ctl', '-d', m_dev, '-p'],
+                                                           text=True, stderr=subprocess.PIPE)
+                    if 'imx296' in media_output.lower():
+                        print(f"\nSensor details from {m_dev}:")
+                        print(media_output)
+                        break # Show details for the first GS camera found via media-ctl
+                except (subprocess.CalledProcessError, FileNotFoundError):
+                    pass # media-ctl might not be installed or device not found
+                    
         if not gs_detected:
+            # Fallback: Try libcamera-hello for detection if v4l2-ctl fails
             try:
-                output = subprocess.check_output(['v4l2-ctl', '--list-devices'], text=True)
-                if 'imx296' in output.lower():
-                    print_status("Global Shutter Camera (IMX296) detected through v4l2-ctl", "success")
-                    print("\nDevice listing:")
-                    print(output)
-                    gs_detected = True
-            except (subprocess.CalledProcessError, FileNotFoundError):
-                pass
-        
-        # Method 3: Try libcamera-hello for detection
-        if not gs_detected:
-            try:
-                output = subprocess.check_output(['libcamera-hello', '--list-cameras'], text=True)
+                output = subprocess.check_output(['libcamera-hello', '--list-cameras'], text=True, stderr=subprocess.PIPE)
                 if 'imx296' in output.lower():
                     print_status("Global Shutter Camera detected through libcamera-hello", "success")
                     print("\nCamera listing:")
                     print(output)
                     gs_detected = True
             except (subprocess.CalledProcessError, FileNotFoundError):
-                pass
-        
+                pass # libcamera-hello might not be installed
+
         if not gs_detected:
             print_status("No Global Shutter Camera (IMX296) detected", "warning")
+            
     except Exception as e:
         print_status(f"Error checking for Global Shutter Camera: {e}", False)
         traceback.print_exc()
 
 def check_bookworm_os():
-    """Check if running on Bookworm OS."""
+    """Check if running on Bookworm OS and v4l-utils status."""
     print_status("\n=== OS Version Check ===", True)
-    
+    is_bookworm = False
     try:
-        # Check if it's a Bookworm OS
-        is_bookworm = False
         if os.path.exists('/etc/os-release'):
             with open('/etc/os-release', 'r') as f:
                 os_release = f.read()
                 if '=bookworm' in os_release:
-                    is_bookworm = True
                     print_status("Detected Raspberry Pi OS Bookworm", "warning")
-                    
-                    # Check if media-ctl is available
-                    if not subprocess.call(['which', 'media-ctl'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0:
-                        print_status("ERROR: media-ctl not found in PATH. This is required for Global Shutter Camera.", False)
-                        print_status("Install v4l-utils package or build from source:", True)
-                        print("\nInstallation options:")
-                        print("1. Try OS packages first: sudo apt install -y v4l-utils")
-                        print("2. If OS packages don't work with the camera, build from source:")
-                        print("   sudo ./scripts/run-camera.sh")
-                        print("\nThe script will check if OS packages work and only build from source if needed.")
-                    else:
-                        # Verify the version of media-ctl
-                        try:
-                            version_output = subprocess.check_output(['media-ctl', '--version'], text=True)
-                            print_status(f"media-ctl is available: {version_output.strip()}", "success")
-                            
-                            # Check if it works with media devices
-                            works_with_device = False
-                            for m in range(6):
-                                try:
-                                    if os.path.exists(f"/dev/media{m}"):
-                                        subprocess.check_output(['media-ctl', '-d', f'/dev/media{m}', '-p'], 
-                                                              stderr=subprocess.STDOUT, text=True)
-                                        works_with_device = True
-                                        break
-                                except subprocess.CalledProcessError:
-                                    continue
-                            
-                            if works_with_device:
-                                print_status("OS-provided media-ctl is working with media devices", "success")
-                            else:
-                                print_status("OS-provided media-ctl may not work with all devices", "warning")
-                                print_status("If you have issues with Global Shutter Camera, try building from source:", True)
-                                print("sudo ./scripts/run-camera.sh")
-                        except subprocess.CalledProcessError:
-                            print_status("media-ctl is installed but may not be working correctly", "warning")
-                    
-                    # Always remind about the --no-raw flag
-                    print_status("NOTE: On Bookworm OS, use --no-raw flag with libcamera commands", "warning")
-                    print("Example: libcamera-hello --no-raw --list-cameras")
-                    
-                    return True
+                    is_bookworm = True
         
         if not is_bookworm:
-            print_status("Not running Bookworm OS, no special workaround needed", "success")
+            print_status("Not running Bookworm OS or OS could not be determined.", True)
+
+        # Check v4l2-ctl status regardless of OS, as it's our primary tool
+        try:
+            v4l2_ctl_version = subprocess.check_output(['v4l2-ctl', '--version'], text=True, stderr=subprocess.PIPE).strip()
+            print_status(f"v4l2-ctl is available: {v4l2_ctl_version}", "success")
+
+            # Check if v4l2-ctl can list devices
+            try:
+                subprocess.check_output(['v4l2-ctl', '--list-devices'], stderr=subprocess.PIPE)
+                print_status("v4l2-ctl can list devices.", "success")
+            except subprocess.CalledProcessError as e:
+                print_status(f"v4l2-ctl --list-devices failed: {e.stderr.strip() if e.stderr else e}", "warning")
+
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            print_status("v4l2-ctl is not installed or not working properly.", False)
+            print_status("Install/reinstall v4l-utils: sudo apt install -y v4l-utils", "warning")
+
+        if is_bookworm:
+             print_status("NOTE: On Bookworm OS, ensure v4l-utils is up to date for full camera support.", "warning")
+             print_status("Example: libcamera-hello --no-raw --list-cameras (if using libcamera directly)", "warning")
+             
         return is_bookworm
     except Exception as e:
         print_status(f"Error checking OS version: {e}", False)
@@ -317,20 +244,39 @@ def test_camera_capture():
         from picamera2 import Picamera2
         
         print_status("Initializing camera for test...", True)
-        camera = Picamera2()
-        camera.start()
         
-        print_status("Capturing test frame...", True)
-        time.sleep(2)  # Give camera time to initialize
-        frame = camera.capture_array()
+        # Attempt to list cameras first to ensure libcamera stack is responsive
+        try:
+            cameras = Picamera2.global_camera_info()
+            if not cameras:
+                print_status("No cameras found by Picamera2.global_camera_info(). Ensure camera is enabled in raspi-config and libcamera is working.", False)
+                return
+            print_status(f"Available cameras: {cameras}", True)
+        except Exception as e:
+            print_status(f"Error listing cameras with Picamera2: {e}", False)
+            print_status("This might indicate an issue with the libcamera stack.", "warning")
+            return
+
+        cam = Picamera2()
         
+        # Create a default configuration
+        config = cam.create_preview_configuration()
+        cam.configure(config)
+        
+        print_status(f"Configured for preview: {config}", True)
+        
+        cam.start()
+        print_status("Camera started for test.", True)
+        time.sleep(1)  # Give camera time to initialize
+        
+        frame = cam.capture_array()
         if frame is not None:
-            print_status(f"Successfully captured frame with shape {frame.shape}", "success")
+            print_status(f"Successfully captured test frame with shape {frame.shape}", "success")
         else:
             print_status("Frame capture returned None", False)
         
-        camera.stop()
-        print_status("Camera test completed", "success")
+        cam.stop()
+        print_status("Camera test completed and stopped.", "success")
     except ImportError:
         print_status("Cannot test camera capture - picamera2 not available", "warning")
     except Exception as e:
@@ -338,37 +284,27 @@ def test_camera_capture():
         traceback.print_exc()
 
 def check_recordings_dir():
-    """Check recordings directory structure."""
+    """Check if the recordings directory exists."""
     print_status("\n=== Recordings Directory Check ===", True)
+    # Try to determine project root to find recordings relative to it
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir) # Assumes script is in a 'scripts' or 'bin' subdirectory
     
-    # Get script location to determine project root
-    try:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        project_root = os.path.dirname(script_dir)
-        recordings_dir = os.path.join(project_root, 'recordings')
-        
-        if os.path.exists(recordings_dir):
-            print_status(f"Found recordings directory: {recordings_dir}", "success")
-            
-            # Check for date-based folders
-            date_dirs = [d for d in os.listdir(recordings_dir) 
-                         if os.path.isdir(os.path.join(recordings_dir, d)) and 
-                         len(d) == 10 and d[4] == '-' and d[7] == '-']
-            
-            if date_dirs:
-                print_status(f"Found {len(date_dirs)} date-based recording folders:", "success")
-                for date_dir in sorted(date_dirs, reverse=True)[:5]:  # Show most recent 5
-                    dir_path = os.path.join(recordings_dir, date_dir)
-                    videos = [f for f in os.listdir(dir_path) if f.endswith(('.mkv', '.mp4'))]
-                    print(f"  {date_dir}: {len(videos)} videos")
-            else:
-                print_status("No date-based recording folders found", "warning")
-                print_status(f"To create one: mkdir -p {os.path.join(recordings_dir, time.strftime('%Y-%m-%d'))}", True)
-        else:
-            print_status(f"Recordings directory not found: {recordings_dir}", "warning")
-            print_status(f"To create: mkdir -p {recordings_dir}", True)
-    except Exception as e:
-        print_status(f"Error checking recordings directory: {e}", False)
+    # If a common structure is raspberry_pie_camera_capture/scripts, go one more up
+    if os.path.basename(project_root) == "raspberry_pie_camera_capture" and os.path.basename(script_dir) in ["scripts", "bin"]:
+         project_root = os.path.dirname(project_root)
+
+    # Fallback to current working directory if structure is unusual
+    if not os.path.exists(os.path.join(project_root, "config.yaml")): # A common file to indicate root
+        project_root = os.getcwd()
+
+    recordings_dir = os.path.join(project_root, "recordings")
+    
+    if os.path.exists(recordings_dir) and os.path.isdir(recordings_dir):
+        print_status(f"Recordings directory found: {recordings_dir}", "success")
+    else:
+        print_status(f"Recordings directory not found: {recordings_dir}", "warning")
+        print_status(f"To create: mkdir -p {recordings_dir}", True)
 
 def main():
     """Main function to run all checks."""
@@ -376,16 +312,39 @@ def main():
     print("RASPBERRY PI CAMERA ENVIRONMENT CHECK".center(80))
     print("=" * 80)
     
-    # Display information about the current file structure
-    try:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        project_root = os.path.dirname(script_dir)
-        print(f"Project root: {project_root}")
-        print(f"Scripts directory: {os.path.join(project_root, 'scripts')}")
-        print(f"Bin directory: {script_dir}")
-    except Exception as e:
-        print(f"Error determining file structure: {e}")
+    # Determine project root and scripts/bin directory
+    script_path = os.path.abspath(__file__)
+    bin_dir = os.path.dirname(script_path)
+    scripts_dir = os.path.dirname(bin_dir) # Assumes bin is inside scripts, or scripts is project root
+    project_root = os.path.dirname(scripts_dir) if os.path.basename(scripts_dir) == "scripts" else scripts_dir
+
+    # A more robust way to find project root (where .git or a known file like run-camera.sh might be)
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    max_levels = 3 # Search up to 3 levels for a .git folder or specific file
+    found_root = False
+    for _ in range(max_levels):
+        if os.path.exists(os.path.join(current_dir, ".git")) or \
+           os.path.exists(os.path.join(current_dir, "run-camera.sh")) or \
+           os.path.exists(os.path.join(current_dir, "config.yaml")):
+            project_root = current_dir
+            found_root = True
+            break
+        parent_dir = os.path.dirname(current_dir)
+        if parent_dir == current_dir: # Reached filesystem root
+            break
+        current_dir = parent_dir
     
+    if not found_root:
+        project_root = os.getcwd() # Fallback
+        print_status(f"Could not reliably determine project root, using CWD: {project_root}", "warning")
+
+    scripts_dir_path = os.path.join(project_root, "scripts")
+    bin_dir_path = os.path.join(project_root, "bin")
+
+    print(f"Project root: {project_root}")
+    print(f"Scripts directory: {scripts_dir_path if os.path.exists(scripts_dir_path) else 'Not found'}")
+    print(f"Bin directory: {bin_dir_path if os.path.exists(bin_dir_path) else 'Not found'}")
+
     print("\nRunning environment checks...\n")
     
     # Run all checks
@@ -393,18 +352,10 @@ def main():
     check_camera_modules()
     check_camera_devices()
     check_global_shutter_camera()
-    check_bookworm_os()
+    is_bookworm = check_bookworm_os()
     check_recordings_dir()
-    
-    # Only run camera test if on Raspberry Pi
-    try:
-        if os.path.exists('/proc/cpuinfo'):
-            with open('/proc/cpuinfo', 'r') as f:
-                if 'Raspberry Pi' in f.read() or 'BCM' in f.read():
-                    test_camera_capture()
-    except Exception:
-        pass
-    
+    test_camera_capture()
+
     print("\n" + "=" * 80)
     print("ENVIRONMENT CHECK COMPLETE".center(80))
     print("=" * 80)
@@ -412,11 +363,13 @@ def main():
     # Print final summary
     print("\nNext steps:")
     print("1. Make sure camera is properly connected")
-    print("2. Run camera with: ./scripts/run-camera.sh")
-    print("3. Manage camera service with: ./scripts/camera-service.sh")
-    print("\nFor Global Shutter Camera high frame rate support, run camera script")
-    print("and follow the interactive prompts to select optimal configuration.")
-    
+    print(f"2. Run camera with: {os.path.join(scripts_dir_path, 'run-camera.sh') if os.path.exists(scripts_dir_path) else './run-camera.sh'}")
+    print(f"3. Manage camera service with: {os.path.join(scripts_dir_path, 'camera-service.sh') if os.path.exists(scripts_dir_path) else './camera-service.sh'}")
+
+    if is_bookworm:
+        print_status("\nFor Global Shutter Camera high frame rate support, run camera script", "warning")
+        print_status("and follow the interactive prompts to select optimal configuration.", "warning")
+
     return 0
 
 if __name__ == "__main__":
