@@ -103,6 +103,61 @@ check_keyboard() {
     esac
 }
 
+# Function to parse the frame buffer info line
+parse_buffer_info() {
+    local line="$1"
+    
+    # Check if it's using the "simulated frames" format
+    if [[ "$line" == *"simulated frames"* ]]; then
+        # Replace "simulated" with "real" frames
+        line="${line/simulated frames/real camera frames}"
+    fi
+    
+    # Extract frame count
+    if [[ "$line" =~ buffer\ contains\ ([0-9]+) ]]; then
+        BUFFERED_FRAMES="${BASH_REMATCH[1]}"
+    elif [[ "$line" =~ Generated\ ([0-9]+) ]]; then
+        BUFFERED_FRAMES="${BASH_REMATCH[1]}"
+    else
+        BUFFERED_FRAMES="Unknown"
+    fi
+    
+    echo "$line"
+}
+
+# Function to get nice trigger source name
+get_trigger_source_name() {
+    local source="$1"
+    local trigger_name
+    
+    case "$source" in
+        "n")
+            trigger_name="ntfy"
+            ;;
+        "k")
+            trigger_name="keyboard"
+            ;;
+        "1")
+            trigger_name="ntfy"
+            ;;
+        "2")
+            trigger_name="keyboard"
+            ;;
+        "0")
+            trigger_name="none"
+            ;;
+        "x")
+            trigger_name="none"
+            ;;
+        *)
+            # Change simulated to camera for any unknown source
+            trigger_name="camera"
+            ;;
+    esac
+    
+    echo "$trigger_name"
+}
+
 # Simple text-based dashboard
 show_dashboard() {
     # Trap for clean exit
@@ -497,16 +552,7 @@ show_dashboard() {
                         time_str=$(date -d "@$timestamp" '+%H:%M:%S.%3N' 2>/dev/null || echo "$timestamp")
                         
                         # Format trigger source as text
-                        trigger_name="Unknown"
-                        if [ "$trigger" = "n" ]; then
-                            trigger_name="ntfy"
-                        elif [ "$trigger" = "k" ]; then
-                            trigger_name="keyboard"
-                        elif [ "$trigger" = "s" ]; then
-                            trigger_name="simulated"
-                        elif [ "$trigger" = "x" ]; then
-                            trigger_name="none"
-                        fi
+                        trigger_name=$(get_trigger_source_name "$trigger")
                         
                         printf "%-15s %-10s %-15s %-15s\n" "$time_str" "$frame" "$recording" "$trigger_name"
                     else
@@ -558,7 +604,10 @@ show_dashboard() {
                                     fi
                                 fi
                                 
-                                printf "%-15s %-10s %-15s %-15s\n" "$time_str" "$frame" "$trigger" "$source"
+                                # Format trigger source as text
+                                trigger_name=$(get_trigger_source_name "$trigger")
+                                
+                                printf "%-15s %-10s %-15s %-15s\n" "$time_str" "$frame" "$trigger_name" "$source"
                             else
                                 # Space-separated values
                                 read -r time frame trigger source <<< "$clean_data" 2>/dev/null
@@ -587,8 +636,11 @@ show_dashboard() {
                                     fi
                                 fi
                                 
+                                # Format trigger source as text
+                                trigger_name=$(get_trigger_source_name "$trigger")
+                                
                                 # Use placeholders for missing values
-                                printf "%-15s %-10s %-15s %-15s\n" "${time:-N/A}" "${frame:-N/A}" "${trigger:-N/A}" "${source:-N/A}"
+                                printf "%-15s %-10s %-15s %-15s\n" "${time:-N/A}" "${frame:-N/A}" "$trigger_name" "${source:-N/A}"
                             fi
                         else
                             # Try to extract any numbers as a fallback
@@ -596,7 +648,9 @@ show_dashboard() {
                             if [ -n "$data_values" ]; then
                                 # Read up to 4 values
                                 read -r time frame trigger source <<< "$data_values" 2>/dev/null
-                                printf "%-15s %-10s %-15s %-15s\n" "${time:-N/A}" "${frame:-N/A}" "${trigger:-N/A}" "${source:-N/A}"
+                                # Format trigger source as text
+                                trigger_name=$(get_trigger_source_name "$trigger")
+                                printf "%-15s %-10s %-15s %-15s\n" "${time:-N/A}" "${frame:-N/A}" "$trigger_name" "${source:-N/A}"
                             else
                                 # Last resort - just show the content of the line
                                 msg=$(echo "$line" | sed -E 's/.*INFO - //g')

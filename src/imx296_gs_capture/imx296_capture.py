@@ -380,26 +380,17 @@ def setup_lsl_stream(config):
     logger.info(f"  channel_count: {channel_count}")
     logger.info(f"  nominal_srate: {nominal_srate}")
     
-    # Important: Check pylsl version and capabilities
-    has_string_support = hasattr(pylsl, 'cf_string')
+    # FORCE NUMERIC VALUES ONLY - Fix for "must be real number, not str" errors
+    has_string_support = False
+    logger.info("FORCING NUMERIC VALUES ONLY for LSL to fix 'must be real number, not str' errors")
     
-    # Create channel formats based on capabilities
-    if has_string_support:
-        logger.info("Using string format for trigger_source channel")
-        channel_info = [
-            {"name": "CaptureTimeUnix", "format": pylsl.cf_double64},  # timestamp as double
-            {"name": "ntfy_notification_active", "format": pylsl.cf_int32},  # recording status as int
-            {"name": "session_frame_no", "format": pylsl.cf_int64},  # frame number as int64
-            {"name": "trigger_source", "format": pylsl.cf_string}  # trigger source as string
-        ]
-    else:
-        logger.info("Using all numeric format for channels (no string support)")
-        channel_info = [
-            {"name": "CaptureTimeUnix", "format": pylsl.cf_double64},
-            {"name": "ntfy_notification_active", "format": pylsl.cf_double64},
-            {"name": "session_frame_no", "format": pylsl.cf_double64},
-            {"name": "trigger_source_code", "format": pylsl.cf_double64}  # Use numeric code instead of string
-        ]
+    # Create channel formats based on capabilities - NUMERIC ONLY
+    channel_info = [
+        {"name": "CaptureTimeUnix", "format": pylsl.cf_double64},
+        {"name": "ntfy_notification_active", "format": pylsl.cf_double64},
+        {"name": "session_frame_no", "format": pylsl.cf_double64},
+        {"name": "trigger_source_code", "format": pylsl.cf_double64}  # Use numeric code instead of string
+    ]
     
     # Create channel names list for logging
     channel_names = [ch["name"] for ch in channel_info]
@@ -413,16 +404,13 @@ def setup_lsl_stream(config):
         # Create LSL StreamInfo
         logger.info("Creating LSL StreamInfo")
         try:
-            # Try to use cf_mixed if available (newer pylsl versions)
-            channel_format = pylsl.cf_mixed if hasattr(pylsl, 'cf_mixed') else pylsl.cf_double64
-            logger.info(f"Using channel format: {channel_format}")
-            
+            # Use only double format for all channels
             info = pylsl.StreamInfo(
                 name=stream_name,
                 type=stream_type,
                 channel_count=channel_count,
                 nominal_srate=nominal_srate,
-                channel_format=channel_format,  # Use mixed format if available, otherwise double
+                channel_format=pylsl.cf_double64,  # FORCE DOUBLE PRECISION FOR ALL
                 source_id=f"imx296_{os.getpid()}"
             )
         except AttributeError:
@@ -455,43 +443,21 @@ def setup_lsl_stream(config):
         logger.info("Creating LSL outlet")
         lsl_outlet = pylsl.StreamOutlet(info)
         
-        # Send a test sample to verify the stream is working - ALL NUMERIC VALUES
-        if has_string_support:
-            # Test with string if supported
-            logger.info("Testing LSL stream with string format")
-            try:
-                test_sample = [time.time(), 0.0, 0.0, "x"]
-                lsl_outlet.push_sample(test_sample)
-                logger.info(f"Sent test LSL sample: {test_sample}")
-            except TypeError as e:
-                logger.error(f"String format test failed: {e}, falling back to numeric")
-                has_string_support = False
-                # Recreate outlet with numeric format
-                info = pylsl.StreamInfo(
-                    name=stream_name,
-                    type=stream_type,
-                    channel_count=channel_count,
-                    nominal_srate=nominal_srate,
-                    channel_format=pylsl.cf_double64,
-                    source_id=f"imx296_{os.getpid()}"
-                )
-                lsl_outlet = pylsl.StreamOutlet(info)
-        
-        if not has_string_support:
-            # Always safe numeric values
-            test_sample = [time.time(), 0.0, 0.0, 0.0]
-            lsl_outlet.push_sample(test_sample)
-            logger.info(f"Sent test LSL sample (numeric only): {test_sample}")
+        # Test with NUMERIC VALUES ONLY
+        logger.info("Testing LSL stream with numeric values only")
+        test_sample = [time.time(), 0.0, 0.0, 0.0]
+        lsl_outlet.push_sample(test_sample)
+        logger.info(f"Sent test LSL sample (numeric only): {test_sample}")
         
         logger.info(f"Created LSL stream '{stream_name}' with {channel_count} channels at {nominal_srate} Hz")
-        logger.info(f"String format support: {has_string_support}")
+        logger.info(f"String format support: DISABLED (using numeric values only)")
         
         # Log a success message that the dashboard can easily find
         logger.info(f"LSL_STREAM_READY: stream_name={stream_name}, channels={channel_count}, rate={nominal_srate}")
         
         # Set global flag for string support
         global lsl_has_string_support
-        lsl_has_string_support = has_string_support
+        lsl_has_string_support = False  # FORCE FALSE to ensure numeric values only
         
         return True
     except Exception as e:
@@ -867,10 +833,10 @@ def process_frame(frame_data, frame_num, start_time, frame_buffer, pts_data):
             # Log frame count periodically
             if session_frame_counter % 100 == 0:
                 logger = logging.getLogger('imx296_capture')
-                # Convert trigger source numeric code to string (k/n)
+                # Convert trigger source numeric code to string (for log display only)
                 trigger_str = get_trigger_source_string(last_trigger_source)
-                # Updated to include trigger_source string
-                data = [frame_timestamp, int(recording_event.is_set()), int(session_frame_counter), trigger_str]
+                # Log the data that's being sent
+                data = [frame_timestamp, int(recording_event.is_set()), int(session_frame_counter), float(last_trigger_source)]
                 logger.info(f"LSL output: {data}")
                 logger.info(f"Trigger source is: {last_trigger_source} ({trigger_str})")
         except queue.Full:
@@ -880,27 +846,15 @@ def process_frame(frame_data, frame_num, start_time, frame_buffer, pts_data):
     
     # Send metadata to LSL regardless of recording status
     if lsl_outlet:
-        # Convert trigger source to string
-        trigger_str = get_trigger_source_string(last_trigger_source)
-        
-        # Prepare sample based on string support capability
+        # Prepare sample - NUMERIC ONLY
         try:
-            if lsl_has_string_support:
-                # With string support
-                sample = [
-                    float(frame_timestamp),            # timestamp as double
-                    float(recording_event.is_set()),   # recording status as float
-                    float(frame_num),                  # frame number as float
-                    trigger_str                       # trigger source as string (k/n)
-                ]
-            else:
-                # Without string support - all numeric
-                sample = [
-                    float(frame_timestamp),            # timestamp as double
-                    float(recording_event.is_set()),   # recording status as float
-                    float(frame_num),                  # frame number as float
-                    float(last_trigger_source)         # trigger source as numeric code
-                ]
+            # Always use numeric values - fix for "must be real number, not str" errors
+            sample = [
+                float(frame_timestamp),            # timestamp as double
+                float(recording_event.is_set()),   # recording status as float
+                float(frame_num),                  # frame number as float
+                float(last_trigger_source)         # trigger source as numeric code
+            ]
             
             # Send the data
             lsl_outlet.push_sample(sample, float(frame_timestamp))
@@ -909,7 +863,7 @@ def process_frame(frame_data, frame_num, start_time, frame_buffer, pts_data):
             if frame_num % 100 == 0 or (recording_event.is_set() and session_frame_counter % 10 == 0):
                 logger = logging.getLogger('imx296_capture')
                 logger.info(f"LSL data sent: timestamp={frame_timestamp:.3f}, recording={int(recording_event.is_set())}, "
-                           f"frame={frame_num}, trigger_source={trigger_str if lsl_has_string_support else last_trigger_source}")
+                           f"frame={frame_num}, trigger_source={last_trigger_source}")
         except Exception as e:
             # If we hit an LSL error, log it but don't crash
             logger = logging.getLogger('imx296_capture')
@@ -918,8 +872,9 @@ def process_frame(frame_data, frame_num, start_time, frame_buffer, pts_data):
             try:
                 safe_sample = [float(frame_timestamp), float(recording_event.is_set()), float(frame_num), float(last_trigger_source)]
                 lsl_outlet.push_sample(safe_sample)
-            except:
-                pass
+                logger.debug("Sent fallback LSL heartbeat")
+            except Exception as e2:
+                logger.error(f"Error sending fallback LSL heartbeat: {e2}")
     
     return frame_timestamp
 
