@@ -30,6 +30,7 @@ from pylsl import StreamInfo, StreamOutlet, local_clock
 
 # Import the buffer trigger system
 from .buffer_trigger import BufferTriggerManager, RollingBuffer, NtfySubscriber
+from .status_file import StatusFileWriter
 
 # Try to import psutil for CPU affinity management
 try:
@@ -168,6 +169,8 @@ class LSLCameraStreamer:
         # Start status thread for LSL status publishing
         self.stop_status_event = threading.Event()
         self.status_thread = None
+        self.status_display = None
+        self.status_file_writer = None
 
     def _get_raspberry_pi_id(self):
         """Get Raspberry Pi's unique serial number from /proc/cpuinfo."""
@@ -776,6 +779,10 @@ class LSLCameraStreamer:
                 self.status_thread.start()
                 print("Camera status thread started")
             
+            # Initialize status file writer for terminal fallback
+            self.status_file_writer = StatusFileWriter(camera=self, buffer_manager=self.buffer_trigger_manager)
+            self.status_file_writer.start()
+            
             print("Camera stream started")
             return True
             
@@ -820,6 +827,11 @@ class LSLCameraStreamer:
         # Close preview window
         if self.show_preview:
             cv2.destroyAllWindows()
+            
+        # Stop status file writer if running
+        if self.status_file_writer:
+            self.status_file_writer.stop()
+            self.status_file_writer = None
             
         print("Camera stream stopped")
 

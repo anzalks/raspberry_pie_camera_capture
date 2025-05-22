@@ -52,6 +52,7 @@ A sophisticated system for Raspberry Pi that captures video and audio triggered 
 
 ### Additional Features
 - **Real-time Terminal Dashboard**: Shows system status, buffer fill, FPS, frame counts, and notifications
+- **Status File Fallback**: Writes status to a file (/tmp/raspie_camera_status) for monitoring when fancy terminal UI fails
 - **CPU Core Affinity**: Specify cores for capture, writer, LSL, and ntfy threads to optimize performance
 - **Single Instance Operation**: Camera locking prevents multiple instances accessing the camera
 - **Date-based Organization**: Recordings are stored in YYYY_MM_DD/video/ and YYYY_MM_DD/audio/ folders
@@ -134,6 +135,12 @@ buffer:
 # Remote control
 remote:
   ntfy_topic: raspie-camera-test
+
+# Terminal settings
+terminal:
+  colors_enabled: true
+  use_unicode: false  # Set to false for better compatibility
+  update_frequency: 0.5
 ```
 
 You can create your own configuration file and specify it with the `--config` parameter:

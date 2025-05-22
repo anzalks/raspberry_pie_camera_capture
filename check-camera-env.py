@@ -569,77 +569,101 @@ def check_for_global_shutter_camera():
     
     return global_shutter_detected
 
+def check_status_file_support():
+    """Check if the status file capability is available."""
+    try:
+        import os
+        from src.raspberry_pi_lsl_stream.status_file import StatusFileWriter
+        
+        # Verify the status file module imported correctly
+        print_status("Status File Support", True, "Available for terminal fallback display")
+        
+        # Check if we can write to the temp status file location
+        temp_status_file = "/tmp/raspie_camera_status"
+        try:
+            with open(temp_status_file, 'w') as f:
+                f.write("Test status\n")
+            os.remove(temp_status_file)
+            print_status("Status File Write", True, f"Can write to {temp_status_file}")
+        except Exception as e:
+            print_status("Status File Write", False, f"Cannot write to {temp_status_file}: {e}")
+    
+    except ImportError:
+        print_status("Status File Support", False, "Module not found")
+
 def main():
-    """Main function to run all checks."""
-    print_header("Raspberry Pi Camera Capture System - Environment Check")
-    print(f"System: {platform.system()} {platform.release()}")
-    print(f"Date: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    """Run all environment checks."""
+    parser = argparse.ArgumentParser(description='Check environment for Raspberry Pi Camera Capture')
+    parser.add_argument('--verbose', '-v', action='store_true', help='Show detailed information')
+    parser.add_argument('--check-lsl', action='store_true', help='Check LSL configuration')
     
-    # Run all checks
+    args = parser.parse_args()
+    
+    print_header("Raspberry Pi Camera System - Environment Check")
+    
+    # Basic requirements
     check_python_version()
+    check_system_packages()
     
-    print_header("Library Dependencies")
-    check_import('cv2', 'opencv-python')
+    # Camera availability 
+    check_camera_devices()
+    
+    # Check platform
+    is_pi = check_platform()
+    
+    # Check camera modules
+    check_camera_modules()
+    
+    # Check permissions if on Linux
+    if platform.system().lower() == 'linux':
+        check_permissions()
+    
+    # Check if we're specifically on a Raspberry Pi
+    if is_pi:
+        # Check for standard and global shutter cameras
+        check_standard_camera()
+        has_global_shutter = check_global_shutter_camera()
+        
+        if has_global_shutter and args.verbose:
+            print_global_shutter_info()
+        
+        # Check for media utilities if verbose
+        if args.verbose:
+            check_media_ctl()
+            check_libcamera_tools()
+    
+    # Check Python packages
+    print_header("Python Package Dependencies")
+    
+    # Critical packages
     check_import('numpy')
+    check_import('cv2', 'opencv-python')
+    
+    # Check OpenCV in detail
+    check_opencv_support()
+    
+    # Check LSL support if requested
+    if args.check_lsl:
+        check_lsl_support()
+    
+    # Check other packages
+    check_import('yaml', 'pyyaml')
     check_import('pylsl')
     check_import('requests')
+    
+    # Check for helper utilities
     check_import('psutil')
     
-    print_header("System Check")
-    check_system_packages()
-    check_camera_devices()
+    # Check status file support
+    check_status_file_support()
+    
+    # Check storage
+    check_storage()
+    
+    # Check connectivity
     check_network_connectivity()
     
-    print_header("Capability Check")
-    check_opencv_support()
-    check_lsl_support()
-    check_picamera2_support()
-    
-    print_header("Permission and Storage Check")
-    check_permissions()
-    check_storage()
-
-    print_header("Summary")
-    print("This check helps identify potential issues with your setup.")
-    print("Any FAIL status should be addressed before running the camera capture system.")
-    print()
-    print("For help and documentation visit:")
-    print("https://github.com/anzalks/raspberry_pie_camera_capture")
-
-    # Check platform
-    is_rpi = check_platform()
-    if not is_rpi:
-        print("\nThis script is designed for Raspberry Pi systems.")
-        return 1
-        
-    # Check for required modules
-    if not check_camera_modules():
-        return 1
-        
-    # Check for media-ctl (needed for Global Shutter Camera)
-    check_media_ctl()
-    
-    # Check for camera
-    check_standard_camera()
-    
-    # Check specifically for Global Shutter Camera
-    is_gs = check_for_global_shutter_camera()
-    
-    # Check for libcamera tools
-    print("\n")
-    check_libcamera_tools()
-    
-    print("\n==== Summary ====")
-    if is_gs:
-        print("Global Shutter Camera detected! High frame rates will be automatically configured.")
-        print("Simply specify your desired resolution and fps in the camera_capture command.")
-    else:
-        print("Standard Raspberry Pi Camera detected or no camera connected.")
-    
-    print("\nFor usage with the raspberry_pi_lsl_stream package:")
-    print("  python -m src.raspberry_pi_lsl_stream.camera_capture --help")
-    
-    return 0
+    print("\nEnvironment check complete.\n")
 
 if __name__ == "__main__":
     sys.exit(main()) 

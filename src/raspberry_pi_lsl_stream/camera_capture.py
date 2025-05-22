@@ -29,6 +29,7 @@ try:
     from .buffer_trigger import BufferTriggerManager
     from .status_display import StatusDisplay
     from .config_loader import get_camera_config  # Import the config loader
+    from .status_file import StatusFileWriter  # Import the status file writer
 except ImportError:
     # Handle relative imports if run as script
     sys.path.append(str(Path(__file__).resolve().parent.parent))
@@ -37,6 +38,7 @@ except ImportError:
     from src.raspberry_pi_lsl_stream.buffer_trigger import BufferTriggerManager
     from src.raspberry_pi_lsl_stream.status_display import StatusDisplay
     from src.raspberry_pi_lsl_stream.config_loader import get_camera_config  # Import the config loader
+    from src.raspberry_pi_lsl_stream.status_file import StatusFileWriter  # Import the status file writer
 
 # Try to import psutil for CPU affinity management
 try:

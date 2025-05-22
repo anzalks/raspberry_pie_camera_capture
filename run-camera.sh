@@ -52,9 +52,18 @@ performance:
   writer_cpu_core: null
   lsl_cpu_core: null
   ntfy_cpu_core: null
+
+# Terminal UI settings
+terminal:
+  colors_enabled: true
+  use_unicode: false  # Set to false for better compatibility
+  update_frequency: 0.5
 EOF
     echo "Created default config.yaml"
 fi
+
+# Force unbuffered Python output
+export PYTHONUNBUFFERED=1
 
 # Run environment check
 echo "Running environment check..."
@@ -69,7 +78,37 @@ fi
 
 # Run camera capture
 echo "Starting camera capture with default settings from config.yaml..."
-python -m src.raspberry_pi_lsl_stream.camera_capture
+python -m src.raspberry_pi_lsl_stream.camera_capture &
+CAMERA_PID=$!
+
+# Check if camera process is running
+if ! ps -p $CAMERA_PID > /dev/null; then
+    echo "Error: Camera process failed to start."
+    exit 1
+fi
+
+# Wait a moment for startup
+sleep 2
+
+# Monitor process and display fallback status if needed
+trap "kill $CAMERA_PID 2>/dev/null; exit" INT TERM
+
+# Loop to check if process is still running and display fallback status
+echo "Camera process running with PID: $CAMERA_PID"
+echo "Press Ctrl+C to stop"
+
+while ps -p $CAMERA_PID > /dev/null; do
+    # Check if fallback status file exists (indicates UI problems)
+    if [ -f "/tmp/raspie_camera_status" ]; then
+        echo ""
+        echo "===== Status Update $(date +%H:%M:%S) ====="
+        cat /tmp/raspie_camera_status
+    fi
+    sleep 5
+done
+
+echo "Camera process has exited."
 
 # Exit with the same status as the camera capture
+wait $CAMERA_PID
 exit $? 
