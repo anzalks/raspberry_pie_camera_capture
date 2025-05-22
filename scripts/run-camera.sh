@@ -55,172 +55,78 @@ configure_global_shutter() {
   left=$((left - (left % 2)))
   top=$((top - (top % 2)))
   
-  # Verify media-ctl is available
-  if ! command -v media-ctl &> /dev/null; then
-    echo "ERROR: media-ctl not found, cannot configure Global Shutter Camera."
+  # Check if v4l2-ctl is available
+  if ! command -v v4l2-ctl &> /dev/null; then
+    echo "ERROR: v4l2-ctl not found, cannot configure Global Shutter Camera."
     if grep -q "=bookworm" /etc/os-release 2>/dev/null && [ "$(id -u)" -eq 0 ]; then
-      echo "Attempting to build v4l-utils and media-ctl from source for Bookworm OS..."
-      if build_v4l_utils_from_source; then
-        echo "Successfully built v4l-utils and media-ctl from source."
+      echo "Installing v4l-utils..."
+      apt install -y v4l-utils
+      if command -v v4l2-ctl &> /dev/null; then
+        echo "Successfully installed v4l-utils."
       else
-        echo "Failed to build v4l-utils and media-ctl from source."
+        echo "Failed to install v4l-utils."
         return 1
       fi
     else
-      echo "Please run this script with sudo to build v4l-utils and media-ctl from source"
+      echo "Please run this script with sudo to install v4l-utils"
       echo "Command: sudo $(realpath "$0")"
       return 1
     fi
   fi
   
-  # Try media-ctl configuration if available
-  if command -v media-ctl &> /dev/null; then
-    # First check if the IMX296 sensor is actually present
-    gs_camera_found=false
-    for m in {0..5}; do
-      if media-ctl -d /dev/media$m -p 2>/dev/null | grep -i "imx296" >/dev/null; then
-        echo "Found Global Shutter Camera (IMX296) on /dev/media$m"
-        gs_camera_found=true
-        break
-      fi
-    done
-    
-    if [ "$gs_camera_found" != "true" ]; then
-      echo "WARNING: IMX296 Global Shutter Camera not found in media devices"
-      echo "Will still attempt to apply configuration..."
-    fi
+  # Configure using v4l2-ctl
+  echo "Configuring Global Shutter Camera using v4l2-ctl..."
   
-    # Find the media device the GS camera is connected to
-    gs_configured=false
-    for m in {0..5}; do
-      echo "Attempting to configure Global Shutter Camera on /dev/media$m..."
-      media-ctl -d /dev/media$m --set-v4l2 "'imx296 $device_id-001a':0 [fmt:SBGGR10_1X10/${width}x${height} crop:(${left},${top})/${width}x${height}]" -v 2>&1 || true
-      if [ $? -eq 0 ]; then
-        echo "Successfully configured Global Shutter Camera on /dev/media$m"
-        echo "Set ${width}x${height} @ ${fps}fps with crop at (${left},${top})"
-        
-        # Verify the configuration
-        if command -v libcamera-hello &> /dev/null; then
-          echo "Verifying camera configuration:"
-          libcamera-hello $bookworm_workaround --list-cameras 2>/dev/null | grep -A 5 "crop" || true
-        fi
-        gs_configured=true
-        return 0
-      fi
-    done
-    
-    if [ "$gs_configured" != "true" ]; then
-      echo "WARNING: Failed to configure Global Shutter Camera with media-ctl"
-      echo "Trying alternative methods..."
-    fi
-  fi
-  
-  echo "media-ctl method failed. Trying alternative method with v4l2-ctl..."
-  
-  # Try with v4l2-ctl as fallback
+  # Try with v4l2-ctl
+  gs_configured=false
   for dev in /dev/video*; do
     if v4l2-ctl -d $dev --all 2>/dev/null | grep -i "imx296" >/dev/null; then
-      echo "Found IMX296 on $dev, applying fallback configuration"
+      echo "Found IMX296 on $dev, applying configuration"
       v4l2-ctl -d $dev --set-fmt-video=width=$width,height=$height,pixelformat=RGGB
       v4l2-ctl -d $dev --set-crop=top=$top,left=$left,width=$width,height=$height
-      echo "Applied fallback configuration with v4l2-ctl"
+      echo "Set ${width}x${height} @ ${fps}fps with crop at (${left},${top})"
+      
+      # Verify the configuration
+      if command -v libcamera-hello &> /dev/null; then
+        echo "Verifying camera configuration:"
+        libcamera-hello $bookworm_workaround --list-cameras 2>/dev/null | grep -A 5 "crop" || true
+      fi
+      gs_configured=true
       return 0
     fi
   done
   
-  echo "Could not configure Global Shutter Camera with either method"
-  return 1
+  if [ "$gs_configured" != "true" ]; then
+    echo "Could not configure Global Shutter Camera"
+    return 1
+  fi
 }
 
 # Function to detect Global Shutter Camera
 detect_global_shutter() {
-  # Check if media-ctl is available
-  if ! command -v media-ctl &> /dev/null; then
-    echo "ERROR: media-ctl not found. This is REQUIRED for Global Shutter Camera detection."
+  # Check if v4l2-ctl is available 
+  if ! command -v v4l2-ctl &> /dev/null; then
+    echo "ERROR: v4l2-ctl not found. This is REQUIRED for camera detection."
     
     # Check if we're on Bookworm OS
     if grep -q "=bookworm" /etc/os-release 2>/dev/null; then
-      echo "You are on Raspberry Pi OS Bookworm which requires building media-ctl from source."
-      echo "Please run this script with sudo first to build the required tools."
+      echo "You are on Raspberry Pi OS Bookworm which requires installing v4l-utils."
+      echo "Please run this script with sudo first to install the required tools."
       echo "Command: sudo $(realpath "$0")"
       return 1
     else
-      echo "Please install media-ctl: sudo apt install -y media-ctl"
+      echo "Please install v4l-utils: sudo apt install -y v4l-utils"
       return 1
     fi
   fi
-
-  # Try media-ctl method
-  for m in {0..5}; do
-    if media-ctl -d /dev/media$m -p 2>/dev/null | grep -i "imx296" >/dev/null; then
-      echo "Global Shutter Camera (IMX296) detected on /dev/media$m"
-      return 0
-    fi
-  done
   
-  # Try v4l2-ctl method
+  # Use v4l2-ctl method to detect Global Shutter Camera
   if v4l2-ctl --list-devices 2>/dev/null | grep -i "imx296" >/dev/null; then
     echo "Global Shutter Camera (IMX296) detected in device list"
     return 0
   fi
   
   return 1
-}
-
-# Function to build media-ctl and v4l-utils from source (required for Bookworm OS)
-build_v4l_utils_from_source() {
-    echo "Building v4l-utils and media-ctl from source (required for Raspberry Pi OS Bookworm)..."
-    
-    # Install build dependencies and additional packages for camera support
-    apt update
-    apt install -y git autoconf automake libtool pkg-config libglib2.0-dev libelf-dev \
-        libudev-dev libusb-1.0-0-dev libcamera-apps libcamera-tools python3-libcamera \
-        v4l-utils ffmpeg curl cmake libjpeg-dev libtiff-dev libpng-dev
-    
-    # Create a temporary directory
-    TEMP_DIR=$(mktemp -d)
-    cd "$TEMP_DIR"
-    
-    # Clone the v4l-utils repository
-    echo "Cloning v4l-utils repository..."
-    git clone https://git.linuxtv.org/v4l-utils.git
-    cd v4l-utils
-    
-    # Build and install the complete package
-    echo "Building complete v4l-utils package with media-ctl..."
-    ./bootstrap.sh
-    ./configure
-    make -j$(nproc)
-    make install
-    ldconfig
-    
-    # Ensure media-ctl is in the path
-    if [ -f "/usr/local/bin/media-ctl" ]; then
-        echo "media-ctl installed successfully to /usr/local/bin/media-ctl"
-    else
-        echo "ERROR: media-ctl was not installed properly"
-        # Copy the built binary if found but not installed
-        if [ -f "utils/media-ctl/media-ctl" ]; then
-            cp utils/media-ctl/media-ctl /usr/local/bin/
-            echo "Manually copied media-ctl to /usr/local/bin/"
-        fi
-    fi
-    
-    # Clean up
-    cd /
-    rm -rf "$TEMP_DIR"
-    
-    # Verify installation
-    if command -v media-ctl &> /dev/null && command -v v4l2-ctl &> /dev/null; then
-        echo "✅ media-ctl is now available: $(which media-ctl)"
-        media-ctl --version
-        echo "✅ v4l2-ctl is now available: $(which v4l2-ctl)"
-        v4l2-ctl --version
-        return 0
-    else
-        echo "❌ Failed to install media-ctl or v4l2-ctl"
-        return 1
-    fi
 }
 
 # Check if running as root/sudo for system package installation
@@ -236,76 +142,64 @@ if [ "$(id -u)" -eq 0 ]; then
     if grep -q "=bookworm" /etc/os-release 2>/dev/null; then
         echo "DETECTED RASPBERRY PI OS BOOKWORM"
         
-        # Install base packages first - v4l-utils contains media-ctl on Bookworm
-        echo "Installing v4l-utils package which includes media-ctl on Bookworm..."
+        # Install base packages 
+        echo "Installing v4l-utils package for camera support..."
         apt install -y libcamera-apps libcamera-tools python3-libcamera curl v4l-utils
         
-        # Check if media-ctl is already available from the OS
-        if command -v media-ctl &> /dev/null && command -v v4l2-ctl &> /dev/null; then
-            echo "Found media-ctl and v4l2-ctl from OS packages, testing functionality..."
+        # Check if v4l2-ctl is available from the OS
+        if command -v v4l2-ctl &> /dev/null; then
+            echo "Found v4l2-ctl from OS packages, testing functionality..."
             
-            # Test if the OS-provided media-ctl works with Global Shutter Camera
-            media_ctl_works=false
-            for m in {0..5}; do
-                if [ -e "/dev/media$m" ] && media-ctl -d /dev/media$m -p &>/dev/null; then
-                    # Try to detect IMX296 Global Shutter Camera
-                    if media-ctl -d /dev/media$m -p 2>/dev/null | grep -i "imx296" >/dev/null; then
-                        echo "✅ OS-provided media-ctl works with Global Shutter Camera on /dev/media$m"
-                        media_ctl_works=true
-                        break
-                    fi
-                    
-                    # At least media-ctl works with some device
-                    media_ctl_works=true
+            # Test if the v4l2-ctl works with camera devices
+            v4l_works=false
+            
+            # Check for any camera devices
+            if v4l2-ctl --list-devices &>/dev/null; then
+                echo "✅ OS-provided v4l2-ctl is working with camera devices"
+                v4l_works=true
+                
+                # Try to detect IMX296 Global Shutter Camera
+                if v4l2-ctl --list-devices 2>/dev/null | grep -i "imx296" >/dev/null; then
+                    echo "✅ Global Shutter Camera (IMX296) detected"
                 fi
-            done
+            fi
             
-            if [ "$media_ctl_works" = "true" ]; then
-                echo "✅ OS-provided media-ctl is working correctly"
-                echo "Using OS-provided v4l-utils and media-ctl"
+            if [ "$v4l_works" = "true" ]; then
+                echo "✅ OS-provided v4l-utils is working correctly"
             else
-                echo "⚠️ OS-provided media-ctl not working with media devices"
+                echo "⚠️ OS-provided v4l2-ctl not working with camera devices"
                 echo "Make sure the camera is properly connected and try again"
             fi
         else
-            echo "media-ctl not found in OS packages, installing v4l-utils..."
-            # Install v4l-utils which includes media-ctl
+            echo "v4l2-ctl not found in OS packages, installing v4l-utils..."
+            # Install v4l-utils
             apt install -y v4l-utils
         fi
         
         # Final verification
-        if ! command -v media-ctl &> /dev/null; then
-            echo "ERROR: Failed to install or find media-ctl"
-            echo "This is required for Global Shutter Camera support"
+        if ! command -v v4l2-ctl &> /dev/null; then
+            echo "ERROR: Failed to install or find v4l2-ctl"
+            echo "This is required for camera support"
             echo "Try running: apt install -y v4l-utils"
             exit 1
         else
-            echo "media-ctl is available: $(which media-ctl)"
-            media-ctl --version 2>/dev/null || echo "Could not get media-ctl version"
+            echo "v4l2-ctl is available: $(which v4l2-ctl)"
+            v4l2-ctl --version 2>/dev/null || echo "Could not get v4l2-ctl version"
             
-            # Test if media-ctl works properly with the camera devices
-            echo "Testing media-ctl functionality..."
-            media_devices=$(ls /dev/media* 2>/dev/null || echo "")
-            if [ -z "$media_devices" ]; then
-                echo "WARNING: No media devices found. If you have a camera connected, check connections."
+            # Test if v4l2-ctl works properly with the camera devices
+            echo "Testing v4l2-ctl functionality..."
+            video_devices=$(ls /dev/video* 2>/dev/null || echo "")
+            if [ -z "$video_devices" ]; then
+                echo "WARNING: No video devices found. If you have a camera connected, check connections."
             else
-                echo "Found media devices: $media_devices"
-                for m in {0..5}; do
-                    if [ -e "/dev/media$m" ]; then
-                        echo "Testing media-ctl on /dev/media$m:"
-                        media-ctl -d /dev/media$m -p 2>&1 || echo "Could not query /dev/media$m"
-                    fi
-                done
+                echo "Found video devices: $video_devices"
                 
                 # Check for Global Shutter Camera
                 gs_found=false
-                for m in {0..5}; do
-                    if [ -e "/dev/media$m" ] && media-ctl -d /dev/media$m -p 2>/dev/null | grep -i "imx296" >/dev/null; then
-                        echo "✅ Global Shutter Camera (IMX296) detected on /dev/media$m"
-                        gs_found=true
-                        break
-                    fi
-                done
+                if v4l2-ctl --list-devices 2>/dev/null | grep -i "imx296" >/dev/null; then
+                    echo "✅ Global Shutter Camera (IMX296) detected"
+                    gs_found=true
+                fi
                 
                 if [ "$gs_found" != "true" ]; then
                     echo "NOTE: No Global Shutter Camera detected. This is fine if you're using a standard Pi Camera."
@@ -477,7 +371,7 @@ export PREVIEW_ENABLED=true
 export FOREGROUND=true
 
 # Check for Global Shutter Camera
-if command -v v4l2-ctl >/dev/null && command -v media-ctl >/dev/null; then
+if command -v v4l2-ctl >/dev/null; then
     if detect_global_shutter; then
         update_status "Global Shutter Camera detected"
         

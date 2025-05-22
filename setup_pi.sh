@@ -199,6 +199,16 @@ else
       fi
   fi
   
+  # Create a pip.conf file to suppress the send2trash warnings
+  echo "Creating pip configuration to suppress warnings..."
+  mkdir -p "$VENV_DIR/pip"
+  PIP_CONF_DIR="$VENV_DIR/pip/pip.conf"
+  cat << EOF > "$PIP_CONF_DIR"
+[global]
+no-warn-script-location = true
+EOF
+  chown $SUDO_USER:$SUDO_USER "$PIP_CONF_DIR"
+  
   # Now proceed with checks and installation assuming venv exists or was just created
   if [ ! -f "$VENV_DIR/bin/activate" ]; then
       echo "ERROR: Virtual environment activation script not found at '$VENV_DIR/bin/activate'."
@@ -209,22 +219,22 @@ else
       
       # Upgrade pip separately
       echo "Upgrading pip..."
-      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install --upgrade pip
+      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install --upgrade pip --no-warn-script-location
       sleep 2
       
       # Upgrade setuptools separately
       echo "Upgrading setuptools..."
-      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install --upgrade setuptools
+      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install --upgrade setuptools --no-warn-script-location
       sleep 2
       
       # Upgrade wheel separately
       echo "Upgrading wheel..."
-      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install --upgrade wheel
+      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install --upgrade wheel --no-warn-script-location
       sleep 2
       
       # Install PyYAML
       echo "Installing PyYAML..."
-      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install pyyaml
+      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install pyyaml --no-warn-script-location
       sleep 2
       
       # Install core dependencies one by one to minimize memory usage
@@ -334,8 +344,8 @@ echo "Setting up camera permissions and dependencies..."
 echo "Installing v4l-utils for camera debugging capabilities..."
 apt install -y v4l-utils
 
-# Ensure media-ctl and libcamera-apps are installed (critical for Global Shutter Camera)
-echo "Installing media-ctl and libcamera-apps (required for camera operation)..."
+# Ensure v4l-utils and libcamera-apps are installed (critical for Global Shutter Camera)
+echo "Installing v4l-utils and libcamera-apps (required for camera operation)..."
 apt install -y libcamera-apps libcamera-tools
 
 # Set camera group permissions to allow non-root access
@@ -388,6 +398,8 @@ User=$SUDO_USER
 WorkingDirectory=$PROJECT_DIR
 ExecStart=$PROJECT_DIR/$VENV_DIR/bin/python -m src.raspberry_pi_lsl_stream.camera_capture --config $CONFIG_FILE
 Environment="PATH=$PROJECT_DIR/$VENV_DIR/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+Environment="TERM=xterm-256color"
 StandardOutput=journal+console
 StandardError=journal+console
 Restart=on-failure
@@ -408,6 +420,7 @@ EOF
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
+CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # Function to check if the service is running
@@ -422,6 +435,32 @@ check_status() {
     # Show detailed status
     echo -e "${YELLOW}Detailed status:${NC}"
     systemctl status raspie-capture.service
+}
+
+# Function to show live monitoring
+show_monitor() {
+    # Set terminal to support color and unicode
+    export TERM=xterm-256color
+    
+    echo -e "${GREEN}=== Raspberry Pi Camera Status Monitor ===${NC}"
+    echo -e "${YELLOW}Press Ctrl+C to exit${NC}"
+    echo ""
+    
+    # Show current recordings directory
+    TODAY=$(date +%Y-%m-%d)
+    RECORDINGS_DIR="$HOME/raspie_recordings/$TODAY"
+    if [ -d "$RECORDINGS_DIR" ]; then
+        echo -e "${CYAN}Today's recordings (${TODAY}):${NC}"
+        find "$RECORDINGS_DIR" -type f | sort
+        echo ""
+    else
+        echo -e "${YELLOW}No recordings yet today.${NC}"
+        echo ""
+    fi
+    
+    # Show live logs with camera status
+    echo -e "${GREEN}Showing live camera output:${NC}"
+    sudo journalctl -u raspie-capture.service -f -o cat
 }
 
 # Main command processing
@@ -447,6 +486,10 @@ case "$1" in
     logs)
         echo -e "${GREEN}Showing logs:${NC}"
         sudo journalctl -u raspie-capture.service -f
+        ;;
+    monitor)
+        echo -e "${GREEN}Starting live monitoring mode...${NC}"
+        "$PROJECT_DIR/watch-raspie.sh"
         ;;
     enable)
         echo -e "${GREEN}Enabling capture service to start on boot...${NC}"
@@ -481,7 +524,7 @@ case "$1" in
         echo -e "${YELLOW}Stop signal sent to topic '$ntfy_topic'. Audio/video capture should stop recording.${NC}"
         ;;
     *)
-        echo "Usage: $0 {start|stop|restart|status|logs|enable|disable|trigger|stop-recording}"
+        echo "Usage: $0 {start|stop|restart|status|logs|monitor|enable|disable|trigger|stop-recording}"
         exit 1
         ;;
 esac
@@ -514,7 +557,7 @@ echo "Setting up camera permissions and dependencies..."
 
 # Install necessary camera-related packages
 echo "Installing camera utilities and tools..."
-apt install -y v4l-utils libcamera-apps libcamera-tools media-ctl
+apt install -y v4l-utils libcamera-apps libcamera-tools
 
 # Set proper permissions for camera access
 echo "Setting camera group permissions..."
@@ -602,7 +645,11 @@ cat << 'EOF' > "$PROJECT_DIR/watch-raspie.sh"
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
+RED='\033[0;31m'
 NC='\033[0m' # No Color
+
+# Set terminal to support color and unicode
+export TERM=xterm-256color
 
 echo -e "${GREEN}=== Raspie Capture Live Monitor ===${NC}"
 echo -e "${YELLOW}Press Ctrl+C to exit${NC}"
@@ -620,9 +667,41 @@ else
     echo
 fi
 
-# Start showing live logs with timestamps
-echo -e "${GREEN}Live service output:${NC}"
-sudo journalctl -u raspie-capture.service -f -o cat --output-fields=MESSAGE
+# Check if camera is running as a service
+if systemctl is-active --quiet raspie-capture.service; then
+    echo -e "${GREEN}Camera is running as a service${NC}"
+    
+    # Start showing live logs with timestamps
+    echo -e "${GREEN}Live service output:${NC}"
+    sudo journalctl -u raspie-capture.service -f -o cat --output-fields=MESSAGE
+else
+    # If not running as a service, check for direct process
+    CAMERA_PID=$(pgrep -f "python.*camera_capture")
+    
+    if [ -n "$CAMERA_PID" ]; then
+        echo -e "${GREEN}Camera is running directly (PID: $CAMERA_PID)${NC}"
+        echo -e "${YELLOW}The status display should be visible in the terminal where it was started.${NC}"
+        
+        # Check if there is a status file for fallback
+        if [ -f "/tmp/raspie_camera_status" ]; then
+            echo -e "${CYAN}Status information:${NC}"
+            cat /tmp/raspie_camera_status
+            
+            # Offer to attach to the process if tmux is available
+            if command -v tmux &> /dev/null; then
+                echo -e "${YELLOW}To view the actual terminal where the camera is running, use:${NC}"
+                echo -e "${CYAN}ps -ef | grep camera_capture${NC}"
+            fi
+        else
+            echo -e "${RED}No status information available.${NC}"
+        fi
+    else
+        echo -e "${RED}No camera process is currently running.${NC}"
+        echo -e "${YELLOW}To start the camera:${NC}"
+        echo -e "${CYAN}1. As a service: sudo systemctl start raspie-capture.service${NC}"
+        echo -e "${CYAN}2. Interactively: ./run-camera.sh${NC}"
+    fi
+fi
 
 EOF
 
@@ -681,7 +760,7 @@ echo "Setting up camera permissions and dependencies..."
 
 # Install necessary camera-related packages if not already installed
 echo "Installing camera utilities and tools..."
-apt install -y v4l-utils libcamera-apps libcamera-tools media-ctl
+apt install -y v4l-utils libcamera-apps libcamera-tools
 
 # Set proper permissions for camera access
 echo "Setting camera group permissions..."

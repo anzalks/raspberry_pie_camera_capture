@@ -207,7 +207,7 @@ If your camera is not detected:
 
 4. For Global Shutter Camera, ensure media-ctl is installed:
    ```bash
-   sudo apt install -y libcamera-tools media-ctl
+   sudo apt install -y libcamera-tools v4l-utils
    ```
 
 ### Global Shutter Camera Issues
