@@ -999,6 +999,21 @@ def video_writer_thread(config):
     output_file = os.path.join(os.path.abspath(output_dir), f"recording_{timestamp}.{format_ext}")
     logger.info(f"Will write to absolute path: {output_file}")
     
+    # Verify that the directory is writable
+    test_file = os.path.join(os.path.abspath(output_dir), "write_test.tmp")
+    try:
+        with open(test_file, 'wb') as f:
+            f.write(b'\0')  # Write a single byte
+        os.chmod(test_file, 0o666)
+        os.remove(test_file)
+        logger.info(f"Successfully verified write access to {output_dir}")
+    except Exception as e:
+        logger.error(f"Error verifying write access to output directory: {e}")
+        # Try /tmp as fallback
+        output_dir = "/tmp"
+        output_file = f"/tmp/recording_{timestamp}.{format_ext}"
+        logger.info(f"Using fallback path: {output_file}")
+    
     # Create the file and set permissions
     try:
         with open(output_file, 'wb') as f:
@@ -1021,12 +1036,12 @@ def video_writer_thread(config):
     # Configure FFmpeg command with optimized settings for robust recording
     ffmpeg_path = config['system']['ffmpeg_path']
     
+    # Use a simpler ffmpeg command that's less likely to fail
     cmd = [
         ffmpeg_path,
         "-f", "h264",            # Input format is H.264
         "-i", "-",               # Input from stdin
         "-c:v", "copy",          # Copy video codec (no re-encoding)
-        "-movflags", "frag_keyframe+empty_moov+default_base_moof",  # Optimize for streaming
         "-an",                   # No audio
         "-y",                    # Overwrite output file if exists
         output_file              # Output file
@@ -1035,26 +1050,18 @@ def video_writer_thread(config):
     logger.info(f"Starting ffmpeg with command: {' '.join(cmd)}")
     logger.info(f"Recording to file: {output_file}")
     
+    # Send notification to LSL and logs about recording start with file info
+    logger.info(f"RECORDING_STARTED: file={output_file}")
+    
     # Create the process and send key frames first
     try:
         ffmpeg_process = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,  # Discard stdout for better performance
+            stdout=subprocess.PIPE,  # Capture stdout for debugging
             stderr=subprocess.PIPE,
             bufsize=10*1024*1024  # 10MB buffer
         )
-        
-        # Send SPS and PPS headers first (necessary for proper H.264)
-        # These are simple valid H.264 headers
-        header_bytes = bytearray([
-            0x00, 0x00, 0x00, 0x01, 0x67, 0x64, 0x00, 0x1F, 0xAC,  # SPS header
-            0x00, 0x00, 0x00, 0x01, 0x68, 0xEB, 0xE3, 0xCB        # PPS header
-        ])
-        
-        ffmpeg_process.stdin.write(header_bytes)
-        ffmpeg_process.stdin.flush()
-        logger.info("Sent H.264 headers to ffmpeg")
         
         # Start stderr reader thread to capture ffmpeg log messages
         stderr_thread = threading.Thread(
@@ -1063,6 +1070,14 @@ def video_writer_thread(config):
             daemon=True
         )
         stderr_thread.start()
+        
+        # Start stdout reader thread to capture ffmpeg output messages
+        stdout_thread = threading.Thread(
+            target=log_stderr_output,
+            args=(ffmpeg_process.stdout, "ffmpeg-out"),
+            daemon=True
+        )
+        stdout_thread.start()
         
         # Write frames from queue to ffmpeg's stdin
         frame_count = 0
@@ -1074,6 +1089,10 @@ def video_writer_thread(config):
                 # Get a frame from the queue with timeout
                 timestamp, frame_data = frame_queue.get(timeout=0.1)
                 
+                # Debug: log first few frames
+                if frame_count < 5:
+                    logger.info(f"Writing frame {frame_count}, size: {len(frame_data)} bytes")
+                    
                 # Write frame to ffmpeg
                 try:
                     ffmpeg_process.stdin.write(frame_data)
@@ -1081,19 +1100,37 @@ def video_writer_thread(config):
                     frame_count += 1
                 except IOError as e:
                     logger.error(f"IOError writing to ffmpeg: {e}")
-                    # Try to restart ffmpeg
-                    ffmpeg_process.terminate()
-                    ffmpeg_process = subprocess.Popen(
-                        cmd,
-                        stdin=subprocess.PIPE,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.PIPE,
-                        bufsize=10*1024*1024
-                    )
-                    # Resend headers
-                    ffmpeg_process.stdin.write(header_bytes)
-                    ffmpeg_process.stdin.flush()
-                    logger.info("Restarted ffmpeg and sent headers")
+                    # Try to recover by checking file size and restarting if needed
+                    file_size = os.path.getsize(output_file)
+                    logger.error(f"Current file size: {file_size} bytes")
+                    
+                    if file_size == 0:
+                        logger.error("File size is 0, trying to restart ffmpeg")
+                        try:
+                            ffmpeg_process.terminate()
+                            ffmpeg_process = subprocess.Popen(
+                                cmd,
+                                stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                bufsize=10*1024*1024
+                            )
+                            # Start new reader threads
+                            stderr_thread = threading.Thread(
+                                target=log_stderr_output,
+                                args=(ffmpeg_process.stderr, "ffmpeg-restart"),
+                                daemon=True
+                            )
+                            stderr_thread.start()
+                            stdout_thread = threading.Thread(
+                                target=log_stderr_output,
+                                args=(ffmpeg_process.stdout, "ffmpeg-out-restart"),
+                                daemon=True
+                            )
+                            stdout_thread.start()
+                            logger.info("Restarted ffmpeg process")
+                        except Exception as restart_e:
+                            logger.error(f"Failed to restart ffmpeg: {restart_e}")
                     continue
                 
                 # Log progress and check file size frequently to ensure it's growing
@@ -1106,6 +1143,8 @@ def video_writer_thread(config):
                     # Debug: Verify file is actually growing
                     if file_size > 0:
                         logger.info(f"✓ File is growing properly: {output_file}")
+                    else:
+                        logger.warning(f"⚠ File size is still 0 after {frame_count} frames!")
                         
                     last_log_time = current_time
                 
@@ -1140,11 +1179,43 @@ def video_writer_thread(config):
         
         if file_size == 0:
             logger.error("ERROR: Recording file is empty (0 bytes)")
+            # Try to diagnose why file is empty
+            logger.error("Diagnosing empty file issue...")
+            try:
+                # Check if directory is writable
+                dirname = os.path.dirname(output_file)
+                logger.error(f"Directory permissions for {dirname}: {oct(os.stat(dirname).st_mode)}")
+                
+                # Check ffmpeg version
+                ffmpeg_ver_cmd = [ffmpeg_path, "-version"]
+                ffmpeg_ver = subprocess.check_output(ffmpeg_ver_cmd, universal_newlines=True)
+                logger.error(f"FFmpeg version: {ffmpeg_ver.splitlines()[0]}")
+                
+                # Try to write a simple test file directly with ffmpeg
+                test_out = f"/tmp/ffmpeg_test_{timestamp}.mp4"
+                test_cmd = [
+                    ffmpeg_path, 
+                    "-f", "lavfi", 
+                    "-i", "testsrc=duration=1:size=320x240:rate=30", 
+                    "-c:v", "libx264",
+                    test_out
+                ]
+                try:
+                    subprocess.run(test_cmd, timeout=5, capture_output=True)
+                    test_size = os.path.getsize(test_out) if os.path.exists(test_out) else 0
+                    logger.error(f"FFmpeg test file size: {test_size} bytes")
+                except Exception as test_e:
+                    logger.error(f"FFmpeg test error: {test_e}")
+            except Exception as diag_e:
+                logger.error(f"Diagnostics error: {diag_e}")
         elif file_size < 1024:
             logger.warning(f"WARNING: Recording file is very small ({file_size} bytes)")
         
         # Make sure the file has the right permissions 
         os.chmod(output_file, 0o666)
+        
+        # Send notification to LSL and logs about recording completion with file info
+        logger.info(f"RECORDING_COMPLETED: file={output_file}, size={file_size}, frames={frame_count}")
         
     except Exception as e:
         logger.error(f"Error in video writer thread: {e}")
