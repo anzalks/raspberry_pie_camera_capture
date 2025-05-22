@@ -1,336 +1,167 @@
 # Raspberry Pi Camera Capture System
 
-A sophisticated system for Raspberry Pi that captures video and audio triggered by ntfy.sh notifications, with pre-event buffering and Lab Streaming Layer (LSL) integration. The system includes specialized support for the Raspberry Pi Global Shutter Camera, automatically configuring it for high frame rates.
+A camera capture system for Raspberry Pi that supports both standard and Global Shutter cameras.
 
-## Key Features
+## Features
 
-### Modular Design
-- **LSLCameraStreamer**: Core class for video capture, processing, and streaming
-- **LSLAudioStreamer**: Core class for audio capture, processing, and streaming
-- **BufferTriggerManager**: Manages ntfy.sh notifications and pre-event buffering
-- **StatusDisplay**: Real-time terminal dashboard for system monitoring
+- Supports standard Raspberry Pi Camera Module
+- Supports Global Shutter Camera (IMX296 sensor) with high frame rates (up to 536fps)
+- Real-time video capture and streaming
+- LSL marker stream integration
+- Video encoding with timestamp overlay
+- Status monitoring via terminal or GUI
 
-### Video Capture
-- Built on the **Picamera2** library for optimal Raspberry Pi camera performance
-- **Automatic Global Shutter Camera Support**: 
-  - Detects the IMX296 sensor used in the Raspberry Pi Global Shutter Camera
-  - Automatically configures sensor cropping (based on Hermann-SW's research) for high frame rates
-  - Optimizes dimensions based on requested frame rate (up to 536fps)
-  - Users simply specify desired resolution and FPS, and the system handles the low-level configuration
-- **MKV** video container format with **MJPG** codec preferred for high frame rates (H264/H265 supported as alternatives)
-- Threaded video writing for improved performance
-- Optional OpenCV preview window with keyboard controls (start/stop recording, quit)
+## Prerequisites
 
-### Audio Capture
-- Support for USB microphones via the **sounddevice** library
-- **WAV** audio format with configurable sample rate, bit depth, and channels
-- Threaded audio writing for improved performance
-- Optional real-time audio visualizer showing waveform and spectrogram
+- Raspberry Pi 4 or newer (8GB RAM recommended)
+- Raspberry Pi OS Bullseye or newer
+- Connected camera (Standard Pi Camera or Global Shutter Camera)
+- Python 3.7 or newer
 
-### Notification-Triggered Recording with Pre-Event Buffer
-- **Rolling RAM Buffer**: Continuously stores recent video frames and audio samples
-- **ntfy.sh Integration**: Listens for "start" or "stop" notifications on a configurable topic
-- On "start" trigger, the system:
-  1. Saves the buffered content (typically 10-20 seconds) to the beginning of the output file
-  2. Continues saving the live stream until a "stop" notification is received
-- Supports both automated (via ntfy.sh) and manual triggering (via keyboard in preview)
+## Installation
 
-### LSL (Lab Streaming Layer) Integration
-- **Video Primary Stream**: `[frame_number, timestamp, is_keyframe, ntfy_notification_active]`
-  - The `ntfy_notification_active` flag directly reflects the recording state (1 when recording, 0 when not)
-- **Video Status Stream**: `[recording_status, timestamp]` at ~10Hz
-  - Status values: 0=idle, 1=recording, 2=buffering
-- **Audio Primary Stream**: `[chunk_index, timestamp]`
-- **Audio Status Stream**: `[recording_status, timestamp]` at ~10Hz
-  - Status values: 0=not_recording, 1=recording
+Run the setup script with sudo to install all dependencies:
 
-### Configuration System
-- **YAML-based Configuration**: All settings can be stored in a simple YAML file
-- **Command-line Override**: Any config setting can be overridden via command-line arguments
-- **Sensible Defaults**: The system provides reasonable defaults for all settings
-- **Auto-detection**: Automatically detects and configures hardware-specific settings
-
-### Additional Features
-- **Real-time Terminal Dashboard**: Shows system status, buffer fill, FPS, frame counts, and notifications
-- **Status File Fallback**: Writes status to a file (/tmp/raspie_camera_status) for monitoring when fancy terminal UI fails
-- **CPU Core Affinity**: Specify cores for capture, writer, LSL, and ntfy threads to optimize performance
-- **Single Instance Operation**: Camera locking prevents multiple instances accessing the camera
-- **Date-based Organization**: Recordings are stored in YYYY_MM_DD/video/ and YYYY_MM_DD/audio/ folders
-
-## Installation and Setup
-
-### Prerequisites
-- Raspberry Pi (recommended: Pi 4 or newer for best performance)
-- Raspberry Pi Camera Module (standard or Global Shutter Camera)
-- Python 3.7+
-- USB microphone (for audio capture)
-
-### One-step Installation
-For a complete system setup, use the provided installation script:
 ```bash
-# Clone the repository
-git clone https://github.com/anzalks/raspberry_pie_camera_capture.git
-cd raspberry_pie_camera_capture
-
-# Run the setup script with sudo
-sudo bash setup_pi.sh
+sudo ./setup_pi.sh
 ```
 
 This script will:
-1. Install all required system dependencies
-2. Set up Python virtual environment
-3. Install Python dependencies including PyYAML for configuration
-4. Create a default configuration file
-5. Set up systemd service for auto-start on boot
-6. Configure storage directories
+1. Install all required system packages
+2. Install Python dependencies
+3. Set up proper camera permissions
+4. Configure the environment for camera access
 
-### Manual Python Dependencies
-If you prefer to install dependencies manually:
-```bash
-pip install picamera2 opencv-python numpy pylsl requests psutil sounddevice pyyaml
-```
+**Note**: During installation, you might see warnings about "Error parsing dependencies of send2trash" - these are harmless and can be ignored.
 
-### System Dependencies (Raspberry Pi / Linux)
-```bash
-sudo apt update
-sudo apt install -y v4l-utils libcamera-apps curl python3-yaml
-```
+## Camera Setup
 
-### Permissions
-- Ensure your user is in the 'video' group:
-```bash
-sudo usermod -a -G video $USER
-```
-- Log out and back in for the group change to take effect
+### Standard Raspberry Pi Camera
+
+For standard Raspberry Pi Camera modules:
+1. Connect the camera to the CSI port
+2. Enable the camera interface using `sudo raspi-config`
+3. Reboot the Raspberry Pi
+
+### Global Shutter Camera
+
+For Global Shutter Camera (IMX296):
+1. Connect the camera to the CSI port
+2. No additional configuration is needed - the system will automatically detect and configure the Global Shutter Camera
 
 ## Usage
 
-### Configuration File
-The system uses a YAML configuration file (`config.yaml` in the project root by default) to define settings:
+### Running the Camera Capture
 
-```yaml
-# Raspberry Pi Camera Capture Configuration
+Use the provided run script:
 
-# Camera settings
-camera:
-  width: 400
-  height: 400
-  fps: 100
-  codec: mjpg
-  container: mkv
-  preview: false
-  enable_crop: auto  # Can be true, false, or auto (detect Global Shutter Camera)
-
-# Storage settings
-storage:
-  save_video: true
-  output_dir: recordings
-  create_date_folders: true
-
-# Buffer settings
-buffer:
-  size: 20.0  # seconds
-  enabled: true
-
-# Remote control
-remote:
-  ntfy_topic: raspie-camera-test
-
-# Terminal settings
-terminal:
-  colors_enabled: true
-  use_unicode: false  # Set to false for better compatibility
-  update_frequency: 0.5
-```
-
-You can create your own configuration file and specify it with the `--config` parameter:
-
-```bash
-python -m src.raspberry_pi_lsl_stream.camera_capture --config my_custom_config.yaml
-```
-
-### Quick Start
-To start with default settings from the config file:
-
-```bash
-python -m src.raspberry_pi_lsl_stream.camera_capture
-```
-
-This will:
-1. Load settings from `config.yaml`
-2. Set up the camera with 400x400 resolution at 100fps
-3. Configure a 20-second rolling buffer
-4. Listen for notifications on the ntfy.sh topic
-5. Start capturing frames and displaying the status dashboard
-
-### Running on Raspberry Pi (Recommended Method)
-For the best experience on Raspberry Pi, use the provided run script which ensures both preview and status display are visible:
-
-```bash
-# Run with a single command (recommended)
-./run-camera.sh
-```
-
-This script will:
-1. Activate the virtual environment automatically
-2. Check that all required packages are installed
-3. Run a diagnostic check of your camera system
-4. Allow you to customize resolution and frame rate interactively
-5. Show both the video preview window AND the terminal status display
-6. Handle Ctrl+C gracefully for clean shutdown
-
-For Global Shutter Camera users, simply select "y" when asked to customize parameters, then enter your desired dimensions and frame rate:
-
-```
-Use custom resolution and FPS? (y/n): y
-Enter width (default: 640): 688
-Enter height (default: 136): 
-Enter FPS (default: 30): 400
-```
-
-### Environment Check
-Always run the diagnostic script first to verify your setup:
-```bash
-python check-camera-env.py
-```
-This will check for required dependencies, detect camera hardware, and provide guidance specific to your setup.
-
-### Camera Recording with Command-line Arguments
-You can override any configuration file settings using command-line arguments:
-
-```bash
-# Override resolution and frame rate
-python -m src.raspberry_pi_lsl_stream.camera_capture --width 640 --height 480 --fps 30
-
-# Enable video preview window
-python -m src.raspberry_pi_lsl_stream.camera_capture --preview
-
-# Run with both custom resolution and preview enabled
-python -m src.raspberry_pi_lsl_stream.camera_capture --width 800 --height 600 --fps 30 --preview
-
-# Override ntfy topic for remote triggering
-python -m src.raspberry_pi_lsl_stream.camera_capture --ntfy-topic your-topic-name
-```
-
-### Using the Preview Window
-When preview is enabled (either via `--preview` flag or in config.yaml), a window will open showing the live camera feed. The preview window supports these keyboard controls:
-- **S**: Start recording manually
-- **P** or **Space**: Stop recording
-- **Q** or **ESC**: Quit the application
-
-This is especially useful for testing the camera setup without needing remote triggers.
-
-#### Global Shutter Camera Examples
-The system will automatically detect and configure the Global Shutter Camera. Just specify your desired dimensions and frame rate:
-
-```bash
-# Balanced size/speed (400fps)
-python -m src.raspberry_pi_lsl_stream.camera_capture --width 688 --height 136 --fps 400
-
-# Maximum frame rate (536fps)
-python -m src.raspberry_pi_lsl_stream.camera_capture --width 1456 --height 96 --fps 536
-
-# Square crop for general use (200fps)
-python -m src.raspberry_pi_lsl_stream.camera_capture --width 600 --height 600 --fps 200
-
-# Small ROI for high speed (500fps)
-python -m src.raspberry_pi_lsl_stream.camera_capture --width 224 --height 96 --fps 500
-```
-
-#### Global Shutter Camera Implementation Details
-This system uses advanced media-ctl techniques (based on Hermann-SW's research) to configure the Raspberry Pi Global Shutter Camera for optimal performance:
-
-1. **Automatic Detection**: The system detects the IMX296 sensor used in the Global Shutter Camera
-2. **Intelligent Cropping**: Configures the sensor's crop region based on requested dimensions and frame rate
-3. **Low-level Configuration**: Uses media-ctl commands to directly configure the camera sensor
-4. **Optimized Settings**: Automatically adjusts settings for the best balance between resolution and frame rate
-
-When using a Global Shutter Camera, the best way to run is through the interactive script:
 ```bash
 ./run-camera.sh
 ```
 
-Select "y" when asked to customize parameters, and specify your desired width, height, and FPS. The system will automatically optimize the configuration for your camera.
+This script:
+- Checks your environment and camera setup
+- Configures camera permissions if needed
+- Automatically detects Global Shutter Camera if present
+- Offers optimal crop configurations for high frame rates
+- Starts the camera capture with preview enabled
 
-### Audio Recording
-```bash
-# Basic usage
-python -m src.raspberry_pi_lsl_stream.cli audio --save-audio
+### Global Shutter Camera High Frame Rate Configurations
 
-# With custom settings
-python -m src.raspberry_pi_lsl_stream.cli audio --sample-rate 48000 --channels 2 --save-audio
+The system implements Hermann-SW's technique ([reference](https://gist.github.com/Hermann-SW/e6049fe1a24fc2b5a53c654e0e9f6b9c)) for configuring the Global Shutter Camera to achieve high frame rates. When running the script, you can choose from these optimized configurations:
 
-# With visualization
-python -m src.raspberry_pi_lsl_stream.cli audio --save-audio --show-preview
-```
+1. **Maximum Frame Rate (536fps)**: 1456x96 (full width, minimum height)
+2. **Balanced Performance (400fps)**: 688x136 (medium crop)
+3. **Small ROI (500fps)**: 224x96 (small region of interest)
+4. **Square Crop (200fps)**: 600x600 (square, moderate fps)
 
-### Service Management
-If you used the setup_pi.sh script, you can manage the service with:
+The cropping technique works by:
+1. Calculating a centered crop region on the 1456×1088 sensor
+2. Using the `media-ctl` command to configure the crop
+3. Ensuring width, height, and crop coordinates are even numbers
 
-```bash
-# Check status
-./raspie-service.sh status
+### Running as a Service
 
-# Start/stop service
-./raspie-service.sh start
-./raspie-service.sh stop
+To run the camera capture as a service:
 
-# View logs
-./raspie-service.sh logs
+1. Copy the service file to systemd:
+   ```bash
+   sudo cp rpi-camera.service /etc/systemd/system/
+   ```
 
-# Send trigger notifications
-./raspie-service.sh trigger       # Start recording
-./raspie-service.sh stop-recording # Stop recording
-```
+2. Enable and start the service:
+   ```bash
+   sudo systemctl enable rpi-camera.service
+   sudo systemctl start rpi-camera.service
+   ```
 
-### Monitoring the Camera
-When running as a service, you can monitor the camera status with:
+3. Check service status:
+   ```bash
+   sudo systemctl status rpi-camera.service
+   ```
 
-```bash
-# Full live monitoring with status display
-./watch-raspie.sh
-```
+## Troubleshooting
 
-This shows the real-time status of the camera, including:
-- Current recording state 
-- Buffer fill level
-- Frame rates
-- Error messages
-- Recording statistics
+### Camera Not Detected
 
-Use this to verify your camera is working correctly when running as a background service.
+If your camera is not detected:
 
-### Triggering Recording via ntfy.sh
-Send notifications to start/stop recording:
+1. Run the environment check tool:
+   ```bash
+   python3 check-camera-env.py
+   ```
 
-```bash
-# Start recording
-curl -d "start recording" ntfy.sh/your-topic-name
+2. Ensure proper permissions:
+   ```bash
+   sudo chmod 666 /dev/video*
+   sudo chmod 666 /dev/media*  # Important for Global Shutter Camera
+   ```
 
-# Stop recording
-curl -d "stop recording" ntfy.sh/your-topic-name
-```
+3. Add your user to video group:
+   ```bash
+   sudo usermod -a -G video $USER
+   sudo usermod -a -G input $USER
+   ```
+   Log out and log back in for the group changes to take effect.
 
-You can also send these notifications from any device or application that can make HTTP requests.
+4. For Global Shutter Camera, ensure media-ctl is installed:
+   ```bash
+   sudo apt install -y libcamera-tools media-ctl
+   ```
 
-## Project Structure
-- **src/raspberry_pi_lsl_stream/**
-  - **camera_stream_fixed.py**: Core video capture and processing class
-  - **audio_stream.py**: Core audio capture and processing class
-  - **buffer_trigger.py**: Notification handling and pre-event buffering
-  - **camera_capture.py**: Main application for camera capture
-  - **cli.py**: Command-line interface with subcommands for audio and video
-  - **status_display.py**: Terminal-based dashboard
-  - **camera_lock.py**: Ensures single-instance camera operation
-  - **config_loader.py**: Loads and merges configuration from YAML and command-line
-- **check-camera-env.py**: Diagnostic script to verify the environment
-- **config.yaml**: Default configuration file
-- **setup_pi.sh**: One-step installation script for Raspberry Pi
-- **run-camera.sh**: Simple script to run with default configuration
-- **raspie-service.sh**: Service management script (created by setup_pi.sh)
+### Global Shutter Camera Issues
 
-## Author
-- **Anzal**: [GitHub](https://github.com/anzalks/)
+If you have issues with the Global Shutter Camera:
 
-## License
-This project is licensed under the MIT License - see the LICENSE file for details.
+1. Make sure the IMX296 sensor is properly detected:
+   ```bash
+   for m in {0..5}; do media-ctl -d /dev/media$m -p 2>/dev/null | grep -i "imx296"; done
+   ```
+
+2. Check if you need the bookworm OS workaround (--no-raw flag):
+   ```bash
+   grep "=bookworm" /etc/os-release
+   ```
+
+3. Ensure media device permissions are correct:
+   ```bash
+   sudo chmod 666 /dev/media*
+   ```
+
+4. Try a known working configuration manually:
+   ```bash
+   # For 400fps:
+   media-ctl -d /dev/media0 --set-v4l2 "'imx296 10-001a':0 [fmt:SBGGR10_1X10/688x136 crop:(384,476)/688x136]" -v
+   ```
+
+### Common Errors
+
+- **Failed to open camera**: Ensure camera is properly connected and enabled in raspi-config
+- **Permission denied**: Run `sudo chmod 666 /dev/video*` and `sudo chmod 666 /dev/media*` to fix permissions
+- **Preview not showing**: Ensure X server is running and DISPLAY environment variable is set
+- **Lock file issues**: Run `sudo rm -f /tmp/raspie_camera.lock` and then `sudo touch /tmp/raspie_camera.lock && sudo chmod 666 /tmp/raspie_camera.lock`
+- **media-ctl command failing**: Check the device ID (10 for RPi 4, 10/11 for RPi 5 cameras)
+
+## Acknowledgments
+
+- [Hermann-SW](https://github.com/Hermann-SW) for the Global Shutter Camera cropping technique that enables high frame rates ([reference gist](https://gist.github.com/Hermann-SW/e6049fe1a24fc2b5a53c654e0e9f6b9c))

@@ -284,7 +284,7 @@ camera:
   fps: 100
   codec: mjpg
   container: mkv
-  preview: true  # Changed to true to enable preview
+  preview: true
   enable_crop: auto  # Can be true, false, or auto (detect Global Shutter Camera)
 
 # Storage settings

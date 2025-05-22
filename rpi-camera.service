@@ -1,0 +1,18 @@
+[Unit]
+Description=Raspberry Pi Camera Capture Service
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/raspberry_pie_camera_capture
+ExecStart=/bin/bash run-camera.sh
+Restart=on-failure
+RestartSec=5
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/pi/.Xauthority
+Environment=PYTHONUNBUFFERED=1
+Environment=GS_CAMERA_AUTO_CONFIG=true
+
+[Install]
+WantedBy=multi-user.target 
