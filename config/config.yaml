@@ -18,7 +18,7 @@ camera:
   
   # Media controller settings
   media_ctl:
-    device_pattern: "/dev/media%d"
+    device_pattern: "/dev/media1"
     entity_pattern: "imx296 %s-001a"
     bayer_format: "SBGGR10_1X10"  # Format appropriate for IMX296
   
@@ -44,7 +44,7 @@ recording:
 # ntfy.sh notification settings
 ntfy:
   server: "https://ntfy.sh"
-  topic: "raspie-camera"  # CHANGE THIS TO A UNIQUE VALUE
+  topic: "raspie-camera-dawg-123"  # Updated to a unique value
   poll_interval_sec: 30  # Long polling interval
 
 # LSL (Lab Streaming Layer) settings
