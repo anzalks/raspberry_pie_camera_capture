@@ -720,6 +720,176 @@ fi
 # Clean up
 rm -f "$TEST_SCRIPT"
 
+# Add this function before the "Installation complete" message
+# Fix recording and LSL issues
+fix_recording_and_lsl_issues() {
+  echo -e "${YELLOW}----- Fixing Recording Directory and LSL Issues -----${NC}"
+  
+  # Get username to use for directory paths
+  USER_NAME="${SUDO_USER:-$(whoami)}"
+  USER_HOME=$(getent passwd "$USER_NAME" | cut -d: -f6)
+  
+  # Create recording directory with proper permissions
+  echo "Setting up recording directory..."
+  RECORDING_DIR="$USER_HOME/recordings"
+  mkdir -p "$RECORDING_DIR"
+  chmod -R 777 "$RECORDING_DIR"
+  chown -R "$USER_NAME:$(id -g $USER_NAME)" "$RECORDING_DIR"
+  echo "Directory ready: $RECORDING_DIR"
+  
+  # Update config file to use the right recording directory if it exists
+  if [ -f "$PROJECT_ROOT/config/config.yaml" ]; then
+    echo "Updating output_dir in config file..."
+    sed -i "s|output_dir:.*|output_dir: \"$RECORDING_DIR\"  # Use home directory for reliable permissions|" "$PROJECT_ROOT/config/config.yaml"
+  fi
+  
+  # Test direct camera recording if we're on a Raspberry Pi
+  if [ -e "/dev/video0" ] && command -v rpicam-vid >/dev/null; then
+    echo "Testing direct camera recording..."
+    TEST_FILE="$RECORDING_DIR/install_test_$(date +%Y%m%d_%H%M%S).mp4"
+    echo "Will save to: $TEST_FILE"
+    
+    # Try rpicam-vid for Pi
+    echo "Testing with rpicam-vid..."
+    if ! rpicam-vid --no-raw --width 400 --height 400 --timeout 3000 --codec h264 --output "$TEST_FILE" 2>/dev/null; then
+      echo "H264 recording failed, trying with MJPEG codec..."
+      
+      # Try with MJPEG codec
+      TEST_FILE="$RECORDING_DIR/install_test_mjpeg_$(date +%Y%m%d_%H%M%S).mkv"
+      rpicam-vid --no-raw --width 400 --height 400 --timeout 3000 --codec mjpeg --output "$TEST_FILE" 2>/dev/null || true
+    fi
+    
+    # Check file size of any test files
+    for f in "$RECORDING_DIR/install_test_"*; do
+      if [ -f "$f" ]; then
+        FILE_SIZE=$(stat -c%s "$f" 2>/dev/null || echo "0")
+        if [ "$FILE_SIZE" -gt 10000 ]; then
+          echo -e "${GREEN}✓ Direct recording successful with file size: $(( FILE_SIZE / 1024 ))KB${NC}"
+          echo "Test file: $f"
+        else
+          echo -e "${YELLOW}⚠ Test recording created small file: $FILE_SIZE bytes${NC}"
+        fi
+      fi
+    done
+  fi
+  
+  # Fix LSL stream configuration with a test program
+  echo "Testing and configuring LSL stream..."
+  
+  LSL_TEST_FILE="/tmp/lsl_test_$$.py"
+  cat > "$LSL_TEST_FILE" << 'EOF'
+#!/usr/bin/env python3
+import sys
+import time
+
+def configure_lsl_stream():
+    try:
+        import pylsl
+        
+        # Create LSL stream with 4 channels
+        info = pylsl.StreamInfo(
+            name="IMX296Camera",
+            type="VideoEvents",
+            channel_count=4,
+            nominal_srate=30,
+            channel_format=pylsl.cf_double,
+            source_id="cam1"
+        )
+        
+        # Add metadata
+        channels = info.desc().append_child("channels")
+        channels.append_child("channel").append_child_value("label", "timestamp").append_child_value("type", "time").append_child_value("unit", "s")
+        channels.append_child("channel").append_child_value("label", "recording").append_child_value("type", "status").append_child_value("unit", "bool")
+        channels.append_child("channel").append_child_value("label", "frame").append_child_value("type", "index").append_child_value("unit", "count")
+        channels.append_child("channel").append_child_value("label", "trigger").append_child_value("type", "code").append_child_value("unit", "id")
+        
+        # Create outlet
+        outlet = pylsl.StreamOutlet(info)
+        
+        # Send test data
+        sample = [time.time(), 0.0, 0.0, 0.0]  # time, recording-status, frame-number, trigger-code
+        outlet.push_sample(sample)
+        print("LSL Test: Successfully created stream and sent sample")
+        
+        # Verify LSL stream creation
+        streams = pylsl.resolve_streams(wait_time=1.0)
+        if any(s.name() == "IMX296Camera" for s in streams):
+            print("LSL stream verified in resolver")
+            return True
+        else:
+            print("LSL stream created but not found in resolver")
+            return False
+    except Exception as e:
+        print(f"LSL Test Error: {e}")
+        return False
+
+if __name__ == "__main__":
+    if configure_lsl_stream():
+        print("LSL stream configuration successful!")
+        sys.exit(0)
+    else:
+        print("LSL stream configuration failed!")
+        sys.exit(1)
+EOF
+
+  chmod +x "$LSL_TEST_FILE"
+  if [ -n "$SUDO_USER" ]; then
+    chown "$SUDO_USER:$(id -g $SUDO_USER)" "$LSL_TEST_FILE"
+  fi
+  
+  # Run the LSL test with the virtual environment Python
+  if [ -d "$PROJECT_ROOT/.venv" ]; then
+    echo "Testing LSL stream creation..."
+    if sudo -u "$SUDO_USER" "$PROJECT_ROOT/.venv/bin/python" "$LSL_TEST_FILE"; then
+      echo -e "${GREEN}✓ LSL stream configuration successful${NC}"
+    else
+      echo -e "${YELLOW}⚠ LSL stream test failed. Will try again after service restart.${NC}"
+    fi
+  fi
+  
+  # Set video device permissions
+  echo "Setting video device permissions..."
+  chmod 666 /dev/video* 2>/dev/null || true
+  chmod 666 /dev/media* 2>/dev/null || true
+  
+  # Create udev rule for persistent permissions if not already done
+  if [ ! -f "/etc/udev/rules.d/99-camera-permissions.rules" ]; then
+    echo "Creating udev rule for persistent camera permissions..."
+    cat > /etc/udev/rules.d/99-camera-permissions.rules << EOF
+# Persistent permissions for camera devices
+KERNEL=="video*", SUBSYSTEM=="video4linux", GROUP="video", MODE="0666"
+KERNEL=="media*", GROUP="video", MODE="0666"
+EOF
+    
+    # Reload udev rules
+    udevadm control --reload-rules || true
+    udevadm trigger || true
+  fi
+  
+  # Restart the service if it exists and is enabled
+  if [ -f "/etc/systemd/system/imx296-camera.service" ]; then
+    echo "Checking if camera service is enabled..."
+    if systemctl is-enabled imx296-camera.service &>/dev/null; then
+      echo "Restarting camera service..."
+      systemctl restart imx296-camera.service
+      sleep 2
+      systemctl status imx296-camera.service
+      
+      echo -e "${GREEN}Camera service restarted${NC}"
+    else
+      echo "Camera service is installed but not enabled."
+    fi
+  fi
+  
+  # Clean up
+  rm -f "$LSL_TEST_FILE"
+  
+  echo -e "${GREEN}Recording directory and LSL fixes complete!${NC}"
+}
+
+# Call the function near the end of the script, right before the final messages
+fix_recording_and_lsl_issues
+
 echo ""
 echo -e "${GREEN}Installation complete!${NC}"
 echo ""

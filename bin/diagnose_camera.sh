@@ -360,12 +360,12 @@ test_camera_capture() {
     echo "Detected Raspberry Pi 5, using rpicam-vid for capture..."
     
     # Use rpicam-vid for Pi5
-    rpicam-vid $WORKAROUND --width $WIDTH --height $HEIGHT --denoise cdn_off --framerate $FRAMERATE -t $DURATION -o /dev/shm/test_capture.mp4 -n
+    rpicam-vid $WORKAROUND --width $WIDTH --height $HEIGHT --denoise cdn_off --framerate $FRAMERATE -t $DURATION -o /tmp/test_capture.mp4 -n
     
-    if [ -f "/dev/shm/test_capture.mp4" ] && [ -s "/dev/shm/test_capture.mp4" ]; then
+    if [ -f "/tmp/test_capture.mp4" ] && [ -s "/tmp/test_capture.mp4" ]; then
       echo "✅ Capture successful with rpicam-vid"
       # Copy to recordings directory
-      cp /dev/shm/test_capture.mp4 "$TEST_OUTPUT"
+      cp /tmp/test_capture.mp4 "$TEST_OUTPUT"
       echo "Copied to $TEST_OUTPUT"
     else
       echo "❌ rpicam-vid capture failed, trying with mjpeg codec..."
