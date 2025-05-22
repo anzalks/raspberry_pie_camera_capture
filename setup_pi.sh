@@ -178,7 +178,7 @@ TODAY_DIR="$RECORDINGS_DIR/$(date +%Y-%m-%d)"
 
 # Create directories with proper permissions
 echo "Creating recordings directories: $TODAY_DIR"
-mkdir -y "$TODAY_DIR"
+mkdir -p "$TODAY_DIR"
 
 # Set proper ownership and permissions
 if [ -n "$SUDO_USER" ]; then
