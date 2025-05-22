@@ -233,7 +233,8 @@ if [ "$(id -u)" -eq 0 ]; then
     if grep -q "=bookworm" /etc/os-release 2>/dev/null; then
         echo "DETECTED RASPBERRY PI OS BOOKWORM"
         
-        # Install base packages first
+        # Install base packages first - v4l-utils contains media-ctl on Bookworm
+        echo "Installing v4l-utils package which includes media-ctl on Bookworm..."
         apt install -y libcamera-apps libcamera-tools python3-libcamera curl v4l-utils
         
         # Check if media-ctl is already available from the OS
@@ -312,7 +313,7 @@ if [ "$(id -u)" -eq 0 ]; then
     else
         # Older OS versions can use the packaged versions
         echo "Installing packages for pre-Bookworm Raspberry Pi OS..."
-        apt install -y v4l-utils libcamera-apps libcamera-tools media-ctl curl python3-libcamera
+        apt install -y v4l-utils libcamera-apps libcamera-tools curl python3-libcamera
     fi
     
     # Fix camera device permissions for ALL video devices

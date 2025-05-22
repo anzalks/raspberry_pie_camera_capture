@@ -222,17 +222,19 @@ If you have issues with the Global Shutter Camera:
    ```
    If this returns a result, you're on Bookworm OS and the `--no-raw` flag will be applied automatically.
 
-3. If you're on Bookworm OS, make sure you've built v4l-utils from source:
+3. Install v4l-utils which includes the media-ctl tool:
    ```bash
-   # Run the script with sudo first to build the tools
-   sudo ./scripts/run-camera.sh
+   sudo apt install -y v4l-utils
    
-   # Then verify the installation
+   # Verify media-ctl is available
    media-ctl --version
    v4l2-ctl --version
    ```
    
-   Both tools should show that they are installed and working. The tools must be built from source on Bookworm OS.
+   If the OS-provided tools don't work with your camera, run our script to build from source:
+   ```bash
+   sudo ./scripts/run-camera.sh
+   ```
 
 4. If media-ctl reports errors like "Cannot find entity" or similar:
    ```bash

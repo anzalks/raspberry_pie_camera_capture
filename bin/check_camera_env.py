@@ -165,7 +165,8 @@ def check_global_shutter_camera():
             print_status("If OS packages don't work properly, use our script to check and build if needed:", True)
             print("sudo ./scripts/run-camera.sh")
         else:
-            print_status("Install with: sudo apt install -y libcamera-tools media-ctl", "warning")
+            print_status("Install with: sudo apt install -y v4l-utils", "warning")
+            print_status("The media-ctl tool is included in the v4l-utils package", True)
         return
     
     # Check if media-ctl works with any devices
