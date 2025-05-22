@@ -379,14 +379,21 @@ def setup_lsl_stream(config):
     logger.info(f"  channel_count: {channel_count}")
     logger.info(f"  nominal_srate: {nominal_srate}")
     
-    # Create channel format
-    channel_format = pylsl.cf_double64  # Use double precision for all channels
+    # Create channel formats - use specific formats per channel type
+    # Create channel names with their types
+    channel_info = [
+        {"name": "CaptureTimeUnix", "format": pylsl.cf_double64},  # timestamp as double
+        {"name": "ntfy_notification_active", "format": pylsl.cf_int32},  # recording status as int
+        {"name": "session_frame_no", "format": pylsl.cf_int64},  # frame number as int64
+        {"name": "trigger_source", "format": pylsl.cf_string}  # trigger source as string (k/n)
+    ]
     
-    # Create channel names - Added trigger_source as 4th channel
-    channel_names = ["CaptureTimeUnix", "ntfy_notification_active", "session_frame_no", "trigger_source"]
+    # Create channel names list for logging
+    channel_names = [ch["name"] for ch in channel_info]
     
     # Log the channel names
     logger.info(f"LSL Channels: {', '.join(channel_names)}")
+    logger.info(f"Channel formats: timestamp=double, recording=int32, frame=int64, trigger=string")
     
     try:
         # Create LSL StreamInfo
@@ -396,15 +403,17 @@ def setup_lsl_stream(config):
             type=stream_type,
             channel_count=channel_count,
             nominal_srate=nominal_srate,
-            channel_format=channel_format,
+            channel_format=pylsl.cf_mixed,  # Use mixed format
             source_id=f"imx296_{os.getpid()}"
         )
         
         # Add channel metadata
         logger.info("Adding channel metadata")
         channels = info.desc().append_child("channels")
-        for name in channel_names:
-            channels.append_child("channel").append_child_value("label", name)
+        for ch in channel_info:
+            chan = channels.append_child("channel")
+            chan.append_child_value("label", ch["name"])
+            chan.append_child_value("type", str(ch["format"]))
         
         # Add some acquisition metadata
         info.desc().append_child("acquisition").append_child_value("manufacturer", "Sony")
@@ -417,7 +426,8 @@ def setup_lsl_stream(config):
         lsl_outlet = pylsl.StreamOutlet(info)
         
         # Send a test sample to verify the stream is working
-        test_sample = [time.time(), 0.0, 0.0, 0.0]  # unix_time, recording_status, frame_num, trigger_source
+        # timestamp, recording=0, frame=0, trigger='n'
+        test_sample = [time.time(), 0, 0, 'n']
         lsl_outlet.push_sample(test_sample)
         logger.info(f"Sent test LSL sample: {test_sample}")
         
@@ -698,7 +708,7 @@ def camera_thread(config):
                     
                     # Send LSL data sample for dashboard to see
                     if lsl_outlet:
-                        sample = [time.time(), float(recording_event.is_set()), float(frame_count), float(last_trigger_source)]
+                        sample = [time.time(), float(recording_event.is_set()), float(frame_count), get_trigger_source_string(last_trigger_source)]
                         lsl_outlet.push_sample(sample)
                         logger.info(f"LSL output: {sample}")
             except Exception as e:
@@ -737,7 +747,7 @@ def start_simulation_thread(frame_buffer, config):
     
     # Send a test LSL sample
     if lsl_outlet:
-        sample = [time.time(), 0.0, 0.0, 3.0]  # timestamp, recording=false, frame=0, trigger=simulated
+        sample = [time.time(), 0.0, 0.0, 's']  # timestamp, recording=false, frame=0, trigger=simulated
         lsl_outlet.push_sample(sample)
         logger.info(f"Sent LSL simulation test sample: {sample}")
     
@@ -750,38 +760,68 @@ def simulate_frames(frame_buffer, config):
     
     frame_count = 0
     
-    # Create a simple pattern frame - actual valid H.264 frame header
-    h264_header = bytearray([
-        0x00, 0x00, 0x00, 0x01,  # Start code
-        0x67, 0x64, 0x00, 0x0A,  # SPS (Sequence Parameter Set)
-        0xE0, 0x00, 0x00, 0x00, 0x00
+    # Create real valid H.264 data
+    # These are actual valid H.264 NAL units for a small frame
+    sps_bytes = bytearray([
+        0x00, 0x00, 0x00, 0x01,  # NAL start code
+        0x67,                    # NAL type 7 (SPS)
+        0x64, 0x00, 0x1F,        # SPS header
+        0xAC, 0xD9, 0x40, 0x50,
+        0x05, 0xBB, 0x01, 0x13,
+        0x00, 0x00, 0x03, 0x00,
+        0x02, 0x00, 0x00, 0x03, 
+        0x00, 0x64, 0x1E, 0x2C, 
+        0x5C, 0x90
     ])
     
-    h264_frame = bytearray([
-        0x00, 0x00, 0x00, 0x01,  # Start code
-        0x65, 0x88, 0x80, 0x00,  # IDR frame (keyframe)
-        0x00, 0x00, 0x0F, 0xFF   # Some dummy data
+    pps_bytes = bytearray([
+        0x00, 0x00, 0x00, 0x01,  # NAL start code
+        0x68,                    # NAL type 8 (PPS)
+        0xEB, 0xE3, 0xCB, 0x22,
+        0xC0
     ])
     
-    # Add more dummy data to make a realistic frame size for 400x400
+    frame_bytes = bytearray([
+        0x00, 0x00, 0x00, 0x01,  # NAL start code
+        0x65,                    # NAL type 5 (IDR slice)
+        0x88, 0x84, 0x21, 0x43,
+        0x5C, 0xA4, 0x23, 0xA1
+    ])
+    
+    # Add more data to make the frame bigger
     for i in range(1000):
-        h264_frame.extend([i & 0xFF, (i >> 8) & 0xFF])
+        frame_bytes.extend([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22])
     
-    # First, send the header
-    frame_buffer.append((time.time(), bytes(h264_header)))
-    process_frame(bytes(h264_header), 0, time.time(), frame_buffer, [])
-    logger.info("Sent H.264 header frame")
+    # Add another NAL unit to make it a more complete frame
+    frame_bytes.extend([
+        0x00, 0x00, 0x00, 0x01,  # NAL start code
+        0x06,                    # NAL type 6 (SEI)
+        0xFF, 0x01, 0x02, 0x03
+    ])
+    
+    # First, send the SPS and PPS (these are required at the start of a stream)
+    logger.info("Sending H.264 SPS/PPS headers")
+    frame_buffer.append((time.time(), bytes(sps_bytes)))
+    process_frame(bytes(sps_bytes), 0, time.time(), frame_buffer, [])
+    
+    frame_buffer.append((time.time(), bytes(pps_bytes)))
+    process_frame(bytes(pps_bytes), 0, time.time(), frame_buffer, [])
+    
+    # Add also to recording queue if already recording
+    if recording_event.is_set():
+        frame_queue.put((time.time(), bytes(sps_bytes)))
+        frame_queue.put((time.time(), bytes(pps_bytes)))
     
     while not stop_event.is_set():
         # Create timestamp for the frame
         frame_time = time.time()
         
         # Add to buffer
-        frame_buffer.append((frame_time, bytes(h264_frame)))
+        frame_buffer.append((frame_time, bytes(frame_bytes)))
         
         # Process frame
         frame_count += 1
-        process_frame(bytes(h264_frame), frame_count, time.time(), frame_buffer, [])
+        process_frame(bytes(frame_bytes), frame_count, time.time(), frame_buffer, [])
         
         # Log periodically
         if frame_count % 100 == 0:
@@ -791,7 +831,13 @@ def simulate_frames(frame_buffer, config):
             # Also add a frame to the recording queue if recording is active
             if recording_event.is_set():
                 try:
-                    frame_queue.put((frame_time, bytes(h264_frame)), block=False)
+                    # For every 30th frame (about 1 per second) send SPS/PPS for robustness
+                    if frame_count % 30 == 0:
+                        frame_queue.put((frame_time, bytes(sps_bytes)))
+                        frame_queue.put((frame_time, bytes(pps_bytes)))
+                    
+                    # Always send the frame data
+                    frame_queue.put((frame_time, bytes(frame_bytes)), block=False)
                 except queue.Full:
                     pass
         
@@ -822,8 +868,10 @@ def process_frame(frame_data, frame_num, start_time, frame_buffer, pts_data):
             # Log frame count periodically
             if session_frame_counter % 100 == 0:
                 logger = logging.getLogger('imx296_capture')
-                # Updated to include trigger_source
-                data = [frame_timestamp, int(recording_event.is_set()), session_frame_counter, last_trigger_source]
+                # Convert trigger source numeric code to string (k/n)
+                trigger_str = get_trigger_source_string(last_trigger_source)
+                # Updated to include trigger_source string
+                data = [frame_timestamp, int(recording_event.is_set()), int(session_frame_counter), trigger_str]
                 logger.info(f"LSL output: {data}")
         except queue.Full:
             # If queue is full, we're probably too slow to write frames, log warning
@@ -832,8 +880,17 @@ def process_frame(frame_data, frame_num, start_time, frame_buffer, pts_data):
     
     # Send metadata to LSL regardless of recording status
     if lsl_outlet:
+        # Convert trigger source to string
+        trigger_str = get_trigger_source_string(last_trigger_source)
+        
         # Prepare sample: [unix_timestamp, recording_active, frame_number, trigger_source]
-        sample = [frame_timestamp, float(recording_event.is_set()), float(frame_num), float(last_trigger_source)]
+        # timestamp as double, recording as int, frame as int64, trigger as string
+        sample = [
+            frame_timestamp,                  # timestamp as double
+            int(recording_event.is_set()),    # recording status as int32
+            int(frame_num),                   # frame number as int64
+            trigger_str                       # trigger source as string (k/n)
+        ]
         
         # Send the data
         try:
@@ -843,7 +900,7 @@ def process_frame(frame_data, frame_num, start_time, frame_buffer, pts_data):
             if frame_num % 100 == 0 or (recording_event.is_set() and session_frame_counter % 10 == 0):
                 logger = logging.getLogger('imx296_capture')
                 logger.info(f"LSL data sent: timestamp={frame_timestamp:.3f}, recording={int(recording_event.is_set())}, "
-                           f"frame={frame_num}, trigger_source={last_trigger_source}")
+                           f"frame={frame_num}, trigger_source={trigger_str}")
         except Exception as e:
             logger = logging.getLogger('imx296_capture')
             logger.error(f"Error sending LSL data: {e}")
@@ -859,6 +916,17 @@ def find_timestamp_for_frame(frame_num, pts_data, start_time):
     
     # Fallback: use current time
     return time.time()
+
+def get_trigger_source_string(numeric_code):
+    """Convert numeric trigger source code to string format."""
+    if numeric_code == 1:
+        return 'n'  # ntfy
+    elif numeric_code == 2:
+        return 'k'  # keyboard
+    elif numeric_code == 3:
+        return 's'  # simulated
+    else:
+        return 'x'  # unknown/none
 
 def log_stderr_output(stderr, process_name):
     """Thread function to log stderr output from a subprocess."""
@@ -1290,6 +1358,9 @@ def start_recording_keyboard(config):
         except queue.Empty:
             break
     
+    # Set trigger source before starting recording
+    last_trigger_source = 2  # keyboard
+    
     # Start recording
     is_recording_active = True
     recording_event.set()
@@ -1304,7 +1375,7 @@ def start_recording_keyboard(config):
     
     # Send a test LSL sample to show in dashboard
     if lsl_outlet:
-        sample = [time.time(), 1.0, 0.0, 2.0]  # timestamp, recording=true, frame=0, trigger=keyboard
+        sample = [time.time(), 1.0, 0.0, 'k']  # timestamp, recording=true, frame=0, trigger=keyboard
         lsl_outlet.push_sample(sample)
         logger.info(f"Sent LSL start marker: {sample}")
     
@@ -1329,7 +1400,7 @@ def stop_recording_keyboard():
     
     # Send a test LSL sample to show in dashboard
     if lsl_outlet:
-        sample = [time.time(), 0.0, float(session_frame_counter), 2.0]  # timestamp, recording=false, frame=current, trigger=keyboard
+        sample = [time.time(), 0.0, float(session_frame_counter), 'k']  # timestamp, recording=false, frame=current, trigger=keyboard
         lsl_outlet.push_sample(sample)
         logger.info(f"Sent LSL stop marker: {sample}")
     
@@ -1552,7 +1623,7 @@ def main():
                 if lsl_outlet:
                     try:
                         current_time = time.time()
-                        sample = [current_time, float(recording_event.is_set()), -1.0, 0.0]  # -1 frame indicates heartbeat
+                        sample = [current_time, float(recording_event.is_set()), -1.0, get_trigger_source_string(last_trigger_source)]  # -1 frame indicates heartbeat
                         lsl_outlet.push_sample(sample)
                         logger.debug(f"Sent LSL heartbeat at {current_time}")
                     except Exception as e:

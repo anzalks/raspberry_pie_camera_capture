@@ -421,7 +421,7 @@ show_dashboard() {
         echo "=== LSL STREAM DATA ==="
         
         # Get LSL setup information
-        lsl_setup=$(sudo journalctl -u $SERVICE_NAME -n 500 2>/dev/null | grep -iE "created lsl stream|setting up lsl|lsl.* stream|stream_name|LSL_STREAM_READY" | grep -v "Error|Failed" | tail -1)
+        lsl_setup=$(sudo journalctl -u $SERVICE_NAME -n 500 2>/dev/null | grep -iE "LSL data sent|created lsl stream|setting up lsl|lsl.* stream|stream_name|LSL_STREAM_READY" | grep -v "Error|Failed" | tail -1)
         if [ -n "$lsl_setup" ]; then
             lsl_text=$(echo "$lsl_setup" | sed -E 's/.*INFO - //g')
             printf "%-20s %s\n" "LSL Stream:" "$(truncate_text "$lsl_text" 55)"
@@ -434,19 +434,10 @@ show_dashboard() {
             elif [[ "$lsl_text" =~ channels=([0-9]+) ]]; then
                 channel_count=${BASH_REMATCH[1]}
                 printf "%-20s %s\n" "Channel Count:" "$channel_count"
-            fi
-            
-            # Try to find channel count from grep if not in the stream text
-            if [ "$channel_count" = "0" ]; then
-                channel_info=$(sudo journalctl -u $SERVICE_NAME -n 1000 2>/dev/null | grep -iE "channel_count|channels.*[0-9]" | grep -v "Error|Warning" | tail -1)
-                if [ -n "$channel_info" ]; then
-                    # Extract number from the line
-                    ch_count=$(echo "$channel_info" | grep -oE "[0-9]+" | head -1)
-                    if [ -n "$ch_count" ]; then
-                        channel_count=$ch_count
-                        printf "%-20s %s\n" "Channel Count:" "$channel_count"
-                    fi
-                fi
+            # If we have "LSL data sent" we know it's 4 channels from our code
+            elif [[ "$lsl_text" == *"LSL data sent"* ]]; then
+                channel_count=4
+                printf "%-20s %s\n" "Channel Count:" "$channel_count"
             fi
             
             # Check for any channel names mentioned in the logs
@@ -461,14 +452,14 @@ show_dashboard() {
             
             # Try different patterns to find LSL data
             lsl_data_patterns=(
-                # Pattern 1: Look for LSL output lines
-                "$(sudo journalctl -u $SERVICE_NAME -n 1000 2>/dev/null | grep -iE "lsl output|sending lsl|lsl data|Sent LSL|test LSL" | grep -v "setup|create|created|with" | tail -10)"
-                # Pattern 2: Look for any arrays in logs
-                "$(sudo journalctl -u $SERVICE_NAME -n 1000 2>/dev/null | grep -E "\[[0-9,. ]+\]" | tail -10)"
-                # Pattern 3: Look for trigger or marker mentions
-                "$(sudo journalctl -u $SERVICE_NAME -n 500 2>/dev/null | grep -iE "trigger|marker|timestamp" | grep -v "setup|create" | tail -10)"
-                # Pattern 4: Look for more detailed LSL data logs 
+                # Pattern 1: Look for LSL data sent
                 "$(sudo journalctl -u $SERVICE_NAME -n 500 2>/dev/null | grep -iE "LSL data sent:" | tail -10)"
+                # Pattern 2: Look for LSL output lines
+                "$(sudo journalctl -u $SERVICE_NAME -n 1000 2>/dev/null | grep -iE "lsl output|sending lsl|lsl data|Sent LSL|test LSL" | grep -v "setup|create|created|with" | tail -10)"
+                # Pattern 3: Look for any arrays in logs
+                "$(sudo journalctl -u $SERVICE_NAME -n 1000 2>/dev/null | grep -E "\[[0-9,. ]+\]" | tail -10)"
+                # Pattern 4: Look for trigger or marker mentions
+                "$(sudo journalctl -u $SERVICE_NAME -n 500 2>/dev/null | grep -iE "trigger|marker|timestamp" | grep -v "setup|create" | tail -10)"
                 # Pattern 5: Look for raw LSL test sample output
                 "$(sudo journalctl -u $SERVICE_NAME -n 500 2>/dev/null | grep -iE "test LSL sample" | tail -5)"
             )
@@ -500,18 +491,20 @@ show_dashboard() {
                         timestamp=$(echo "$line" | grep -oE "timestamp=[0-9.]*" | cut -d= -f2)
                         recording=$(echo "$line" | grep -oE "recording=[0-9]" | cut -d= -f2)
                         frame=$(echo "$line" | grep -oE "frame=[0-9]*" | cut -d= -f2)
-                        trigger=$(echo "$line" | grep -oE "trigger_source=[0-9]" | cut -d= -f2)
+                        trigger=$(echo "$line" | grep -oE "trigger_source=[kns]" | cut -d= -f2)
                         
                         # Format time nicely
                         time_str=$(date -d "@$timestamp" '+%H:%M:%S.%3N' 2>/dev/null || echo "$timestamp")
                         
                         # Format trigger source as text
                         trigger_name="Unknown"
-                        if [ "$trigger" = "1" ]; then
+                        if [ "$trigger" = "n" ]; then
                             trigger_name="ntfy"
-                        elif [ "$trigger" = "2" ]; then
+                        elif [ "$trigger" = "k" ]; then
                             trigger_name="keyboard"
-                        elif [ "$trigger" = "0" ]; then
+                        elif [ "$trigger" = "s" ]; then
+                            trigger_name="simulated"
+                        elif [ "$trigger" = "x" ]; then
                             trigger_name="none"
                         fi
                         
@@ -541,12 +534,25 @@ show_dashboard() {
                                     time_str="$time"
                                 fi
                                 
-                                # Format trigger source as text if it's a number
-                                if [[ "$source" =~ ^[0-9]+$ ]]; then
+                                # Format trigger source as text if it's a single character string
+                                if [[ "$source" =~ ^[kns]$ ]]; then
+                                    if [ "$source" = "k" ]; then
+                                        source="keyboard"
+                                    elif [ "$source" = "n" ]; then
+                                        source="ntfy"
+                                    elif [ "$source" = "s" ]; then
+                                        source="simulated"
+                                    elif [ "$source" = "x" ]; then
+                                        source="none"
+                                    fi
+                                # Otherwise, handle numeric values
+                                elif [[ "$source" =~ ^[0-9]+$ ]]; then
                                     if [ "$source" = "1" ]; then
                                         source="ntfy"
                                     elif [ "$source" = "2" ]; then
                                         source="keyboard"
+                                    elif [ "$source" = "3" ]; then
+                                        source="simulated"
                                     elif [ "$source" = "0" ]; then
                                         source="none"
                                     fi
@@ -557,12 +563,25 @@ show_dashboard() {
                                 # Space-separated values
                                 read -r time frame trigger source <<< "$clean_data" 2>/dev/null
                                 
-                                # Format trigger source if it's a number
-                                if [[ "$source" =~ ^[0-9]+$ ]]; then
+                                # Format trigger source if it's a single character string
+                                if [[ "$source" =~ ^[kns]$ ]]; then
+                                    if [ "$source" = "k" ]; then
+                                        source="keyboard"
+                                    elif [ "$source" = "n" ]; then
+                                        source="ntfy"
+                                    elif [ "$source" = "s" ]; then
+                                        source="simulated"
+                                    elif [ "$source" = "x" ]; then
+                                        source="none"
+                                    fi
+                                # Otherwise, handle numeric values
+                                elif [[ "$source" =~ ^[0-9]+$ ]]; then
                                     if [ "$source" = "1" ]; then
                                         source="ntfy"
                                     elif [ "$source" = "2" ]; then
                                         source="keyboard"
+                                    elif [ "$source" = "3" ]; then
+                                        source="simulated"
                                     elif [ "$source" = "0" ]; then
                                         source="none"
                                     fi
