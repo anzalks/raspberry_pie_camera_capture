@@ -139,6 +139,35 @@ else
   build_liblsl_from_source
 fi
 
+# Create symlinks to the liblsl library for architecture compatibility
+echo -e "${YELLOW}Creating architecture-specific symlinks for liblsl...${NC}"
+LIBLSL_PATH=""
+if [ -f "/usr/local/lib/liblsl.so" ]; then
+  LIBLSL_PATH="/usr/local/lib/liblsl.so"
+elif ldconfig -p | grep -q "liblsl\.so"; then
+  LIBLSL_PATH=$(ldconfig -p | grep "liblsl\.so" | head -1 | awk '{print $4}')
+fi
+
+if [ -n "$LIBLSL_PATH" ]; then
+  echo "Found liblsl at: $LIBLSL_PATH"
+  
+  # Create necessary directory structure
+  mkdir -p "$PROJECT_ROOT/.venv/lib/python3.11/site-packages/pylsl"
+  mkdir -p "$PROJECT_ROOT/.venv/lib/python3.11/site-packages/pylsl/lib"
+  
+  # Create symlinks for various architectures to point to the same library
+  ln -sf "$LIBLSL_PATH" "$PROJECT_ROOT/.venv/lib/python3.11/site-packages/pylsl/liblsl.so" || true
+  ln -sf "$LIBLSL_PATH" "$PROJECT_ROOT/.venv/lib/python3.11/site-packages/pylsl/liblsl32.so" || true
+  ln -sf "$LIBLSL_PATH" "$PROJECT_ROOT/.venv/lib/python3.11/site-packages/pylsl/liblsl64.so" || true
+  ln -sf "$LIBLSL_PATH" "$PROJECT_ROOT/.venv/lib/python3.11/site-packages/pylsl/lib/liblsl.so" || true
+  ln -sf "$LIBLSL_PATH" "$PROJECT_ROOT/.venv/lib/python3.11/site-packages/pylsl/lib/liblsl32.so" || true
+  ln -sf "$LIBLSL_PATH" "$PROJECT_ROOT/.venv/lib/python3.11/site-packages/pylsl/lib/liblsl64.so" || true
+  
+  echo -e "${GREEN}Created symlinks for liblsl library${NC}"
+else
+  echo -e "${RED}Could not find liblsl library path to create symlinks${NC}"
+fi
+
 # Setup Python virtual environment
 echo -e "${YELLOW}----- Setting up Python Environment -----${NC}"
 cd "$PROJECT_ROOT"
@@ -169,6 +198,68 @@ pip_install_as_user() {
 echo "Installing Python dependencies..."
 pip_install_as_user install --upgrade pip setuptools wheel
 
+# Function to fix pylsl symlinks to point to the system liblsl
+fix_pylsl_symlinks() {
+  echo -e "${YELLOW}Fixing pylsl library symlinks...${NC}"
+  
+  # Find the liblsl library path
+  LIBLSL_PATH=""
+  if [ -f "/usr/local/lib/liblsl.so" ]; then
+    LIBLSL_PATH="/usr/local/lib/liblsl.so"
+  elif ldconfig -p | grep -q "liblsl\.so"; then
+    LIBLSL_PATH=$(ldconfig -p | grep "liblsl\.so" | head -1 | awk '{print $4}')
+  fi
+  
+  if [ -z "$LIBLSL_PATH" ]; then
+    echo -e "${RED}Could not find liblsl library. Cannot fix symlinks.${NC}"
+    return 1
+  fi
+  
+  echo "Found liblsl at: $LIBLSL_PATH"
+  
+  # Find Python packages directory
+  PYTHON_VERSION=$(ls "$PROJECT_ROOT/.venv/lib/" | grep "python3" | head -1)
+  if [ -z "$PYTHON_VERSION" ]; then
+    echo -e "${RED}Could not determine Python version directory.${NC}"
+    return 1
+  fi
+  
+  SITE_PKG_DIR="$PROJECT_ROOT/.venv/lib/$PYTHON_VERSION/site-packages"
+  if [ ! -d "$SITE_PKG_DIR" ]; then
+    echo -e "${RED}Could not find site-packages directory.${NC}"
+    return 1
+  fi
+  
+  # Find pylsl directory
+  PYLSL_DIR="$SITE_PKG_DIR/pylsl"
+  if [ ! -d "$PYLSL_DIR" ]; then
+    echo -e "${RED}Could not find pylsl directory.${NC}"
+    return 1
+  fi
+  
+  echo "Found pylsl at: $PYLSL_DIR"
+  
+  # Create lib directory if it doesn't exist
+  mkdir -p "$PYLSL_DIR/lib"
+  
+  # Create symlinks for all architectures
+  echo "Creating symlinks in $PYLSL_DIR..."
+  ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/liblsl.so" || true
+  ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/liblsl32.so" || true
+  ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/liblsl64.so" || true
+  ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/lib/liblsl.so" || true
+  ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/lib/liblsl32.so" || true
+  ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/lib/liblsl64.so" || true
+  
+  # Set proper permissions
+  if [ -n "$SUDO_USER" ]; then
+    chown -R "$SUDO_USER:$(id -g $SUDO_USER)" "$PYLSL_DIR"
+  fi
+  
+  echo -e "${GREEN}Successfully created symlinks for liblsl library in pylsl directory.${NC}"
+  return 0
+}
+
 # Install pylsl with appropriate version
 echo "Installing pylsl (compatible with older liblsl)..."
 # Try several older versions of pylsl that are actually available in PyPI
@@ -184,15 +275,19 @@ if ! pip_install_as_user install pylsl==1.12.2; then
       else
         echo -e "${GREEN}Installed latest pylsl version.${NC}"
         echo -e "${YELLOW}Note: Using the latest pylsl with an older liblsl may cause compatibility issues.${NC}"
+        fix_pylsl_symlinks
       fi
     else
       echo -e "${GREEN}Successfully installed pylsl 1.16.1${NC}"
+      fix_pylsl_symlinks
     fi
   else
     echo -e "${GREEN}Successfully installed pylsl 1.15.0${NC}"
+    fix_pylsl_symlinks
   fi
 else
   echo -e "${GREEN}Successfully installed pylsl 1.12.2${NC}"
+  fix_pylsl_symlinks
 fi
 
 # Install additional Python dependencies from requirements

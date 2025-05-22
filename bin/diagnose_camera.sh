@@ -273,6 +273,95 @@ test_camera_capture() {
   fi
 }
 
+# Check liblsl and pylsl symlinks 
+check_pylsl_symlinks() {
+  echo "Checking pylsl library symlinks..."
+  
+  if [ ! -d "$PROJECT_ROOT/.venv" ]; then
+    echo "✗ Cannot check symlinks: venv not found"
+    return 1
+  fi
+  
+  if ! "$PROJECT_ROOT/.venv/bin/pip" list | grep -q "pylsl"; then
+    echo "✗ Cannot check symlinks: pylsl not installed"
+    return 1
+  fi
+  
+  # Find Python packages directory
+  PYTHON_VERSION=$(ls "$PROJECT_ROOT/.venv/lib/" | grep "python3" | head -1)
+  if [ -z "$PYTHON_VERSION" ]; then
+    echo "✗ Could not determine Python version directory"
+    return 1
+  fi
+  
+  SITE_PKG_DIR="$PROJECT_ROOT/.venv/lib/$PYTHON_VERSION/site-packages"
+  PYLSL_DIR="$SITE_PKG_DIR/pylsl"
+  
+  if [ ! -d "$PYLSL_DIR" ]; then
+    echo "✗ Could not find pylsl directory at $PYLSL_DIR"
+    return 1
+  fi
+  
+  # Check for liblsl library
+  LIBLSL_PATH=""
+  if [ -f "/usr/local/lib/liblsl.so" ]; then
+    LIBLSL_PATH="/usr/local/lib/liblsl.so"
+  elif ldconfig -p | grep -q "liblsl\.so"; then
+    LIBLSL_PATH=$(ldconfig -p | grep "liblsl\.so" | head -1 | awk '{print $4}')
+  fi
+  
+  if [ -z "$LIBLSL_PATH" ]; then
+    echo "✗ Could not find liblsl library. Cannot check symlinks."
+    return 1
+  fi
+  
+  echo "Found liblsl at: $LIBLSL_PATH"
+  echo "Found pylsl at: $PYLSL_DIR"
+  
+  # Check if symlinks exist and point to the correct library
+  SYMLINKS_OK=true
+  NEEDED_SYMLINKS=(
+    "$PYLSL_DIR/liblsl.so"
+    "$PYLSL_DIR/liblsl32.so"
+    "$PYLSL_DIR/liblsl64.so"
+  )
+  
+  for symlink in "${NEEDED_SYMLINKS[@]}"; do
+    if [ ! -L "$symlink" ] || [ ! -e "$symlink" ]; then
+      echo "✗ Missing or broken symlink: $symlink"
+      SYMLINKS_OK=false
+    else
+      echo "✓ Symlink exists: $symlink"
+    fi
+  done
+  
+  if [ "$SYMLINKS_OK" = false ]; then
+    echo "Attempting to fix pylsl symlinks..."
+    
+    # Create lib directory if it doesn't exist
+    mkdir -p "$PYLSL_DIR/lib"
+    
+    # Create symlinks for all architectures
+    ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/liblsl.so" || true
+    ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/liblsl32.so" || true
+    ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/liblsl64.so" || true
+    ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/lib/liblsl.so" || true
+    ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/lib/liblsl32.so" || true
+    ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/lib/liblsl64.so" || true
+    
+    # Set proper permissions
+    if [ "$EUID" -eq 0 ] && [ -n "$SUDO_USER" ]; then
+      chown -R "$SUDO_USER:$(id -g $SUDO_USER)" "$PYLSL_DIR"
+    fi
+    
+    echo "✓ Created symlinks for liblsl library in pylsl directory"
+    return 0
+  else
+    echo "✓ pylsl symlinks are correctly configured"
+    return 0
+  fi
+}
+
 # Run all checks
 run_all_checks() {
   local ALL_PASSED=true
@@ -286,6 +375,10 @@ run_all_checks() {
   fi
   
   if ! check_liblsl; then
+    ALL_PASSED=false
+  fi
+  
+  if ! check_pylsl_symlinks; then
     ALL_PASSED=false
   fi
   
@@ -336,6 +429,9 @@ case "$1" in
     ;;
   --lsl-compat)
     check_lsl_compatibility
+    ;;
+  --fix-symlinks)
+    check_pylsl_symlinks
     ;;
   --camera)
     check_camera_hardware
