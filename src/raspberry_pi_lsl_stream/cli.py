@@ -12,26 +12,6 @@ from .camera_stream_fixed import LSLCameraStreamer # Updated to use fixed versio
 from .audio_stream import LSLAudioStreamer
 from ._version import __version__
 
-def _status_updater_loop(start_time, stop_event):
-    """Target function for the status update thread."""
-    while not stop_event.is_set():
-        current_time = time.time()
-        elapsed_total_seconds = current_time - start_time
-        # Calculate hours, minutes, seconds
-        hours = int(elapsed_total_seconds // 3600)
-        minutes = int((elapsed_total_seconds % 3600) // 60)
-        seconds = int(elapsed_total_seconds % 60)
-        
-        # Format to HH:MM:SS
-        status_text = f"Running for: {hours:02d}:{minutes:02d}:{seconds:02d}"
-        # Print status, padding with spaces to overwrite previous line, use \r
-        print(f"{status_text:<70}", end='\r') 
-        
-        # Wait for 1 second or until stop_event is set
-        stop_event.wait(timeout=1.0)
-    # Clear the status line one last time upon exit
-    print(" " * 70, end='\r')
-
 def setup_audio_parser(subparsers):
     """Set up the argument parser for audio capture."""
     audio_parser = subparsers.add_parser(

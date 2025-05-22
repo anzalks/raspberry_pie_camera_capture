@@ -30,6 +30,7 @@ apt install -y --no-install-recommends \
     python3-venv \
     python3-opencv \
     python3-picamera2 \
+    python3-yaml \
     libatlas-base-dev \
     libhdf5-dev \
     libhdf5-serial-dev \
@@ -217,6 +218,9 @@ else
       # Run pip install as the original user using the venv's pip
       sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install --upgrade pip setuptools wheel
       
+      echo "Installing PyYAML for configuration file support..."
+      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install pyyaml
+      
       echo "Installing project 'raspberry-pi-lsl-stream' in editable mode..."
       # Install the project itself as the original user
       # Ensure we are in the correct directory before running pip install -e .
@@ -230,6 +234,69 @@ else
       fi
   fi
 fi
+
+# --- Create default configuration file ---
+echo "Creating default configuration file..."
+CONFIG_FILE="$PROJECT_DIR/config.yaml"
+
+if [ -f "$CONFIG_FILE" ]; then
+    echo "Configuration file already exists. Backing up existing file..."
+    cp "$CONFIG_FILE" "$CONFIG_FILE.bak"
+fi
+
+# Create the default configuration file
+cat << EOF > "$CONFIG_FILE"
+# Raspberry Pi Camera Capture Configuration
+
+# Camera settings
+camera:
+  width: 400
+  height: 400
+  fps: 100
+  codec: mjpg
+  container: mkv
+  preview: false
+  enable_crop: auto  # Can be true, false, or auto (detect Global Shutter Camera)
+
+# Storage settings
+storage:
+  save_video: true
+  output_dir: recordings
+  create_date_folders: true
+
+# Buffer settings
+buffer:
+  size: 20.0  # seconds
+  enabled: true
+
+# Remote control
+remote:
+  ntfy_topic: raspie-camera-test
+  
+# LSL settings
+lsl:
+  stream_name: VideoStream
+
+# Performance settings
+performance:
+  capture_cpu_core: null  # null means no specific core assignment
+  writer_cpu_core: null
+  lsl_cpu_core: null
+  ntfy_cpu_core: null
+
+# Audio settings
+audio:
+  sample_rate: 44100
+  channels: 1
+  bit_depth: 16
+  save_audio: true
+  audio_format: wav
+  show_preview: false
+EOF
+
+# Set appropriate permissions
+chown $SUDO_USER:$SUDO_USER "$CONFIG_FILE"
+echo "Default configuration file created at $CONFIG_FILE"
 
 # --- Automatic Service Installation ---
 echo "Installing camera capture service to start automatically at boot..."
@@ -258,7 +325,7 @@ After=network.target
 Type=simple
 User=$SUDO_USER
 WorkingDirectory=$PROJECT_DIR
-ExecStart=$PROJECT_DIR/$VENV_DIR/bin/rpi-lsl-stream --width 400 --height 400 --fps 100 --codec h264 --bitrate 4000 --quality-preset ultrafast --ntfy-topic raspie_trigger --buffer-size 20 --enable-audio --sample-rate 48000 --bit-depth 16 --channels 1 --verbose --output-path /home/$SUDO_USER/raspie_recordings/\$(date +\%Y-\%m-\%d) --video-folder videos --audio-folder audio
+ExecStart=$PROJECT_DIR/$VENV_DIR/bin/python -m src.raspberry_pi_lsl_stream.camera_capture --config $CONFIG_FILE
 Environment="PATH=$PROJECT_DIR/$VENV_DIR/bin:/usr/local/bin:/usr/bin:/bin"
 StandardOutput=journal+console
 StandardError=journal+console
@@ -332,15 +399,25 @@ case "$1" in
         ;;
     trigger)
         echo -e "${GREEN}Sending start trigger notification...${NC}"
-        ntfy_topic="raspie_trigger"
+        # Read topic from config.yaml if possible
+        if command -v python3 > /dev/null && [ -f "$PROJECT_DIR/config.yaml" ]; then
+            ntfy_topic=$(python3 -c "import yaml; print(yaml.safe_load(open('$PROJECT_DIR/config.yaml', 'r'))['remote']['ntfy_topic'])")
+        else
+            ntfy_topic="raspie-camera-test"
+        fi
         curl -d "start recording" ntfy.sh/$ntfy_topic
-        echo -e "${GREEN}Trigger sent. Audio/video capture should start recording.${NC}"
+        echo -e "${GREEN}Trigger sent to topic '$ntfy_topic'. Audio/video capture should start recording.${NC}"
         ;;
     stop-recording)
         echo -e "${YELLOW}Sending stop recording notification...${NC}"
-        ntfy_topic="raspie_trigger"
+        # Read topic from config.yaml if possible
+        if command -v python3 > /dev/null && [ -f "$PROJECT_DIR/config.yaml" ]; then
+            ntfy_topic=$(python3 -c "import yaml; print(yaml.safe_load(open('$PROJECT_DIR/config.yaml', 'r'))['remote']['ntfy_topic'])")
+        else
+            ntfy_topic="raspie-camera-test"
+        fi
         curl -d "stop recording" ntfy.sh/$ntfy_topic
-        echo -e "${YELLOW}Stop signal sent. Audio/video capture should stop recording.${NC}"
+        echo -e "${YELLOW}Stop signal sent to topic '$ntfy_topic'. Audio/video capture should stop recording.${NC}"
         ;;
     *)
         echo "Usage: $0 {start|stop|restart|status|logs|enable|disable|trigger|stop-recording}"
@@ -388,6 +465,7 @@ echo ""
 echo "1. Stream video from your Raspberry Pi camera"
 echo "2. Start automatically on boot"
 echo "3. Accept recording triggers via ntfy.sh"
+echo "4. Use configuration from config.yaml"
 echo ""
 echo "Current Service Status:"
 systemctl status raspie-capture.service --no-pager
@@ -402,14 +480,23 @@ echo "- Check status:      ./raspie-service.sh status"
 echo "- View logs:         ./raspie-service.sh logs"
 echo "- Live monitoring:   ./watch-raspie.sh"
 echo ""
+echo "Configuration:"
+echo "- Edit settings in:  $PROJECT_DIR/config.yaml"
+echo ""
 echo "File Storage:"
 echo "- All recordings are automatically organized by date"
 echo "- Videos saved to: ~/raspie_recordings/YYYY-MM-DD/videos/"
 echo "- Audio saved to:  ~/raspie_recordings/YYYY-MM-DD/audio/"
 echo ""
 echo "Remote Trigger (from any device):"
-echo "curl -d \"start recording\" ntfy.sh/raspie_trigger"
-echo "curl -d \"stop recording\" ntfy.sh/raspie_trigger"
+if command -v python3 > /dev/null && [ -f "$PROJECT_DIR/config.yaml" ]; then
+    ntfy_topic=$(python3 -c "import yaml; print(yaml.safe_load(open('$PROJECT_DIR/config.yaml', 'r'))['remote']['ntfy_topic'])")
+    echo "curl -d \"start recording\" ntfy.sh/$ntfy_topic"
+    echo "curl -d \"stop recording\" ntfy.sh/$ntfy_topic"
+else
+    echo "curl -d \"start recording\" ntfy.sh/raspie-camera-test"
+    echo "curl -d \"stop recording\" ntfy.sh/raspie-camera-test"
+fi
 echo ""
 echo "A system reboot is recommended if you changed camera settings:"
 echo "sudo reboot"
@@ -449,4 +536,50 @@ EOF
 
 # Make the script executable
 chmod +x "$PROJECT_DIR/watch-raspie.sh"
-chown $SUDO_USER:$SUDO_USER "$PROJECT_DIR/watch-raspie.sh" 
+chown $SUDO_USER:$SUDO_USER "$PROJECT_DIR/watch-raspie.sh"
+
+# Create a simple run script for manual starting
+echo "Creating run-camera.sh script for easy manual starting..."
+cat << 'EOF' > "$PROJECT_DIR/run-camera.sh"
+#!/bin/bash
+# Simple script to run the Raspberry Pi Camera Capture system
+# Author: Anzal (anzal.ks@gmail.com)
+
+# Change to the directory containing this script
+cd "$(dirname "$0")"
+
+# Check if a Python virtual environment exists and activate it
+if [ -d ".venv" ]; then
+    echo "Activating virtual environment..."
+    source .venv/bin/activate
+fi
+
+# Check if config.yaml exists
+if [ ! -f "config.yaml" ]; then
+    echo "Error: config.yaml not found. Please run setup_pi.sh first."
+    exit 1
+fi
+
+# Run environment check
+echo "Running environment check..."
+python check-camera-env.py
+
+# Ask if user wants to continue
+read -p "Continue with camera capture? (y/n): " continue_capture
+if [[ $continue_capture != "y" && $continue_capture != "Y" ]]; then
+    echo "Exiting."
+    exit 0
+fi
+
+# Run camera capture
+echo "Starting camera capture with default settings from config.yaml..."
+python -m src.raspberry_pi_lsl_stream.camera_capture
+
+# Exit with the same status as the camera capture
+exit $?
+EOF
+
+# Make the run script executable
+chmod +x "$PROJECT_DIR/run-camera.sh"
+chown $SUDO_USER:$SUDO_USER "$PROJECT_DIR/run-camera.sh"
+echo "Created run-camera.sh script for easy manual starting" 

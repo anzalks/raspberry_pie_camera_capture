@@ -28,6 +28,7 @@ try:
     from .camera_stream_fixed import LSLCameraStreamer
     from .buffer_trigger import BufferTriggerManager
     from .status_display import StatusDisplay
+    from .config_loader import get_camera_config  # Import the config loader
 except ImportError:
     # Handle relative imports if run as script
     sys.path.append(str(Path(__file__).resolve().parent.parent))
@@ -35,6 +36,7 @@ except ImportError:
     from src.raspberry_pi_lsl_stream.camera_stream_fixed import LSLCameraStreamer
     from src.raspberry_pi_lsl_stream.buffer_trigger import BufferTriggerManager
     from src.raspberry_pi_lsl_stream.status_display import StatusDisplay
+    from src.raspberry_pi_lsl_stream.config_loader import get_camera_config  # Import the config loader
 
 # Try to import psutil for CPU affinity management
 try:
@@ -116,22 +118,25 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     
+    # Set up command-line argument parser
     parser = argparse.ArgumentParser(description='Camera capture and streaming')
-    parser.add_argument('--camera-id', type=int, default=0, 
+    parser.add_argument('--config', type=str, default='config.yaml',
+                       help='Path to configuration file')
+    parser.add_argument('--camera-id', type=int, default=None, 
                        help='Camera index or ID to use (0=default camera, 1=second camera)')
-    parser.add_argument('--width', type=int, default=400, help='Frame width')
-    parser.add_argument('--height', type=int, default=400, help='Frame height')
-    parser.add_argument('--fps', type=int, default=100, help='Target frame rate')
+    parser.add_argument('--width', type=int, default=None, help='Frame width')
+    parser.add_argument('--height', type=int, default=None, help='Frame height')
+    parser.add_argument('--fps', type=int, default=None, help='Target frame rate')
     parser.add_argument('--save-video', action='store_true', help='Save video files')
-    parser.add_argument('--output-dir', type=str, default='recordings', help='Directory to save recordings')
-    parser.add_argument('--codec', type=str, choices=['auto', 'h264', 'h265', 'mjpg'], default='mjpg', 
+    parser.add_argument('--output-dir', type=str, default=None, help='Directory to save recordings')
+    parser.add_argument('--codec', type=str, choices=['auto', 'h264', 'h265', 'mjpg'], default=None, 
                        help='Video codec to use (mjpg recommended for high frame rates)')
     parser.add_argument('--no-preview', action='store_true', help='Disable preview window')
     parser.add_argument('--no-lsl', action='store_true', help='Disable LSL streaming')
-    parser.add_argument('--stream-name', type=str, default='VideoStream', help='LSL stream name')
+    parser.add_argument('--stream-name', type=str, default=None, help='LSL stream name')
     parser.add_argument('--no-buffer', action='store_true', help='Disable buffer trigger system')
-    parser.add_argument('--buffer-size', type=float, default=20.0, help='Buffer size in seconds')
-    parser.add_argument('--ntfy-topic', type=str, default='raspie-camera-test', 
+    parser.add_argument('--buffer-size', type=float, default=None, help='Buffer size in seconds')
+    parser.add_argument('--ntfy-topic', type=str, default=None, 
                        help='Topic for ntfy notifications')
     parser.add_argument('--enable-crop', action='store_true',
                        help='Enable camera sensor cropping (automatically enabled for Global Shutter Camera)')
@@ -146,13 +151,26 @@ def main():
     parser.add_argument('--ntfy-cpu-core', type=int, default=None, 
                        help='CPU core to use for ntfy subscriber thread')
     
+    # Parse command-line arguments
     args = parser.parse_args()
+    
+    # Load configuration from file and merge with command-line arguments
+    config = get_camera_config(args.config, args)
+    
+    # Extract configuration values with command-line overrides
+    camera_config = config.get('camera', {})
+    storage_config = config.get('storage', {})
+    buffer_config = config.get('buffer', {})
+    remote_config = config.get('remote', {})
+    lsl_config = config.get('lsl', {})
+    performance_config = config.get('performance', {})
     
     # Force cleanup previous instances
     force_cleanup_previous_instances()
     
     # Set CPU affinity for main process if requested
-    set_cpu_affinity(args.capture_cpu_core)
+    capture_cpu_core = performance_config.get('capture_cpu_core')
+    set_cpu_affinity(capture_cpu_core)
     
     # Try to acquire the camera lock
     with CameraLock() as camera_lock:
@@ -163,15 +181,18 @@ def main():
         logger.info("Starting camera capture system...")
         
         # Create output directory with date-based structure
-        output_dir = args.output_dir
-        if args.save_video:
-            # Create date-based directory
-            today = datetime.datetime.now().strftime("%Y_%m_%d")
-            
-            # Check if output_dir already ends with a date
-            if not os.path.basename(output_dir).startswith("20"):
-                output_dir = os.path.join(output_dir, today)
+        output_dir = storage_config.get('output_dir', 'recordings')
+        save_video = storage_config.get('save_video', True)
+        
+        if save_video:
+            # Create date-based directory if enabled
+            if storage_config.get('create_date_folders', True):
+                today = datetime.datetime.now().strftime("%Y_%m_%d")
                 
+                # Check if output_dir already ends with a date
+                if not os.path.basename(output_dir).startswith("20"):
+                    output_dir = os.path.join(output_dir, today)
+                    
             # Add video subdirectory
             video_dir = os.path.join(output_dir, "video")
             os.makedirs(video_dir, exist_ok=True)
@@ -180,43 +201,67 @@ def main():
             
         # Set up buffer trigger manager if enabled
         buffer_manager = None
-        if not args.no_buffer:
+        buffer_enabled = buffer_config.get('enabled', True)
+        if buffer_enabled:
+            buffer_size = buffer_config.get('size', 20.0)
+            ntfy_topic = remote_config.get('ntfy_topic', 'raspie-camera-test')
+            ntfy_cpu_core = performance_config.get('ntfy_cpu_core')
+            
             # Using the correct parameter names according to BufferTriggerManager.__init__
             buffer_manager = BufferTriggerManager(
-                buffer_size_seconds=args.buffer_size,
-                ntfy_topic=args.ntfy_topic,
-                ntfy_cpu_core=args.ntfy_cpu_core
+                buffer_size_seconds=buffer_size,
+                ntfy_topic=ntfy_topic,
+                ntfy_cpu_core=ntfy_cpu_core
                 # We'll connect the status_display after it's created
             )
         
         # Set up the camera streamer - adjust parameters as needed
         camera = None
         try:
+            width = camera_config.get('width', 400)
+            height = camera_config.get('height', 400)
+            fps = camera_config.get('fps', 100)
+            codec = camera_config.get('codec', 'mjpg')
+            show_preview = camera_config.get('preview', False)
+            stream_name = lsl_config.get('stream_name', 'VideoStream')
+            camera_id = args.camera_id if args.camera_id is not None else 0
+            
+            # Handle enable_crop setting
+            enable_crop_setting = camera_config.get('enable_crop', 'auto')
+            enable_crop = False
+            if enable_crop_setting == True or args.enable_crop:
+                enable_crop = True
+            # 'auto' is handled by the camera streamer internally
+            
+            # Get CPU core settings
+            writer_cpu_core = performance_config.get('writer_cpu_core')
+            lsl_cpu_core = performance_config.get('lsl_cpu_core')
+            
             camera = LSLCameraStreamer(
-                width=args.width,
-                height=args.height,
-                target_fps=args.fps,
-                save_video=args.save_video,
-                output_path=output_dir if args.save_video else None,
-                codec=args.codec,
-                show_preview=not args.no_preview,
+                width=width,
+                height=height,
+                target_fps=fps,
+                save_video=save_video,
+                output_path=output_dir if save_video else None,
+                codec=codec,
+                show_preview=show_preview,
                 push_to_lsl=not args.no_lsl,
-                stream_name=args.stream_name,
-                use_buffer=not args.no_buffer,
-                buffer_size_seconds=args.buffer_size,
-                ntfy_topic=args.ntfy_topic,
-                capture_cpu_core=args.capture_cpu_core,
-                writer_cpu_core=args.writer_cpu_core,
-                lsl_cpu_core=args.lsl_cpu_core,
-                camera_id=args.camera_id,
-                enable_crop=args.enable_crop
+                stream_name=stream_name,
+                use_buffer=buffer_enabled,
+                buffer_size_seconds=buffer_config.get('size', 20.0),
+                ntfy_topic=remote_config.get('ntfy_topic', 'raspie-camera-test'),
+                capture_cpu_core=capture_cpu_core,
+                writer_cpu_core=writer_cpu_core,
+                lsl_cpu_core=lsl_cpu_core,
+                camera_id=camera_id,
+                enable_crop=enable_crop
             )
             
             # Set up status display - always enable it for terminal UI
             status_display = StatusDisplay(
                 camera_streamer=camera,
                 buffer_manager=buffer_manager,
-                ntfy_topic=args.ntfy_topic if buffer_manager else None
+                ntfy_topic=remote_config.get('ntfy_topic') if buffer_manager else None
             )
             
             # Connect status display to buffer manager after creation

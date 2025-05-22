@@ -1,39 +1,46 @@
-# Camera Configuration for Raspberry Pi
----
+# Raspberry Pi Camera Capture Configuration
+
+# Camera settings
 camera:
-  resolution:
-    width: 400
-    height: 400
+  width: 400
+  height: 400
   fps: 100
-  codec: "h264"  # h264, h265, or mjpg
-  quality: "ultrafast"  # ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow
-  bitrate: 2000000  # 2 Mbps
+  codec: mjpg
+  container: mkv
+  preview: false
+  enable_crop: auto  # Can be true, false, or auto (detect Global Shutter Camera)
 
-buffer:
-  enabled: true
-  duration: 20  # seconds of pre-trigger buffer
-
+# Storage settings
 storage:
-  base_dir: "recordings"
-  structure:
-    date_format: "yyyy_mm_dd"  # Will create folders like 2025_05_07
-    subfolder_video: "video"
-    subfolder_audio: "audio"
-  naming:
-    video: "{date}_{type}_{timestamp}.mp4"
-    audio: "{date}_{type}_{timestamp}.wav"
+  save_video: true
+  output_dir: recordings
+  create_date_folders: true
 
-remote:
-  ntfy_topic: "raspie-camera-test"  # Topic for receiving remote commands
-  
-audio:
+# Buffer settings
+buffer:
+  size: 20.0  # seconds
   enabled: true
-  device: "default"  # Use "default" for the default microphone
-  sample_rate: 44100
-  channels: 1  # Mono
-  format: "wav"
+
+# Remote control
+remote:
+  ntfy_topic: raspie-camera-test
   
+# LSL settings
+lsl:
+  stream_name: VideoStream
+
+# Performance settings
 performance:
-  capture_cpu_core: 2  # Core for camera capture thread
-  writer_cpu_core: 3   # Core for video writer thread
-  audio_cpu_core: 1    # Core for audio capture thread 
+  capture_cpu_core: null  # null means no specific core assignment
+  writer_cpu_core: null
+  lsl_cpu_core: null
+  ntfy_cpu_core: null
+
+# Audio settings
+audio:
+  sample_rate: 44100
+  channels: 1
+  bit_depth: 16
+  save_audio: true
+  audio_format: wav
+  show_preview: false 

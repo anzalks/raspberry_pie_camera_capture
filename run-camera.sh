@@ -1,39 +1,75 @@
 #!/bin/bash
-#
-# Wrapper script for camera capture to ensure virtual environment is activated
-#
-# Author: Anzal
-# Email: anzal.ks@gmail.com
-# GitHub: https://github.com/anzalks/
-#
+# Simple script to run the Raspberry Pi Camera Capture system
+# Author: Anzal (anzal.ks@gmail.com)
 
-# Get the script directory
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
-VENV_PATH="$SCRIPT_DIR/.venv"
+# Change to the directory containing this script
+cd "$(dirname "$0")"
 
-# Colors for output
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-RED='\033[0;31m'
-NC='\033[0m' # No Color
-
-# Activate virtual environment if not already active
-if [[ -z "$VIRTUAL_ENV" || "$VIRTUAL_ENV" != "$VENV_PATH" ]]; then
-    echo -e "${BLUE}Activating virtual environment...${NC}"
-    source "$VENV_PATH/bin/activate"
+# Check if a Python virtual environment exists and activate it
+if [ -d ".venv" ]; then
+    echo "Activating virtual environment..."
+    source .venv/bin/activate
 fi
 
-# Run the test script first to check environment
-echo -e "${BLUE}Checking environment setup...${NC}"
-python "$SCRIPT_DIR/check-camera-env.py" > /dev/null 2>&1
+# Check if config.yaml exists
+if [ ! -f "config.yaml" ]; then
+    echo "Warning: config.yaml not found. Creating a default one..."
+    cat > config.yaml << EOF
+# Raspberry Pi Camera Capture Configuration
 
-# Check if camera devices exist
-if ! ls /dev/video* > /dev/null 2>&1; then
-    echo -e "${RED}No camera devices found! Please check your camera connection.${NC}"
-    exit 1
+# Camera settings
+camera:
+  width: 400
+  height: 400
+  fps: 100
+  codec: mjpg
+  container: mkv
+  preview: false
+  enable_crop: auto  # Can be true, false, or auto (detect Global Shutter Camera)
+
+# Storage settings
+storage:
+  save_video: true
+  output_dir: recordings
+  create_date_folders: true
+
+# Buffer settings
+buffer:
+  size: 20.0  # seconds
+  enabled: true
+
+# Remote control
+remote:
+  ntfy_topic: raspie-camera-test
+  
+# LSL settings
+lsl:
+  stream_name: VideoStream
+
+# Performance settings
+performance:
+  capture_cpu_core: null  # null means no specific core assignment
+  writer_cpu_core: null
+  lsl_cpu_core: null
+  ntfy_cpu_core: null
+EOF
+    echo "Created default config.yaml"
 fi
 
-# Run the camera capture script with all arguments passed to this script
-echo -e "${GREEN}Starting camera capture...${NC}"
-echo -e "${BLUE}Command: python -m src.raspberry_pi_lsl_stream.camera_capture $@${NC}"
-python -m src.raspberry_pi_lsl_stream.camera_capture "$@" 
+# Run environment check
+echo "Running environment check..."
+python check-camera-env.py
+
+# Ask if user wants to continue
+read -p "Continue with camera capture? (y/n): " continue_capture
+if [[ $continue_capture != "y" && $continue_capture != "Y" ]]; then
+    echo "Exiting."
+    exit 0
+fi
+
+# Run camera capture
+echo "Starting camera capture with default settings from config.yaml..."
+python -m src.raspberry_pi_lsl_stream.camera_capture
+
+# Exit with the same status as the camera capture
+exit $? 
