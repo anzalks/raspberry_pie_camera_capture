@@ -35,7 +35,7 @@ SUDO_USER_NAME=${SUDO_USER:-$(logname 2>/dev/null || echo "pi")} # Get actual us
 
 ORIG_SWAPSIZE="" # Initialize for swap functions
 
-echo -e "${GREEN_TEXT}=== Starting Raspberry Pi Camera Setup ===${NC}"
+echo -e "${GREEN_TEXT}=== Starting Raspberry Pi Camera Setup (Focus on PIP Stability) ===${NC}"
 echo "Running as: $(whoami), Script Invoker (SUDO_USER): $SUDO_USER_NAME"
 echo "Project Directory: $PROJECT_DIR"
 echo "Virtual Environment Path: $VENV_PATH"
@@ -249,8 +249,21 @@ chown -R "$SUDO_USER_NAME:$(id -gn "$SUDO_USER_NAME")" "$VENV_PATH"
 PIP_EXEC="$VENV_PATH/bin/pip"
 PYTHON_EXEC="$VENV_PATH/bin/python"
 
-echo -e "${YELLOW_TEXT}Upgrading pip, setuptools, and wheel in virtual environment (as $SUDO_USER_NAME)...${NC}"
-sudo -u "$SUDO_USER_NAME" "$PIP_EXEC" install --prefer-binary --upgrade pip setuptools wheel
+echo -e "${YELLOW_TEXT}Attempting to upgrade pip in venv (as $SUDO_USER_NAME)...${NC}"
+echo "Command: sudo -u \"$SUDO_USER_NAME\" \"$PIP_EXEC\" install --no-cache-dir --prefer-binary --upgrade pip"
+if ! sudo -u "$SUDO_USER_NAME" "$PIP_EXEC" install --no-cache-dir --prefer-binary --upgrade pip; then
+    echo -e "${RED_TEXT}ERROR: Failed to upgrade pip. This is a critical failure point.${NC}"
+    echo -e "${YELLOW_TEXT}Your system might be running out of memory. Try increasing swap manually or ensure no other heavy processes are running.${NC}"
+    exit 1
+fi
+echo -e "${GREEN_TEXT}pip upgraded successfully.${NC}"
+
+echo -e "${YELLOW_TEXT}Attempting to upgrade setuptools and wheel in venv (as $SUDO_USER_NAME)...${NC}"
+if ! sudo -u "$SUDO_USER_NAME" "$PIP_EXEC" install --no-cache-dir --prefer-binary --upgrade setuptools wheel; then
+    echo -e "${RED_TEXT}ERROR: Failed to upgrade setuptools/wheel.${NC}"
+    # Not exiting, but this is problematic
+fi
+echo -e "${GREEN_TEXT}setuptools and wheel upgrade attempt finished.${NC}"
 
 echo -e "${YELLOW_TEXT}Installing core Python packages (pylsl, numpy, etc.) into venv (as $SUDO_USER_NAME)...${NC}"
 PIP_CORE_PACKAGES=( "pylsl" "numpy" "scipy" "pyyaml" "requests" "psutil" "importlib-metadata" )
