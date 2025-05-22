@@ -1473,7 +1473,15 @@ def main():
         # Log system information
         logger.info(f"Python version: {sys.version}")
         logger.info(f"System: {os.uname().sysname} {os.uname().release}")
-        logger.info(f"Running as user: {os.getuid()} / {os.getlogin() if hasattr(os, 'getlogin') else 'unknown'}")
+        
+        # Get username safely without os.getlogin()
+        try:
+            import pwd
+            username = pwd.getpwuid(os.getuid()).pw_name
+        except:
+            username = "unknown"
+        
+        logger.info(f"Running as user: {os.getuid()} / {username}")
         logger.info(f"Working directory: {os.getcwd()}")
         
         # Check output directory
