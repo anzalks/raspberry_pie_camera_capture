@@ -99,7 +99,7 @@ check_lsl_compatibility() {
   PYLSL_VERSION=$("$PROJECT_ROOT/.venv/bin/pip" show pylsl | grep "Version" | awk '{print $2}')
   echo "Detected pylsl version: $PYLSL_VERSION"
   
-  # Create a simple test script
+  # Create a simple test script with proper permissions
   local TEST_SCRIPT="/tmp/test_lsl_$$.py"
   cat > "$TEST_SCRIPT" << EOF
 import sys
@@ -116,23 +116,39 @@ except Exception as e:
     print(f"LSL test failed: {str(e)}")
     sys.exit(1)
 EOF
+
+  # Ensure test script has correct permissions
+  chmod 755 "$TEST_SCRIPT"
+  # If running as root, make sure the current user can access it
+  if [ "$EUID" -eq 0 ] && [ -n "$SUDO_USER" ]; then
+    chown "$SUDO_USER:$(id -g $SUDO_USER)" "$TEST_SCRIPT"
+  fi
   
   # Run the test script
   echo "Running LSL compatibility test..."
-  if "$PROJECT_ROOT/.venv/bin/python" "$TEST_SCRIPT"; then
-    echo "✓ LSL compatibility test passed."
-    rm -f "$TEST_SCRIPT"
-    return 0
+  # Run as current user or sudo user if appropriate
+  if [ "$EUID" -eq 0 ] && [ -n "$SUDO_USER" ]; then
+    if sudo -u "$SUDO_USER" "$PROJECT_ROOT/.venv/bin/python" "$TEST_SCRIPT"; then
+      echo "✓ LSL compatibility test passed."
+      rm -f "$TEST_SCRIPT"
+      return 0
+    fi
   else
-    echo "✗ LSL compatibility test failed."
-    echo "  This may indicate version incompatibility between liblsl and pylsl."
-    echo "  Try reinstalling pylsl with a compatible version:"
-    echo "  $PROJECT_ROOT/.venv/bin/pip install pylsl==1.12.2"
-    echo "  If that fails, try: $PROJECT_ROOT/.venv/bin/pip install pylsl==1.15.0"
-    echo "  Or: $PROJECT_ROOT/.venv/bin/pip install pylsl==1.16.1"
-    rm -f "$TEST_SCRIPT"
-    return 1
+    if "$PROJECT_ROOT/.venv/bin/python" "$TEST_SCRIPT"; then
+      echo "✓ LSL compatibility test passed."
+      rm -f "$TEST_SCRIPT"
+      return 0
+    fi
   fi
+  
+  echo "✗ LSL compatibility test failed."
+  echo "  This may indicate version incompatibility between liblsl and pylsl."
+  echo "  Try reinstalling pylsl with a compatible version:"
+  echo "  $PROJECT_ROOT/.venv/bin/pip install pylsl==1.12.2"
+  echo "  If that fails, try: $PROJECT_ROOT/.venv/bin/pip install pylsl==1.15.0"
+  echo "  Or: $PROJECT_ROOT/.venv/bin/pip install pylsl==1.16.1"
+  rm -f "$TEST_SCRIPT"
+  return 1
 }
 
 # Check camera hardware

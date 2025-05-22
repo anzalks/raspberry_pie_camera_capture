@@ -328,7 +328,8 @@ fi
 
 # Test pylsl installation
 echo -e "${YELLOW}----- Testing pylsl Installation -----${NC}"
-TEST_SCRIPT=$(mktemp)
+# Create temporary script with proper permissions
+TEST_SCRIPT="/tmp/pylsl_test_$$.py"
 cat > "$TEST_SCRIPT" << 'EOF'
 #!/usr/bin/env python3
 try:
@@ -348,14 +349,19 @@ except Exception as e:
 EOF
 
 if [ -d "$PROJECT_ROOT/.venv" ]; then
-  chmod +x "$TEST_SCRIPT"
+  # Ensure test script has correct permissions and ownership
+  chmod 755 "$TEST_SCRIPT"
+  if [ -n "$SUDO_USER" ]; then
+    chown "$SUDO_USER:$(id -g $SUDO_USER)" "$TEST_SCRIPT"
+  fi
+  
   echo "Testing pylsl functionality..."
   if sudo -u "$SUDO_USER" "$PROJECT_ROOT/.venv/bin/python" "$TEST_SCRIPT"; then
     echo -e "${GREEN}✓ pylsl package installed and working correctly${NC}"
   else
     echo -e "${RED}⚠ pylsl package test failed. LSL functionality will not work.${NC}"
     echo "Try reinstalling with:"
-    echo "  cd $PROJECT_ROOT && .venv/bin/pip install pylsl==1.13.0"
+    echo "  cd $PROJECT_ROOT && .venv/bin/pip install pylsl==1.12.2"
   fi
 fi
 
