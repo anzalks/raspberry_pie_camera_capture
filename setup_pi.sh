@@ -15,27 +15,31 @@ GREEN_TEXT='\033[0;32m'
 YELLOW_TEXT='\033[1;33m'
 NC='\033[0m' # No Color
 
-# --- Error Handling ---
+# --- Error Handling --- 
 set -e # Exit immediately if a command exits with a non-zero status.
 # set -x # Uncomment for xtrace debugging if needed
 
-# --- Check if running as root ---
+# --- Check if running as root --- 
 if [ "$(id -u)" -ne 0 ]; then
   echo -e "${RED_TEXT}This script must be run as root (use sudo). Exiting.${NC}" >&2
   exit 1
 fi
 
 # Define critical variables
-PROJECT_DIR=$(pwd)
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
+PROJECT_DIR="$SCRIPT_DIR"
 CONFIG_FILE="$PROJECT_DIR/config.yaml"
-VENV_DIR=".venv"
+VENV_DIR_NAME=".venv"
+VENV_PATH="$PROJECT_DIR/$VENV_DIR_NAME"
+SUDO_USER_NAME=${SUDO_USER:-$(logname 2>/dev/null || echo "pi")} # Get actual user if sudo, fallback to logname or 'pi'
 
 echo -e "${GREEN_TEXT}=== Starting Raspberry Pi Camera Setup ===${NC}"
-echo -e "Project Directory: $PROJECT_DIR"
-echo -e "Virtual Environment Path: $PROJECT_DIR/$VENV_DIR"
+echo "Running as: $(whoami), Script Invoker (SUDO_USER): $SUDO_USER_NAME"
+echo "Project Directory: $PROJECT_DIR"
+echo "Virtual Environment Path: $VENV_PATH"
 
 echo -e "${YELLOW_TEXT}Updating package list (apt update)...${NC}"
-apt update
+apt update -qq
 
 echo -e "${YELLOW_TEXT}Installing required system packages (including build tools, python3-dev, picamera2, and potentially useful extras)...${NC}"
 # Install packages one by one to reduce memory usage
@@ -43,7 +47,8 @@ echo -e "${YELLOW_TEXT}Installing packages one by one to minimize memory usage..
 for pkg in build-essential python3-dev python3-pip python3-venv python3-opencv python3-picamera2 python3-yaml \
     libatlas-base-dev libhdf5-dev libhdf5-serial-dev libopenjp2-7 exfat-fuse exfatprogs ntfs-3g \
     libcamera-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav curl \
-    autoconf libtool pkg-config libbsd-dev libasound2-dev portaudio19-dev; do
+    autoconf libtool pkg-config libbsd-dev libasound2-dev portaudio19-dev v4l-utils \
+    python3-pyqt5 python3-opengl; do
     echo -e "Installing $pkg..."
     apt install -y --no-install-recommends $pkg
     # Sleep briefly to allow system to recover between installations
@@ -63,39 +68,17 @@ if apt install -y liblsl-dev; then
   echo -e "${GREEN_TEXT}liblsl-dev installed successfully via apt.${NC}"
 else
   echo -e "${YELLOW_TEXT}apt install liblsl-dev failed. Attempting to build from source...${NC}"
-  # Install build dependencies for liblsl
-  echo -e "${YELLOW_TEXT}Installing build dependencies for liblsl (cmake, build-essential)...${NC}"
-  apt install -y cmake build-essential
-  
-  echo -e "${YELLOW_TEXT}Cloning liblsl repository...${NC}"
-  # Store current directory and go to home for cloning
-  ORIG_DIR=$(pwd)
-  cd ~
-  # Remove existing directory if present
-  if [ -d "liblsl" ]; then 
-      echo -e "${YELLOW_TEXT}Removing existing liblsl directory...${NC}"
-      rm -rf liblsl 
-  fi
-  git clone https://github.com/sccn/liblsl.git
-  cd liblsl
-
-  echo -e "${YELLOW_TEXT}Configuring liblsl build with CMake...${NC}"
-  mkdir -p build # Ensure build directory exists
-  cd build
-  cmake ..
-
-  echo -e "${YELLOW_TEXT}Compiling liblsl (this may take a while)...${NC}"
-  make
-
-  echo -e "${YELLOW_TEXT}Installing compiled liblsl...${NC}"
-  make install
-
-  echo -e "${YELLOW_TEXT}Updating shared library cache...${NC}"
-  ldconfig
-
+  apt install -y cmake
+  ORIG_DIR_LSL=$(pwd)
+  TEMP_LSL_DIR=$(mktemp -d)
+  echo "Cloning liblsl into $TEMP_LSL_DIR/liblsl..."
+  git clone --depth 1 https://github.com/sccn/liblsl.git "$TEMP_LSL_DIR/liblsl"
+  cd "$TEMP_LSL_DIR/liblsl"
+  mkdir -p build && cd build
+  cmake .. && make -j$(nproc) && make install && ldconfig
   echo -e "${GREEN_TEXT}liblsl successfully built and installed from source.${NC}"
-  # Return to original directory
-  cd "$ORIG_DIR"
+  cd "$ORIG_DIR_LSL"
+  rm -rf "$TEMP_LSL_DIR"
 fi
 
 # --- Install other dependencies ---
@@ -188,38 +171,61 @@ fi
 echo -e "${YELLOW_TEXT}Setting up Python virtual environment and project...${NC}"
 
 # Create Python virtual environment
-echo -e "${YELLOW_TEXT}Creating Python virtual environment at $PROJECT_DIR/$VENV_DIR...${NC}"
-python3 -m venv "$PROJECT_DIR/$VENV_DIR"
-echo -e "${GREEN_TEXT}Virtual environment created.${NC}"
+echo -e "${YELLOW_TEXT}Creating Python virtual environment at $PROJECT_DIR/$VENV_DIR_NAME...${NC}"
+if [ -d "$VENV_PATH" ]; then
+    echo "Virtual environment exists. Removing for a clean setup..."
+    # Ensure correct ownership before removing if script re-run by root after user creation
+    if [ "$(stat -c '%U' "$VENV_PATH")" != "$SUDO_USER_NAME" ]; then
+        chown -R "$SUDO_USER_NAME:$(id -gn "$SUDO_USER_NAME")" "$VENV_PATH"
+    fi
+    rm -rf "$VENV_PATH"
+fi
+echo "Creating Python virtual environment as user '$SUDO_USER_NAME'..."
+sudo -u "$SUDO_USER_NAME" python3 -m venv "$VENV_PATH"
+echo "Virtual environment created."
+# Explicitly ensure SUDO_USER_NAME owns the venv directory and its contents.
+chown -R "$SUDO_USER_NAME:$(id -gn "$SUDO_USER_NAME")" "$VENV_PATH"
 
-# Set proper ownership if SUDO_USER is set
-if [ -n "$SUDO_USER" ]; then
-  echo -e "${YELLOW_TEXT}Setting ownership for virtual environment to $SUDO_USER${NC}"
-  chown -R "$SUDO_USER:$SUDO_USER" "$PROJECT_DIR/$VENV_DIR"
+PIP_EXEC="$VENV_PATH/bin/pip"
+PYTHON_EXEC="$VENV_PATH/bin/python"
+
+echo -e "${YELLOW_TEXT}Upgrading pip, setuptools, and wheel in virtual environment (as $SUDO_USER_NAME)...${NC}"
+sudo -u "$SUDO_USER_NAME" "$PIP_EXEC" install --upgrade pip setuptools wheel
+
+echo -e "${YELLOW_TEXT}Installing core Python packages (pylsl, numpy, etc.) into venv (as $SUDO_USER_NAME)...${NC}"
+PIP_CORE_PACKAGES=( "pylsl" "numpy" "scipy" "pyyaml" "requests" "psutil" "importlib-metadata" )
+if ! sudo -u "$SUDO_USER_NAME" "$PIP_EXEC" install --verbose ${PIP_CORE_PACKAGES[*]}; then
+    echo -e "${RED_TEXT}ERROR: Failed to install one or more core Python packages. Check output.${NC}"
 fi
 
-# Install/Upgrade pip, wheel, setuptools in the virtual environment
-echo -e "${YELLOW_TEXT}Upgrading pip and installing wheel, setuptools in virtual environment...${NC}"
-"$PROJECT_DIR/$VENV_DIR/bin/pip" install --upgrade pip
-"$PROJECT_DIR/$VENV_DIR/bin/pip" install wheel setuptools
+echo -e "${YELLOW_TEXT}Attempting to install/reinstall 'picamera2' into venv (as $SUDO_USER_NAME)...${NC}"
+echo "This uses --force-reinstall --no-cache-dir --no-binary=:all: for picamera2."
+set -x # Enable command tracing for this specific pip command
+if ! sudo -u "$SUDO_USER_NAME" "$PIP_EXEC" install --verbose --force-reinstall --no-cache-dir --no-binary=:all: picamera2; then
+    echo -e "${RED_TEXT}ERROR: Failed to install 'picamera2' using pip. This is critical!${NC}"
+fi
+set +x # Disable command tracing
+echo "Finished 'picamera2' installation attempt."
 
-# Install picamera2 and importlib-metadata within the virtual environment
-echo -e "${YELLOW_TEXT}Installing picamera2 and importlib-metadata in virtual environment...${NC}"
-"$PROJECT_DIR/$VENV_DIR/bin/pip" install picamera2 importlib-metadata
+echo -e "${YELLOW_TEXT}Performing internal import check for 'picamera2' in venv (as $SUDO_USER_NAME)...${NC}"
+IMPORT_CHECK_SCRIPT="import sys; print(f'Python version: {sys.version}'); print(f'Sys.path: {sys.path}'); import picamera2; print('picamera2 imported. Version:', picamera2.__version__)"
+if sudo -u "$SUDO_USER_NAME" "$PYTHON_EXEC" -c "$IMPORT_CHECK_SCRIPT"; then
+    echo -e "${GREEN_TEXT}SUCCESS: 'picamera2' imported successfully within setup script by venv Python.${NC}"
+else
+    echo -e "${RED_TEXT}FAILURE: 'picamera2' FAILED to import by venv Python within setup script.${NC}"
+    echo -e "${YELLOW_TEXT}This means 'picamera2' is not usable in the venv despite pip's attempt.${NC}"
+fi
 
-# Install other Python packages listed in requirements.txt or directly
-echo -e "${YELLOW_TEXT}Installing other Python packages (pylsl, numpy, scipy) in virtual environment...${NC}"
-"$PROJECT_DIR/$VENV_DIR/bin/pip" install pylsl numpy scipy
-
-# Install the project itself in editable mode
-echo -e "${YELLOW_TEXT}Installing project in editable mode...${NC}"
-"$PROJECT_DIR/$VENV_DIR/bin/pip" install -e "$PROJECT_DIR"
+echo -e "${YELLOW_TEXT}Installing project in editable mode in venv (as $SUDO_USER_NAME)...${NC}"
+if ! sudo -u "$SUDO_USER_NAME" "$PIP_EXEC" install -e "$PROJECT_DIR"; then
+   echo -e "${RED_TEXT}ERROR: Failed to install project in editable mode. Check output.${NC}"
+fi
 
 echo -e "${GREEN_TEXT}Python virtual environment setup complete.${NC}"
 
 # --- Setup Recordings Directory Structure ---
 echo -e "${YELLOW_TEXT}Setting up recordings directory structure...${NC}"
-RECORDINGS_DIR="$(pwd)/recordings"
+RECORDINGS_DIR="$PROJECT_DIR/recordings"
 TODAY_DIR="$RECORDINGS_DIR/$(date +%Y-%m-%d)"
 
 # Create directories with proper permissions
@@ -227,9 +233,9 @@ echo -e "${YELLOW_TEXT}Creating recordings directories: $TODAY_DIR${NC}"
 mkdir -p "$TODAY_DIR"
 
 # Set proper ownership and permissions
-if [ -n "$SUDO_USER" ]; then
-  echo -e "${YELLOW_TEXT}Setting ownership to $SUDO_USER for recordings directory${NC}"
-  chown -R "$SUDO_USER:$SUDO_USER" "$RECORDINGS_DIR"
+if [ -n "$SUDO_USER_NAME" ]; then
+  echo -e "${YELLOW_TEXT}Setting ownership to $SUDO_USER_NAME for recordings directory${NC}"
+  chown -R "$SUDO_USER_NAME:$SUDO_USER_NAME" "$RECORDINGS_DIR"
 fi
 chmod -R 755 "$RECORDINGS_DIR"
 echo -e "${GREEN_TEXT}Set proper permissions for recordings directory${NC}"
@@ -271,8 +277,8 @@ recording:
 remote:
   ntfy_topic: raspie-camera-test
 EOCFG
-    if [ -n "$SUDO_USER" ]; then
-        chown $SUDO_USER:$SUDO_USER "$CONFIG_FILE"
+    if [ -n "$SUDO_USER_NAME" ]; then
+        chown $SUDO_USER_NAME:$SUDO_USER_NAME "$CONFIG_FILE"
     fi
     echo -e "${GREEN_TEXT}Created basic config file at $CONFIG_FILE${NC}"
 fi
@@ -300,16 +306,16 @@ fi
 
 # Set proper permissions for camera access
 echo -e "${YELLOW_TEXT}Setting camera group permissions...${NC}"
-usermod -a -G video $SUDO_USER
-usermod -a -G input $SUDO_USER
-echo -e "${GREEN_TEXT}Added $SUDO_USER to video and input groups${NC}"
+usermod -a -G video $SUDO_USER_NAME
+usermod -a -G input $SUDO_USER_NAME
+echo -e "${GREEN_TEXT}Added $SUDO_USER_NAME to video and input groups${NC}"
 
 # Create and set up camera lock file with proper permissions
 echo -e "${YELLOW_TEXT}Setting up camera lock file with proper permissions...${NC}"
 rm -f /tmp/raspie_camera.lock
 touch /tmp/raspie_camera.lock
 chmod 666 /tmp/raspie_camera.lock
-chown $SUDO_USER:$SUDO_USER /tmp/raspie_camera.lock
+chown $SUDO_USER_NAME:$SUDO_USER_NAME /tmp/raspie_camera.lock
 echo -e "${GREEN_TEXT}Camera lock file created with proper permissions${NC}"
 
 # Fix permissions for camera device nodes if they exist
@@ -360,8 +366,8 @@ recording:
 remote:
   ntfy_topic: raspie-camera-test
 EOCFG
-    if [ -n "$SUDO_USER" ]; then
-        chown $SUDO_USER:$SUDO_USER "$CONFIG_FILE"
+    if [ -n "$SUDO_USER_NAME" ]; then
+        chown $SUDO_USER_NAME:$SUDO_USER_NAME "$CONFIG_FILE"
     fi
     echo -e "${GREEN_TEXT}Created basic config file at $CONFIG_FILE${NC}"
 fi
@@ -373,10 +379,10 @@ echo -e "${YELLOW_TEXT}Installing camera capture service to start automatically 
 
 # Define PROJECT_DIR absolutely for the service file
 ABS_PROJECT_DIR=$(readlink -f "$PROJECT_DIR")
-ABS_VENV_DIR="$ABS_PROJECT_DIR/$VENV_DIR"
-ABS_CONFIG_FILE="$ABS_PROJECT_DIR/config.yaml"
+ABS_VENV_PATH=$(readlink -f "$VENV_PATH")
+ABS_CONFIG_FILE=$(readlink -f "$CONFIG_FILE")
 # Define the ExecStart command carefully
-EXEC_START_COMMAND="$ABS_VENV_DIR/bin/python $ABS_PROJECT_DIR/src/raspberry_pi_lsl_stream/camera_capture.py --config $ABS_CONFIG_FILE"
+EXEC_START_COMMAND="$ABS_VENV_PATH/bin/python $ABS_PROJECT_DIR/src/raspberry_pi_lsl_stream/camera_capture.py --config $ABS_CONFIG_FILE"
 
 
 # Check if the service file already exists
@@ -387,27 +393,27 @@ if [ -f "/etc/systemd/system/raspie-capture.service" ]; then
 fi
 
 echo -e "${YELLOW_TEXT}Creating systemd service file: /etc/systemd/system/raspie-capture.service${NC}"
-# Create the systemd service file
-cat << EOF > "/etc/systemd/system/raspie-capture.service"
+    # Create the systemd service file
+    cat << EOF > "/etc/systemd/system/raspie-capture.service"
 [Unit]
 Description=Raspberry Pi LSL Camera Capture Service
-After=network.target multi-user.target
-Requires=network.target
+After=network-online.target multi-user.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-User=$SUDO_USER
-Group=$(id -gn $SUDO_USER)
+User=$SUDO_USER_NAME
+Group=$(id -gn $SUDO_USER_NAME)
 WorkingDirectory=$ABS_PROJECT_DIR
 ExecStart=$EXEC_START_COMMAND
-Environment="PATH=$ABS_VENV_DIR/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PATH=$ABS_VENV_PATH/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 Environment="PYTHONUNBUFFERED=1"
 Environment="PYTHONPATH=$ABS_PROJECT_DIR"
 Environment="DISPLAY=:0" # May be needed if picamera2 preview is on and service runs headless
 StandardOutput=journal+console
 StandardError=journal+console
 Restart=on-failure
-RestartSec=10s
+RestartSec=15s
 TimeoutStopSec=30s
 Nice=-5 # Give it a bit more priority if needed
 
@@ -416,7 +422,7 @@ WantedBy=multi-user.target
 EOF
 
 # Set appropriate permissions for the service file
-chmod 644 "/etc/systemd/system/raspie-capture.service"
+    chmod 644 "/etc/systemd/system/raspie-capture.service"
 
 echo -e "${YELLOW_TEXT}Reloading systemd daemon...${NC}"
 systemctl daemon-reload
@@ -428,7 +434,7 @@ echo -e "${YELLOW_TEXT}Attempting to start the raspie-capture service...${NC}"
 systemctl start raspie-capture.service
 
 # Give it a moment and check status
-sleep 5
+sleep 15
 echo -e "${GREEN_TEXT}--- Current status of raspie-capture.service: ---${NC}"
 systemctl status raspie-capture.service --no-pager || echo -e "${YELLOW_TEXT}Service might still be initializing or failed.${NC}"
 
@@ -538,7 +544,7 @@ EOF
 
 # Make the script executable
 chmod +x "$PROJECT_DIR/watch-raspie.sh"
-chown $SUDO_USER:$SUDO_USER "$PROJECT_DIR/watch-raspie.sh"
+chown $SUDO_USER_NAME:$SUDO_USER_NAME "$PROJECT_DIR/watch-raspie.sh"
 
 # Create a simple run script for manual starting
 echo -e "${YELLOW_TEXT}Creating run-camera.sh script for easy manual starting...${NC}"
@@ -583,7 +589,7 @@ EOF
 
 # Make the run script executable
 chmod +x "$PROJECT_DIR/run-camera.sh"
-chown $SUDO_USER:$SUDO_USER "$PROJECT_DIR/run-camera.sh"
+chown $SUDO_USER_NAME:$SUDO_USER_NAME "$PROJECT_DIR/run-camera.sh"
 echo -e "${GREEN_TEXT}Created run-camera.sh script for easy manual starting${NC}" 
 
 echo -e "${GREEN_TEXT}-----------------------------------------------------$NC" 
