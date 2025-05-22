@@ -16,9 +16,30 @@ A camera capture system for Raspberry Pi that supports both standard and Global 
 ## Prerequisites
 
 - Raspberry Pi 4 or newer (8GB RAM recommended)
-- Raspberry Pi OS Bullseye or newer
+- Raspberry Pi OS Bullseye or newer (including Bookworm)
 - Connected camera (Standard Pi Camera or Global Shutter Camera)
 - Python 3.7 or newer
+
+## Raspberry Pi OS Bookworm Compatibility
+
+This system has been updated to fully support Raspberry Pi OS Bookworm. The following changes were made:
+
+- Automatic detection of Bookworm OS and adjustments to dependencies
+- Support for the `--no-raw` workaround needed for Global Shutter Camera on Bookworm
+- Handling of `media-ctl` package changes (now included in `v4l-utils`)
+- Smart detection of OS-provided tools with automatic fallback to building from source if needed
+
+When running on Bookworm, the system will automatically:
+1. Check if the OS-provided `v4l-utils` and `media-ctl` are available and working properly
+2. Use the OS-provided tools if they work correctly with the camera
+3. Only build from source if the OS-provided tools aren't available or don't work with the camera
+4. Apply the `--no-raw` workaround for libcamera
+
+**Important Note:** To run on Raspberry Pi OS Bookworm, you should first run the setup script with sudo:
+```bash
+sudo ./scripts/run-camera.sh
+```
+This will check the system, install required packages, and build tools from source only if needed. The script will exit after setup is complete, and you can then run it normally.
 
 ## Installation
 
@@ -199,16 +220,41 @@ If you have issues with the Global Shutter Camera:
    ```bash
    grep "=bookworm" /etc/os-release
    ```
+   If this returns a result, you're on Bookworm OS and the `--no-raw` flag will be applied automatically.
 
-3. Ensure media device permissions are correct:
+3. If you're on Bookworm OS, make sure you've built v4l-utils from source:
    ```bash
+   # Run the script with sudo first to build the tools
+   sudo ./scripts/run-camera.sh
+   
+   # Then verify the installation
+   media-ctl --version
+   v4l2-ctl --version
+   ```
+   
+   Both tools should show that they are installed and working. The tools must be built from source on Bookworm OS.
+
+4. If media-ctl reports errors like "Cannot find entity" or similar:
+   ```bash
+   # Check if the devices have proper permissions
+   ls -la /dev/media*
+   
+   # Fix permissions
    sudo chmod 666 /dev/media*
+   
+   # Check if the camera is properly connected
+   vcgencmd get_camera
    ```
 
-4. Try a known working configuration manually:
+5. Try a known working configuration manually:
    ```bash
    # For 400fps:
    media-ctl -d /dev/media0 --set-v4l2 "'imx296 10-001a':0 [fmt:SBGGR10_1X10/688x136 crop:(384,476)/688x136]" -v
+   ```
+
+6. If using libcamera-hello to verify the configuration on Bookworm OS:
+   ```bash
+   libcamera-hello --no-raw --list-cameras
    ```
 
 ### LSL Stream Issues

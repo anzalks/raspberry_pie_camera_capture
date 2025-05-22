@@ -150,9 +150,42 @@ def check_global_shutter_camera():
         subprocess.check_output(['which', 'media-ctl'])
         print_status("media-ctl is installed", "success")
     except subprocess.CalledProcessError:
-        print_status("media-ctl is not installed", False)
-        print_status("Install with: sudo apt install -y libcamera-tools media-ctl", "warning")
+        print_status("ERROR: media-ctl is not installed", False)
+        
+        # Check if we're on Bookworm OS
+        is_bookworm = False
+        if os.path.exists('/etc/os-release'):
+            with open('/etc/os-release', 'r') as f:
+                if '=bookworm' in f.read():
+                    is_bookworm = True
+        
+        if is_bookworm:
+            print_status("You are on Raspberry Pi OS Bookworm - first try installing OS packages:", "warning")
+            print("sudo apt install -y v4l-utils")
+            print_status("If OS packages don't work properly, use our script to check and build if needed:", True)
+            print("sudo ./scripts/run-camera.sh")
+        else:
+            print_status("Install with: sudo apt install -y libcamera-tools media-ctl", "warning")
         return
+    
+    # Check if media-ctl works with any devices
+    working_with_devices = False
+    for m in range(6):
+        try:
+            if os.path.exists(f"/dev/media{m}"):
+                subprocess.check_output(['media-ctl', '-d', f'/dev/media{m}', '-p'], 
+                                     stderr=subprocess.STDOUT, text=True)
+                working_with_devices = True
+                print_status(f"media-ctl works with /dev/media{m}", "success")
+                break
+        except subprocess.CalledProcessError:
+            pass
+    
+    if not working_with_devices:
+        print_status("media-ctl is installed but doesn't work with any media devices", "warning")
+        print_status("This could indicate a permissions issue or incompatibility", "warning")
+        print_status("Try running with sudo or building from source:", True)
+        print("sudo ./scripts/run-camera.sh")
     
     # Check for IMX296 sensor
     gs_detected = False
@@ -170,6 +203,13 @@ def check_global_shutter_camera():
                     # Try to get more details
                     print("\nSensor details:")
                     print(output)
+                    
+                    # Check if running on Bookworm OS to warn about --no-raw flag
+                    if os.path.exists('/etc/os-release'):
+                        with open('/etc/os-release', 'r') as f:
+                            if '=bookworm' in f.read():
+                                print_status("NOTE: On Bookworm OS, use --no-raw flag with libcamera commands", "warning")
+                                print("Example: libcamera-hello --no-raw --list-cameras")
                     break
             except (subprocess.CalledProcessError, FileNotFoundError):
                 pass
@@ -210,15 +250,59 @@ def check_bookworm_os():
     
     try:
         # Check if it's a Bookworm OS
+        is_bookworm = False
         if os.path.exists('/etc/os-release'):
             with open('/etc/os-release', 'r') as f:
                 os_release = f.read()
                 if '=bookworm' in os_release:
-                    print_status("Detected Bookworm OS - need --no-raw workaround for Global Shutter Camera", "warning")
+                    is_bookworm = True
+                    print_status("Detected Raspberry Pi OS Bookworm", "warning")
+                    
+                    # Check if media-ctl is available
+                    if not subprocess.call(['which', 'media-ctl'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0:
+                        print_status("ERROR: media-ctl not found in PATH. This is required for Global Shutter Camera.", False)
+                        print_status("Install v4l-utils package or build from source:", True)
+                        print("\nInstallation options:")
+                        print("1. Try OS packages first: sudo apt install -y v4l-utils")
+                        print("2. If OS packages don't work with the camera, build from source:")
+                        print("   sudo ./scripts/run-camera.sh")
+                        print("\nThe script will check if OS packages work and only build from source if needed.")
+                    else:
+                        # Verify the version of media-ctl
+                        try:
+                            version_output = subprocess.check_output(['media-ctl', '--version'], text=True)
+                            print_status(f"media-ctl is available: {version_output.strip()}", "success")
+                            
+                            # Check if it works with media devices
+                            works_with_device = False
+                            for m in range(6):
+                                try:
+                                    if os.path.exists(f"/dev/media{m}"):
+                                        subprocess.check_output(['media-ctl', '-d', f'/dev/media{m}', '-p'], 
+                                                              stderr=subprocess.STDOUT, text=True)
+                                        works_with_device = True
+                                        break
+                                except subprocess.CalledProcessError:
+                                    continue
+                            
+                            if works_with_device:
+                                print_status("OS-provided media-ctl is working with media devices", "success")
+                            else:
+                                print_status("OS-provided media-ctl may not work with all devices", "warning")
+                                print_status("If you have issues with Global Shutter Camera, try building from source:", True)
+                                print("sudo ./scripts/run-camera.sh")
+                        except subprocess.CalledProcessError:
+                            print_status("media-ctl is installed but may not be working correctly", "warning")
+                    
+                    # Always remind about the --no-raw flag
+                    print_status("NOTE: On Bookworm OS, use --no-raw flag with libcamera commands", "warning")
+                    print("Example: libcamera-hello --no-raw --list-cameras")
+                    
                     return True
         
-        print_status("Not running Bookworm OS, no special workaround needed", "success")
-        return False
+        if not is_bookworm:
+            print_status("Not running Bookworm OS, no special workaround needed", "success")
+        return is_bookworm
     except Exception as e:
         print_status(f"Error checking OS version: {e}", False)
         return False
