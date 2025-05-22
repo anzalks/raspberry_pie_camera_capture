@@ -48,6 +48,7 @@ session_frame_counter = 0  # Frame counter for the current recording session
 libcamera_vid_process = None
 ffmpeg_process = None
 last_trigger_source = 0  # 0=none, 1=ntfy, 2=keyboard
+lsl_has_string_support = False
 
 # =============================================================================
 # Configuration Management
@@ -379,21 +380,34 @@ def setup_lsl_stream(config):
     logger.info(f"  channel_count: {channel_count}")
     logger.info(f"  nominal_srate: {nominal_srate}")
     
-    # Create channel formats - use specific formats per channel type
-    # Create channel names with their types
-    channel_info = [
-        {"name": "CaptureTimeUnix", "format": pylsl.cf_double64},  # timestamp as double
-        {"name": "ntfy_notification_active", "format": pylsl.cf_int32},  # recording status as int
-        {"name": "session_frame_no", "format": pylsl.cf_int64},  # frame number as int64
-        {"name": "trigger_source", "format": pylsl.cf_string}  # trigger source as string (k/n)
-    ]
+    # Important: Check pylsl version and capabilities
+    has_string_support = hasattr(pylsl, 'cf_string')
+    
+    # Create channel formats based on capabilities
+    if has_string_support:
+        logger.info("Using string format for trigger_source channel")
+        channel_info = [
+            {"name": "CaptureTimeUnix", "format": pylsl.cf_double64},  # timestamp as double
+            {"name": "ntfy_notification_active", "format": pylsl.cf_int32},  # recording status as int
+            {"name": "session_frame_no", "format": pylsl.cf_int64},  # frame number as int64
+            {"name": "trigger_source", "format": pylsl.cf_string}  # trigger source as string
+        ]
+    else:
+        logger.info("Using all numeric format for channels (no string support)")
+        channel_info = [
+            {"name": "CaptureTimeUnix", "format": pylsl.cf_double64},
+            {"name": "ntfy_notification_active", "format": pylsl.cf_double64},
+            {"name": "session_frame_no", "format": pylsl.cf_double64},
+            {"name": "trigger_source_code", "format": pylsl.cf_double64}  # Use numeric code instead of string
+        ]
     
     # Create channel names list for logging
     channel_names = [ch["name"] for ch in channel_info]
     
     # Log the channel names
     logger.info(f"LSL Channels: {', '.join(channel_names)}")
-    logger.info(f"Channel formats: timestamp=double, recording=int32, frame=int64, trigger=string")
+    format_strs = [str(ch["format"]) for ch in channel_info]
+    logger.info(f"Channel formats: {', '.join(format_strs)}")
     
     try:
         # Create LSL StreamInfo
@@ -441,16 +455,43 @@ def setup_lsl_stream(config):
         logger.info("Creating LSL outlet")
         lsl_outlet = pylsl.StreamOutlet(info)
         
-        # Send a test sample to verify the stream is working
-        # timestamp, recording=0, frame=0, trigger='n'
-        test_sample = [time.time(), 0, 0, 'n']
-        lsl_outlet.push_sample(test_sample)
-        logger.info(f"Sent test LSL sample: {test_sample}")
+        # Send a test sample to verify the stream is working - ALL NUMERIC VALUES
+        if has_string_support:
+            # Test with string if supported
+            logger.info("Testing LSL stream with string format")
+            try:
+                test_sample = [time.time(), 0.0, 0.0, "x"]
+                lsl_outlet.push_sample(test_sample)
+                logger.info(f"Sent test LSL sample: {test_sample}")
+            except TypeError as e:
+                logger.error(f"String format test failed: {e}, falling back to numeric")
+                has_string_support = False
+                # Recreate outlet with numeric format
+                info = pylsl.StreamInfo(
+                    name=stream_name,
+                    type=stream_type,
+                    channel_count=channel_count,
+                    nominal_srate=nominal_srate,
+                    channel_format=pylsl.cf_double64,
+                    source_id=f"imx296_{os.getpid()}"
+                )
+                lsl_outlet = pylsl.StreamOutlet(info)
+        
+        if not has_string_support:
+            # Always safe numeric values
+            test_sample = [time.time(), 0.0, 0.0, 0.0]
+            lsl_outlet.push_sample(test_sample)
+            logger.info(f"Sent test LSL sample (numeric only): {test_sample}")
         
         logger.info(f"Created LSL stream '{stream_name}' with {channel_count} channels at {nominal_srate} Hz")
+        logger.info(f"String format support: {has_string_support}")
         
         # Log a success message that the dashboard can easily find
         logger.info(f"LSL_STREAM_READY: stream_name={stream_name}, channels={channel_count}, rate={nominal_srate}")
+        
+        # Set global flag for string support
+        global lsl_has_string_support
+        lsl_has_string_support = has_string_support
         
         return True
     except Exception as e:
@@ -532,7 +573,7 @@ def camera_thread(config):
         logger.error(f"Output: {e.output if hasattr(e, 'output') else 'No output'}")
         logger.error("Will try to continue anyway, in case the camera is available but command output is unexpected.")
     
-    # Test with simple capture - use a safer filename format
+    # Test with simple capture with adjusted parameters
     logger.info("Testing simple capture with libcamera-vid...")
     test_cmd = [
         libcamera_vid_path,
@@ -541,8 +582,13 @@ def camera_thread(config):
         "--framerate", str(fps),
         "--timeout", "1000",  # 1 second timeout
         "--output", "/tmp/test_capture.h264",  # Use a real file path with format
-        "--nopreview"  # Add this to prevent display issues
+        "--nopreview",  # Add this to prevent display issues
+        "--inline"      # Add inline for better format handling
     ]
+    
+    # Try increasing timeout before running capture
+    time.sleep(2)
+    
     try:
         logger.info(f"Running test capture: {' '.join(test_cmd)}")
         output = subprocess.check_output(test_cmd, universal_newlines=True, stderr=subprocess.STDOUT)
@@ -557,22 +603,35 @@ def camera_thread(config):
         logger.error(f"Error testing simple capture: {e}")
         logger.error(f"Output: {e.output if hasattr(e, 'output') else 'No output'}")
         
-        # Try a more basic capture approach without specific dimensions
+        # Try a more basic capture approach with other parameters
         try:
-            logger.warning("Trying simpler capture command...")
+            logger.warning("Trying simpler capture command with raw format...")
             basic_cmd = [
                 libcamera_vid_path,
-                "--timeout", "1000",  # 1 second timeout
+                "--timeout", "1000",         # 1 second timeout
                 "--output", "/tmp/test_capture.h264",
-                "--nopreview"
+                "--nopreview",
+                "--codec", "yuv420",         # Try different codec
+                "--rawfull"                  # Use raw format to bypass encoding issues
             ]
             output = subprocess.check_output(basic_cmd, universal_newlines=True, stderr=subprocess.STDOUT)
-            logger.info(f"Basic capture test output:\n{output}")
+            logger.info(f"Raw format test output:\n{output}")
+            
+            # If we get here, basic capture worked, so we can try the main capture
+            logger.info("Basic camera test succeeded, proceeding with main capture")
         except subprocess.CalledProcessError as e2:
-            logger.error(f"Basic capture also failed: {e2}")
-            logger.error(f"Output: {e2.output if hasattr(e2, 'output') else 'No output'}")
-            logger.error("Camera capture cannot proceed without a working camera.")
-            return
+            # Also try with direct V4L2 access
+            try:
+                logger.warning("Direct V4L2 frame grab attempt...")
+                for i in range(10):
+                    dev_path = f"/dev/video{i}"
+                    if os.path.exists(dev_path):
+                        v4l2_cmd = ["v4l2-ctl", "-d", dev_path, "--set-fmt-video=width=400,height=400", "--stream-mmap", "--stream-count=1"]
+                        subprocess.run(v4l2_cmd, timeout=3, capture_output=True)
+                logger.info("V4L2 direct access test completed - proceeding with main command")
+            except Exception as v4l2_e:
+                logger.error(f"V4L2 direct test also failed: {v4l2_e}")
+                # Continue anyway as a final attempt
     
     # Build libcamera-vid command
     cmd = [
@@ -609,16 +668,47 @@ def camera_thread(config):
     logger.info(f"Using RAM buffer of {buffer_duration_sec} seconds (max {max_frames} frames)")
     
     try:
-        # Simplify command for better stability
+        # Calculate exposure time based on framerate standards
+        logger.info(f"Calculating exposure time based on framerate: {fps} fps")
+        
+        # For IMX296, exposure should be limited to frame period
+        # Maximum exposure time = 1000000/fps microseconds 
+        # But set to 80% of max to be safe
+        exposure_time = min(exposure_time_us, int(0.8 * 1000000 / fps))
+        logger.info(f"Using calculated exposure time of {exposure_time} µs")
+        
+        # Simplify command for better stability - add adjusted exposure
         simplified_cmd = [
             libcamera_vid_path,
             "--width", str(width),
             "--height", str(height),
             "--framerate", str(fps),
+            "--shutter", str(exposure_time),  # Use calculated exposure
             "--timeout", "0",
             "--nopreview",  # Add nopreview to avoid display issues
+            "--inline",  # Important for proper H264 output
             "-o", "-"  # Output to stdout
         ]
+
+        # Try also with v4l2-ctl to reset the camera before starting
+        try:
+            # Reset any existing v4l2 devices that might be causing the issue
+            reset_cmd = ["v4l2-ctl", "--all"]
+            logger.info(f"Resetting v4l2 devices before starting: {' '.join(reset_cmd)}")
+            subprocess.run(reset_cmd, timeout=5, capture_output=True)
+            
+            # Try an alternative reset method
+            for i in range(10):
+                dev_path = f"/dev/video{i}"
+                if os.path.exists(dev_path):
+                    try:
+                        reset_dev_cmd = ["v4l2-ctl", "-d", dev_path, "-c", "timeout_value=3000"]
+                        subprocess.run(reset_dev_cmd, timeout=2, capture_output=True)
+                    except:
+                        pass
+        except Exception as e:
+            logger.warning(f"Error resetting v4l2 devices: {e}")
+            # Continue anyway
         
         # Try the simplified command first
         logger.info(f"Starting libcamera-vid with simplified command: {' '.join(simplified_cmd)}")
@@ -760,7 +850,7 @@ def camera_thread(config):
 
 def process_frame(frame_data, frame_num, start_time, frame_buffer, pts_data):
     """Process a frame from libcamera-vid."""
-    global session_frame_counter, frame_queue, last_trigger_source
+    global session_frame_counter, frame_queue, last_trigger_source, lsl_has_string_support
     
     # Generate timestamp for the frame
     frame_timestamp = find_timestamp_for_frame(frame_num, pts_data, start_time)
@@ -793,15 +883,24 @@ def process_frame(frame_data, frame_num, start_time, frame_buffer, pts_data):
         # Convert trigger source to string
         trigger_str = get_trigger_source_string(last_trigger_source)
         
-        # Prepare sample: [unix_timestamp, recording_active, frame_number, trigger_source]
-        # timestamp as double, recording as int, frame as int64, trigger as string
+        # Prepare sample based on string support capability
         try:
-            sample = [
-                float(frame_timestamp),                 # timestamp as double
-                int(recording_event.is_set()),    # recording status as int32
-                int(frame_num),                   # frame number as int64
-                trigger_str                       # trigger source as string (k/n)
-            ]
+            if lsl_has_string_support:
+                # With string support
+                sample = [
+                    float(frame_timestamp),            # timestamp as double
+                    float(recording_event.is_set()),   # recording status as float
+                    float(frame_num),                  # frame number as float
+                    trigger_str                       # trigger source as string (k/n)
+                ]
+            else:
+                # Without string support - all numeric
+                sample = [
+                    float(frame_timestamp),            # timestamp as double
+                    float(recording_event.is_set()),   # recording status as float
+                    float(frame_num),                  # frame number as float
+                    float(last_trigger_source)         # trigger source as numeric code
+                ]
             
             # Send the data
             lsl_outlet.push_sample(sample, float(frame_timestamp))
@@ -810,14 +909,14 @@ def process_frame(frame_data, frame_num, start_time, frame_buffer, pts_data):
             if frame_num % 100 == 0 or (recording_event.is_set() and session_frame_counter % 10 == 0):
                 logger = logging.getLogger('imx296_capture')
                 logger.info(f"LSL data sent: timestamp={frame_timestamp:.3f}, recording={int(recording_event.is_set())}, "
-                           f"frame={frame_num}, trigger_source={trigger_str}")
+                           f"frame={frame_num}, trigger_source={trigger_str if lsl_has_string_support else last_trigger_source}")
         except Exception as e:
             # If we hit an LSL error, log it but don't crash
             logger = logging.getLogger('imx296_capture')
             logger.error(f"Error sending LSL data: {e}")
-            # Try one more time with completely safe types
+            # Try one more time with completely safe types - absolutely numeric
             try:
-                safe_sample = [float(frame_timestamp), float(recording_event.is_set()), float(frame_num), "x"]
+                safe_sample = [float(frame_timestamp), float(recording_event.is_set()), float(frame_num), float(last_trigger_source)]
                 lsl_outlet.push_sample(safe_sample)
             except:
                 pass
@@ -1610,15 +1709,20 @@ def main():
                     try:
                         current_time = time.time()
                         # Make sure all values are numbers - fix the error with trigger_source
-                        trigger_str = get_trigger_source_string(last_trigger_source)
-                        sample = [current_time, float(recording_event.is_set()), -1.0, trigger_str]  # -1 frame indicates heartbeat
+                        if lsl_has_string_support:
+                            trigger_str = get_trigger_source_string(last_trigger_source)
+                            sample = [float(current_time), float(recording_event.is_set()), -1.0, trigger_str]
+                        else:
+                            # All numeric version
+                            sample = [float(current_time), float(recording_event.is_set()), -1.0, float(last_trigger_source)]
+                        
                         lsl_outlet.push_sample(sample)
                         logger.debug(f"Sent LSL heartbeat at {current_time}")
                     except Exception as e:
                         logger.error(f"Error sending LSL heartbeat: {e}")
-                        # Try a safer approach with explicit types
+                        # Try a safer approach with explicit numeric types
                         try:
-                            sample = [float(current_time), float(recording_event.is_set()), float(-1), "x"]
+                            sample = [float(current_time), float(recording_event.is_set()), float(-1), float(last_trigger_source)]
                             lsl_outlet.push_sample(sample)
                             logger.debug("Sent fallback LSL heartbeat")
                         except Exception as e2:

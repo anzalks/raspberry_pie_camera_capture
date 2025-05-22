@@ -29,6 +29,36 @@ sudo rm -f /tmp/camera_recording_*.tmp 2>/dev/null
 sudo rm -f /tmp/test_capture.h264 2>/dev/null
 echo "Temporary files cleaned up."
 
+# Reset camera system
+echo "Resetting camera system..."
+# Reset V4L devices
+echo "Resetting V4L devices..."
+for i in {0..9}; do
+    if [ -e "/dev/video$i" ]; then
+        echo "Resetting /dev/video$i"
+        v4l2-ctl -d /dev/video$i --all > /dev/null 2>&1
+        v4l2-ctl -d /dev/video$i -c timeout_value=3000 > /dev/null 2>&1
+    fi
+done
+
+# Reset media devices
+echo "Resetting media devices..."
+for i in {0..9}; do
+    if [ -e "/dev/media$i" ]; then
+        echo "Checking media$i"
+        media-ctl -d /dev/media$i -r > /dev/null 2>&1
+    fi
+done
+
+# Wait for devices to stabilize
+echo "Waiting for camera devices to stabilize..."
+sleep 2
+
+# Test camera with standard command
+echo "Testing camera..."
+libcamera-hello --list-cameras
+sleep 1
+
 # Clear system service status (if running as a service)
 if systemctl is-active --quiet imx296-camera.service; then
     echo "Stopping systemd service..."
