@@ -203,66 +203,71 @@ class LSLCameraStreamer:
             return False
             
         try:
-            # Check for the IMX296 sensor which is used in the Global Shutter Camera
-            result = subprocess.run(
-                ["vcgencmd", "get_camera"],
-                capture_output=True,
-                text=True,
-                check=False
-            )
+            # First check if running on Bookworm OS
+            is_bookworm = False
+            try:
+                with open("/etc/os-release", "r") as f:
+                    if "=bookworm" in f.read():
+                        is_bookworm = True
+                        print("Detected Raspberry Pi OS Bookworm")
+            except Exception as e:
+                print(f"Error checking OS version: {e}")
             
-            if "detected=1" in result.stdout:
-                # Further check if it's specifically a Global Shutter Camera by checking for IMX296
-                for m in range(6):  # Try media devices 0-5
-                    cmd = ["media-ctl", "-d", f"/dev/media{m}", "-p"]
-                    try:
-                        media_result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-                        if "imx296" in media_result.stdout.lower():
-                            print(f"Global Shutter Camera detected on /dev/media{m}")
-                            self.is_global_shutter = True
-                            self.camera_model = "Raspberry Pi Global Shutter Camera (IMX296)"
-                            self.media_device = f"/dev/media{m}"
-                            
-                            # Set auto-cropping if enable_crop is None (auto-detect mode)
-                            if self.enable_crop is None:
-                                # We'll now auto-enable cropping for all Global Shutter Camera operations
-                                # based on Hermann-SW's gist for achieving high frame rates
-                                print(f"Auto-enabling Global Shutter Camera cropping for {self.width}x{self.height} at {self.target_fps}fps")
-                                self.enable_crop = True
-                            
-                            # Configure cropping if enabled
-                            if self.enable_crop:
-                                self._configure_global_shutter_crop(m)
-                            return True
-                    except Exception as e:
-                        print(f"Error checking media device {m}: {e}")
+            # Using Hermann-SW's approach for detecting Global Shutter Camera
+            for m in range(6):  # Try media devices 0-5
+                try:
+                    if not os.path.exists(f"/dev/media{m}"):
                         continue
                         
-                # Additional check for IMX296 device node
-                try:
-                    for i in range(10):
-                        cmd = ["v4l2-ctl", "--list-devices"]
-                        device_result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-                        if "imx296" in device_result.stdout.lower():
-                            print(f"Global Shutter Camera (IMX296) detected through v4l2 devices")
-                            self.is_global_shutter = True
-                            self.camera_model = "Raspberry Pi Global Shutter Camera (IMX296)"
-                            # Configure with default media device since we couldn't find specific one
-                            self.media_device = "/dev/media0"
-                            
-                            # Enable cropping for optimal performance
-                            if self.enable_crop is None:
-                                self.enable_crop = True
-                                
-                            if self.enable_crop:
-                                self._configure_global_shutter_crop(0)  # Use media0 as fallback
-                            return True
+                    cmd = ["media-ctl", "-d", f"/dev/media{m}", "-p"]
+                    media_result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+                    if "imx296" in media_result.stdout.lower():
+                        print(f"Global Shutter Camera detected on /dev/media{m}")
+                        self.is_global_shutter = True
+                        self.camera_model = "Raspberry Pi Global Shutter Camera (IMX296)"
+                        self.media_device = f"/dev/media{m}"
+                        
+                        # Always enable cropping for Global Shutter Camera
+                        self.enable_crop = True
+                        print("Enabling Global Shutter Camera cropping mode")
+                        
+                        # Configure cropping
+                        self._configure_global_shutter_crop(m)
+                        return True
                 except Exception as e:
-                    print(f"Error checking v4l2 devices for IMX296: {e}")
+                    print(f"Error checking media device {m}: {e}")
+                    continue
+                    
+            # Fallback check using v4l2-ctl if media-ctl doesn't find the camera
+            try:
+                cmd = ["v4l2-ctl", "--list-devices"]
+                device_result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+                if "imx296" in device_result.stdout.lower():
+                    print(f"Global Shutter Camera (IMX296) detected through v4l2 devices")
+                    self.is_global_shutter = True
+                    self.camera_model = "Raspberry Pi Global Shutter Camera (IMX296)"
+                    
+                    # Enable cropping for optimal performance
+                    self.enable_crop = True
+                    print("Enabling Global Shutter Camera cropping mode (from v4l2 detection)")
+                    
+                    # Try to find which media device has the camera
+                    for m in range(6):
+                        if os.path.exists(f"/dev/media{m}"):
+                            self.media_device = f"/dev/media{m}"
+                            self._configure_global_shutter_crop(m)
+                            return True
+                            
+                    print("Could not find appropriate media device, using media0")
+                    self.media_device = "/dev/media0"
+                    self._configure_global_shutter_crop(0)
+                    return True
+            except Exception as e:
+                print(f"Error checking v4l2 devices for IMX296: {e}")
         except Exception as e:
             print(f"Error detecting Global Shutter Camera: {e}")
             
-        print("No Global Shutter Camera detected or cropping not enabled")
+        print("No Global Shutter Camera detected")
         return False
         
     def _configure_global_shutter_crop(self, media_device_num):
@@ -294,18 +299,19 @@ class LSLCameraStreamer:
                 is_pi5 = False
                 with open("/proc/cpuinfo", "r") as f:
                     cpuinfo = f.read()
-                    if "Revision" in cpuinfo and any(rev in cpuinfo for rev in ["17", "18"]):
+                    if "Revision" in cpuinfo and any(rev in cpuinfo for rev in ["a03111", "b03111", "c03111", "d03111"]):
                         is_pi5 = True
                         
                 if is_pi5:
                     # Pi 5 uses different device IDs
                     device_id = 10 if self.camera_id == 0 else 11
+                    print(f"Detected Raspberry Pi 5, using device ID {device_id}")
             except Exception as e:
                 print(f"Error determining Pi model: {e}")
                 
             # Calculate crop parameters (centered on the sensor)
-            # Global Shutter Camera has a 1456×1088 sensor
-            sensor_width = 1456  # Full sensor width for precise cropping
+            # Global Shutter Camera has a 1456×1088 sensor (Hermann-SW's values)
+            sensor_width = 1456
             sensor_height = 1088
             
             # Calculate the top-left corner for crop to center it
@@ -316,39 +322,48 @@ class LSLCameraStreamer:
             left = left - (left % 2)
             top = top - (top % 2)
             
-            # Check for bookworm OS to apply workaround if needed
-            workaround = ""
+            print(f"Configuring Global Shutter Camera crop: {self.width}x{self.height} at ({left},{top})")
+            
+            # Check for Bookworm OS to apply workaround if needed
+            bookworm_workaround = ""
             try:
                 with open("/etc/os-release", "r") as f:
-                    os_release = f.read()
-                    if "=bookworm" in os_release:
-                        workaround = "--no-raw"
-                        print("Detected Bookworm OS, applying --no-raw workaround")
+                    if "=bookworm" in f.read():
+                        bookworm_workaround = "--no-raw"
+                        print("Detected Bookworm OS, will apply --no-raw workaround for libcamera")
             except Exception as e:
                 print(f"Error checking OS version: {e}")
             
-            # Build the media-ctl command using Hermann-SW's approach
-            # This command sets both format and crop in one operation
-            cmd = [
-                "media-ctl",
-                "-d", f"/dev/media{media_device_num}",
-                "--set-v4l2",
-                f"'imx296 {device_id}-001a':0 [fmt:SBGGR10_1X10/{self.width}x{self.height} crop:({left},{top})/{self.width}x{self.height}]",
+            # Use Hermann-SW's exact media-ctl command format
+            crop_cmd = [
+                "media-ctl", 
+                "-d", f"/dev/media{media_device_num}", 
+                "--set-v4l2", 
+                f"'imx296 {device_id}-001a':0 [fmt:SBGGR10_1X10/{self.width}x{self.height} crop:({left},{top})/{self.width}x{self.height}]", 
                 "-v"
             ]
             
-            print(f"Configuring Global Shutter Camera crop: {' '.join(cmd)}")
-            cmd_str = " ".join(cmd)
-            crop_result = subprocess.run(cmd_str, shell=True, capture_output=True, text=True)
+            print(f"Executing: {' '.join(crop_cmd)}")
+            
+            # Execute command as a string with shell=True to preserve quotes
+            crop_result = subprocess.run(
+                " ".join(crop_cmd),
+                shell=True,
+                capture_output=True, 
+                text=True
+            )
             
             if crop_result.returncode == 0:
                 print(f"Successfully configured Global Shutter Camera cropping to {self.width}x{self.height}")
-                # Let's check if the configuration was applied correctly by listing camera info
-                check_cmd = ["libcamera-hello", "--list-cameras"]
+                # Verify using Hermann-SW's approach
+                check_cmd = ["libcamera-hello"]
+                if bookworm_workaround:
+                    check_cmd.append(bookworm_workaround)
+                check_cmd.append("--list-cameras")
+                
                 check_result = subprocess.run(check_cmd, capture_output=True, text=True)
                 print("Camera configuration verified:")
                 if check_result.returncode == 0:
-                    # Extract and print relevant crop info from the output
                     for line in check_result.stdout.split('\n'):
                         if "crop" in line:
                             print(f"  {line.strip()}")
@@ -359,43 +374,53 @@ class LSLCameraStreamer:
                 self.camera_model = f"Raspberry Pi Global Shutter Camera (IMX296) {self.width}x{self.height}@{self.target_fps}fps"
                 return True
             else:
-                print(f"Error configuring Global Shutter Camera cropping: {crop_result.stderr}")
-                # Try alternative method with v4l2-ctl if media-ctl fails
+                print(f"Failed to configure Global Shutter Camera crop: {crop_result.stderr}")
+                # Try alternative media-ctl command format if first attempt failed
+                alt_crop_cmd = [
+                    "media-ctl", 
+                    "-d", f"/dev/media{media_device_num}", 
+                    "--set-v4l2", 
+                    f"\"imx296 {device_id}-001a\":0[fmt:SBGGR10_1X10/{self.width}x{self.height}]", 
+                    "--set-v4l2", 
+                    f"\"imx296 {device_id}-001a\":0[crop:({left},{top})/{self.width}x{self.height}]"
+                ]
+                
+                print(f"Trying alternative command: {' '.join(alt_crop_cmd)}")
+                alt_crop_result = subprocess.run(
+                    " ".join(alt_crop_cmd),
+                    shell=True,
+                    capture_output=True, 
+                    text=True
+                )
+                
+                if alt_crop_result.returncode == 0:
+                    print(f"Successfully configured Global Shutter Camera with alternative command")
+                    return True
+                else:
+                    print(f"All crop configuration attempts failed: {alt_crop_result.stderr}")
+                
+                # Final fallback: try v4l2-ctl directly
                 try:
-                    print("Attempting fallback method with v4l2-ctl...")
-                    # Find the video device for the IMX296
-                    video_device = None
-                    cmd = ["v4l2-ctl", "--list-devices"]
-                    v4l2_result = subprocess.run(cmd, capture_output=True, text=True)
-                    lines = v4l2_result.stdout.split('\n')
-                    for i, line in enumerate(lines):
-                        if "imx296" in line.lower() and i+1 < len(lines):
-                            video_device = lines[i+1].strip()
+                    # Find the right video device
+                    for dev in glob.glob("/dev/video*"):
+                        check_cmd = ["v4l2-ctl", "-d", dev, "--all"]
+                        check_result = subprocess.run(check_cmd, capture_output=True, text=True)
+                        if "imx296" in check_result.stdout.lower():
+                            print(f"Found IMX296 on {dev}, applying fallback configuration")
+                            v4l2_cmd = [
+                                "v4l2-ctl", 
+                                "-d", dev, 
+                                "--set-fmt-video=width=" + str(self.width) + ",height=" + str(self.height) + ",pixelformat=RGGB",
+                                "--set-crop=top=" + str(top) + ",left=" + str(left) + ",width=" + str(self.width) + ",height=" + str(self.height)
+                            ]
+                            v4l2_result = subprocess.run(v4l2_cmd, capture_output=True, text=True)
+                            if v4l2_result.returncode == 0:
+                                print(f"Applied fallback configuration with v4l2-ctl")
+                                return True
                             break
-                            
-                    if video_device:
-                        print(f"Found IMX296 on {video_device}")
-                        # Set format using v4l2-ctl
-                        format_cmd = [
-                            "v4l2-ctl",
-                            "-d", video_device,
-                            "--set-fmt-video=width={},height={},pixelformat=RGGB".format(self.width, self.height)
-                        ]
-                        subprocess.run(format_cmd)
-                        
-                        # Set crop using v4l2-ctl
-                        crop_cmd = [
-                            "v4l2-ctl",
-                            "-d", video_device,
-                            "--set-crop=top={},left={},width={},height={}".format(top, left, self.width, self.height)
-                        ]
-                        subprocess.run(crop_cmd)
-                        print("Applied fallback configuration with v4l2-ctl")
-                        return True
-                    else:
-                        print("Could not find IMX296 video device")
                 except Exception as e:
-                    print(f"Fallback configuration failed: {e}")
+                    print(f"Error with fallback v4l2-ctl configuration: {e}")
+                
                 return False
                 
         except Exception as e:
@@ -408,7 +433,7 @@ class LSLCameraStreamer:
         
         Based on Hermann-SW's research (https://gist.github.com/Hermann-SW/e6049fe1a24fc2b5a53c654e0e9f6b9c)
         the following crop configurations work reliably:
-        - 1456x96 at 536fps (full width, minimal height)
+        - 1456x96 at 536fps (full width, minimal height) - NEW from latest research
         - 688x136 at 400fps (medium crop)
         - 224x96 at 500fps (small crop)
         - 600x600 at 200fps (square crop for general usage)
@@ -420,30 +445,34 @@ class LSLCameraStreamer:
         # Check if user requested a square crop (equal width and height)
         is_square_crop = self.width == self.height
         
-        # Optimize dimensions for specific frame rate targets
-        if self.target_fps >= 500:
-            # For very high fps (500+), use either the 224x96 or 1456x96 configuration
-            # from Hermann-SW's research
-            if self.height > 96:
-                print(f"Warning: Adjusting height from {self.height} to 96 to achieve {self.target_fps}fps")
+        # Apply Hermann-SW's optimized configurations based on target FPS
+        if self.target_fps > 500:
+            # For ultra-high FPS (>500), use small crop or full width with minimal height
+            if self.width > 1000:  # If user wanted large width, use full-width mode
+                print(f"Adjusting to full-width configuration for {self.target_fps}fps")
+                self.width = 1456  # Full sensor width
+                self.height = 96   # Minimal height
+            else:
+                print(f"Adjusting to small ROI for {self.target_fps}fps")
+                self.width = 224
                 self.height = 96
                 
-            if self.width != 224 and self.width != 1456:
-                # Check if user wanted full width or narrow crop
-                if self.width < 800:  # User probably wanted small ROI
-                    print(f"Warning: Adjusting width from {self.width} to 224 to achieve {self.target_fps}fps")
-                    self.width = 224
-                else:  # User probably wanted full width
-                    print(f"Warning: Adjusting width from {self.width} to 1456 to achieve {self.target_fps}fps")
-                    self.width = 1456
-                    
-        elif self.target_fps > 350 and self.target_fps < 500:
-            # For ~400fps, use the 688x136 configuration that Hermann-SW found optimal
-            if self.width != 688 or self.height != 136:
-                print(f"Warning: Adjusting dimensions from {self.width}x{self.height} to 688x136 to achieve {self.target_fps}fps")
+        elif self.target_fps > 350 and self.target_fps <= 500:
+            # For ~400-500fps, use smaller crops
+            if is_square_crop:
+                # Can't do square crop at this frame rate
+                print(f"Warning: Cannot maintain square crop at {self.target_fps}fps. Using optimized 688x136 configuration.")
                 self.width = 688
                 self.height = 136
-                
+            else:
+                # Optimize based on Hermann-SW's configurations
+                if self.width > 688:
+                    print(f"Warning: Adjusting width from {self.width} to 688 to achieve {self.target_fps}fps")
+                    self.width = 688
+                if self.height > 136:
+                    print(f"Warning: Adjusting height from {self.height} to 136 to achieve {self.target_fps}fps")
+                    self.height = 136
+                    
         elif self.target_fps > 180 and self.target_fps <= 350:
             # For ~200fps with square crop, we can use up to about 600x600
             if is_square_crop and self.width > 600:
@@ -465,34 +494,12 @@ class LSLCameraStreamer:
                     # Ensure dimensions are even
                     self.width = self.width - (self.width % 2)
                     self.height = self.height - (self.height % 2)
-                
-        elif self.target_fps > 120:
-            # For other high frame rates (120-180fps), ensure dimensions are reasonable
-            max_total_pixels = 700 * 700  # Slightly higher max pixel count
-            current_pixels = self.width * self.height
-            
-            if current_pixels > max_total_pixels:
-                # Scale dimensions down while maintaining aspect ratio
-                scale_factor = (max_total_pixels / current_pixels) ** 0.5
-                self.width = int(self.width * scale_factor)
-                self.height = int(self.height * scale_factor)
-                print(f"Warning: Scaling dimensions to {self.width}x{self.height} to achieve {self.target_fps}fps")
-                
-                # Ensure dimensions are even
-                self.width = self.width - (self.width % 2)
-                self.height = self.height - (self.height % 2)
-        
-        # Make sure we still have even dimensions (required by the camera)
-        if self.width % 2 != 0:
-            self.width -= 1
-        if self.height % 2 != 0:
-            self.height -= 1
-        
-        # Report if dimensions were changed
-        if original_width != self.width or original_height != self.height:
-            print(f"Dimensions adjusted from {original_width}x{original_height} to {self.width}x{self.height} for target fps: {self.target_fps}")
+                    
+        # Report any changes made
+        if self.width != original_width or self.height != original_height:
+            print(f"Dimensions adjusted from {original_width}x{original_height} to {self.width}x{self.height} for optimal performance at {self.target_fps}fps")
         else:
-            print(f"Using dimensions: {self.width}x{self.height} for target fps: {self.target_fps}")
+            print(f"Using requested dimensions {self.width}x{self.height} at {self.target_fps}fps (no adjustment needed)")
 
     def _initialize_camera(self):
         """Initialize the Pi Camera."""
@@ -520,11 +527,31 @@ class LSLCameraStreamer:
                     self.enable_crop = True
                     print(f"Auto-enabling crop mode for high frame rate: {self.target_fps} fps")
                 
+                # Check for Bookworm OS to apply workaround
+                bookworm_workaround = False
+                try:
+                    with open("/etc/os-release", "r") as f:
+                        if "=bookworm" in f.read():
+                            bookworm_workaround = True
+                except Exception:
+                    pass
+                
                 # Special settings for Global Shutter Camera
                 if self.enable_crop:
                     # If cropping is enabled, the configuration has already been done by media-ctl
-                    # We don't need additional configuration here, just start the camera
-                    pass
+                    # We just need to create a minimal configuration that respects the crop
+                    config = self.camera.create_video_configuration(
+                        main={"size": (self.width, self.height), "format": "BGR888"},
+                        buffer_count=6,  # Increase buffer count for high frame rates
+                        controls={"NoiseReductionMode": 1}  # Fast noise reduction
+                    )
+                    
+                    # Apply bookworm workaround if needed
+                    if bookworm_workaround:
+                        print("Applying --no-raw equivalent configuration for Bookworm OS")
+                        config["raw"] = {"format": "NONE"}
+                        
+                    self.camera.configure(config)
                 else:
                     # For standard usage without cropping, configure with normal settings
                     config = self.camera.create_video_configuration(
@@ -536,8 +563,12 @@ class LSLCameraStreamer:
                     config["controls"] = {
                         "FrameRate": self.target_fps,
                         "NoiseReductionMode": 1,  # Fast noise reduction
-                        # Add any Global Shutter specific controls here
                     }
+                    
+                    # Apply bookworm workaround if needed
+                    if bookworm_workaround:
+                        print("Applying --no-raw equivalent configuration for Bookworm OS")
+                        config["raw"] = {"format": "NONE"}
                     
                     self.camera.configure(config)
             else:

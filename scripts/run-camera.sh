@@ -265,20 +265,19 @@ if [ "$(id -u)" -eq 0 ]; then
                 echo "Using OS-provided v4l-utils and media-ctl"
             else
                 echo "⚠️ OS-provided media-ctl not working with media devices"
-                echo "Building v4l-utils from source for better compatibility..."
-                build_v4l_utils_from_source
+                echo "Make sure the camera is properly connected and try again"
             fi
         else
-            echo "media-ctl not found from OS packages, building from source..."
-            # Build v4l-utils and media-ctl from source - REQUIRED for Bookworm if not working
-            build_v4l_utils_from_source
+            echo "media-ctl not found in OS packages, installing v4l-utils..."
+            # Install v4l-utils which includes media-ctl
+            apt install -y v4l-utils
         fi
         
         # Final verification
         if ! command -v media-ctl &> /dev/null; then
             echo "ERROR: Failed to install or find media-ctl"
             echo "This is required for Global Shutter Camera support"
-            echo "Please fix this issue before continuing."
+            echo "Try running: apt install -y v4l-utils"
             exit 1
         else
             echo "media-ctl is available: $(which media-ctl)"
