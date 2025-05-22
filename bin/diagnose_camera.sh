@@ -322,26 +322,50 @@ check_systemd_service() {
 test_camera_capture() {
   echo "Testing camera capture (will capture 3 seconds of video)..."
   
-  local TEST_OUTPUT="$PROJECT_ROOT/recordings/test_capture.mp4"
+  local TEST_OUTPUT="$PROJECT_ROOT/recordings/test_capture.mkv"
   
   # Remove previous test file if it exists
   rm -f "$TEST_OUTPUT"
+  rm -f "$PROJECT_ROOT/recordings/test_capture.mp4"
   
-  # First try with more conservative/basic settings
-  echo "Trying with default basic settings..."
+  # Install missing pyyaml package if needed
+  if ! "$PROJECT_ROOT/.venv/bin/pip" list | grep -q "pyyaml"; then
+    echo "Installing missing pyyaml package..."
+    "$PROJECT_ROOT/.venv/bin/pip" install pyyaml
+  fi
+  
+  # First try with H.264/AVC1 and MKV container
+  echo "Trying with H.264/AVC1 codec and MKV container..."
   libcamera-vid -t 3000 --width 1280 --height 720 --framerate 30 --codec h264 --output "$TEST_OUTPUT" --nopreview
   
   if [ ! -f "$TEST_OUTPUT" ] || [ ! -s "$TEST_OUTPUT" ]; then
-    echo "First attempt failed, trying with different format..."
-    # Try with a different format that might be more compatible
-    libcamera-vid -t 3000 --width 640 --height 480 --framerate 15 --codec h264 --output "$TEST_OUTPUT" --nopreview
+    echo "First attempt failed, trying with MJPG codec..."
+    # Try with MJPG codec which has better hardware compatibility
+    libcamera-vid -t 3000 --width 640 --height 480 --framerate 15 --codec mjpeg --output "$TEST_OUTPUT" --nopreview
   fi
   
-  # Try a third attempt with alternative settings
+  # Try a third attempt with YUV format which is often more compatible
   if [ ! -f "$TEST_OUTPUT" ] || [ ! -s "$TEST_OUTPUT" ]; then
-    echo "Second attempt failed, trying with raw format..."
-    # Try YUV format explicitly which might have better compatibility
-    libcamera-vid -t 3000 --width 1280 --height 720 --framerate 15 --codec h264 --output "$TEST_OUTPUT" --nopreview --rawfull
+    echo "Second attempt failed, trying with YUV format..."
+    # Use --inline to use YUV format directly
+    libcamera-vid -t 3000 --width 640 --height 480 --framerate 15 --codec mjpeg --output "$TEST_OUTPUT" --nopreview --inline
+  fi
+  
+  # Try a fourth attempt with specific sensor mode
+  if [ ! -f "$TEST_OUTPUT" ] || [ ! -s "$TEST_OUTPUT" ]; then
+    echo "Third attempt failed, trying with specific sensor mode..."
+    # Use direct sensor mode
+    libcamera-vid -t 3000 --mode 1456:1088:10 --codec mjpeg --output "$TEST_OUTPUT" --nopreview
+  fi
+  
+  # Last attempt using direct v4l2 commands with ffmpeg
+  if [ ! -f "$TEST_OUTPUT" ] || [ ! -s "$TEST_OUTPUT" ]; then
+    echo "All libcamera attempts failed, trying with direct ffmpeg capture..."
+    if command -v ffmpeg >/dev/null && [ -e "/dev/video0" ]; then
+      # Try using ffmpeg directly with v4l2 and MJPG codec
+      ffmpeg -f v4l2 -input_format mjpeg -video_size 640x480 -i /dev/video0 -t 3 -c:v copy -y "$TEST_OUTPUT" 2>/dev/null || \
+      ffmpeg -f v4l2 -video_size 640x480 -i /dev/video0 -t 3 -c:v libx264 -y "$TEST_OUTPUT" 2>/dev/null
+    fi
   fi
   
   if [ -f "$TEST_OUTPUT" ]; then
@@ -362,12 +386,19 @@ test_camera_capture() {
       echo "Checking for v4l2 devices:"
       v4l2-ctl --list-devices
       
+      echo "Checking IMX296 kernel module:"
+      if lsmod | grep -q "imx296"; then
+        echo "  IMX296 driver is loaded."
+      else
+        echo "  IMX296 driver is not loaded. Try: sudo modprobe imx296"
+      fi
+      
       echo "Camera hardware issue detected. Possible solutions:"
       echo "1. Check the camera's physical connection and ribbon cable"
-      echo "2. Make sure the camera is enabled in raspi-config"
-      echo "3. Try updating the firmware: sudo rpi-update"
-      echo "4. Check that the camera is compatible with your Raspberry Pi model"
-      echo "5. Try increasing GPU memory: edit /boot/config.txt and set gpu_mem=128"
+      echo "2. Try 'sudo rpi-update' to get the latest firmware"
+      echo "3. Check 'dmesg | grep imx296' for specific driver errors"
+      echo "4. Try modifying /boot/config.txt with: dtoverlay=imx296"
+      echo "5. Ensure GPU memory is sufficient: gpu_mem=128 in /boot/config.txt"
       return 1
     fi
   else
@@ -381,17 +412,21 @@ test_camera_capture() {
       echo "  Then log out and back in to apply the changes."
     fi
     
-    # Check if libcamera-apps is installed
-    if ! command -v libcamera-hello &>/dev/null; then
-      echo "  libcamera-apps may not be installed correctly."
-      echo "  Run: sudo apt install -y libcamera-apps"
+    # Check for v4l2 device errors
+    echo "V4L2 device diagnostics:"
+    if [ -e "/dev/video0" ]; then
+      v4l2-ctl -d /dev/video0 --all || true
+      echo "  Try: sudo v4l2-ctl -d /dev/video0 --set-fmt-video=width=640,height=480,pixelformat=MJPG"
     fi
     
-    # Check for firmware issues
-    if dmesg | grep -iE "(camera|imx296)" | grep -i error &>/dev/null; then
-      echo "  Firmware errors detected in kernel log."
-      echo "  Consider updating firmware: sudo rpi-update"
-    fi
+    # Recommend IMX296-specific fixes
+    echo "IMX296 Global Shutter Camera Fixes:"
+    echo "1. Check /boot/config.txt contains: dtoverlay=imx296"
+    echo "2. Try reloading the driver: sudo modprobe -r imx296 && sudo modprobe imx296"
+    echo "3. Your camera shows the error: 'Failed to start streaming: Invalid argument'"
+    echo "   This usually indicates an incompatible format or driver issue."
+    echo "4. Create a /etc/modprobe.d/imx296.conf file with: options imx296 compatible_mode=1"
+    echo "5. Check if MJPG format is supported: v4l2-ctl --list-formats-ext"
     
     return 1
   fi

@@ -28,13 +28,14 @@ fi
 echo -e "${YELLOW}----- Installing System Dependencies -----${NC}"
 apt update
 apt install -y python3 python3-pip python3-venv \
-  libcamera-apps v4l-utils ffmpeg \
+  libcamera-apps v4l2-utils ffmpeg \
   git build-essential cmake pkg-config \
   libasio-dev libboost-dev libboost-thread-dev \
   libboost-filesystem-dev libboost-system-dev \
   libboost-regex-dev libboost-atomic-dev \
   libboost-chrono-dev libboost-date-time-dev \
-  dialog  # For the dashboard UI
+  dialog \
+  mjpegtools libmjpegtools-dev # For MJPG support
 
 # Function to build liblsl from source (older version)
 build_liblsl_from_source() {
@@ -342,6 +343,9 @@ if [ ! -f "$PROJECT_ROOT/config/config.yaml" ] && [ -f "$PROJECT_ROOT/config/con
   echo "Set ntfy.sh topic to: $NTFY_TOPIC"
 fi
 
+# Update camera config with MKV and MJPG settings
+update_camera_config
+
 # Install systemd service if it doesn't exist
 echo -e "${YELLOW}----- Installing Systemd Service -----${NC}"
 if [ ! -f "/etc/systemd/system/imx296-camera.service" ]; then
@@ -399,12 +403,102 @@ EOF
   echo -e "${GREEN}Desktop shortcut created at $DESKTOP_FILE${NC}"
 fi
 
+# Configure IMX296 camera module
+configure_imx296_camera() {
+  echo -e "${YELLOW}----- Configuring IMX296 Camera -----${NC}"
+  
+  # Check if the imx296 module is loaded
+  if ! lsmod | grep -q "imx296"; then
+    echo "Loading IMX296 camera module..."
+    modprobe imx296 || true
+  fi
+  
+  # Create modprobe configuration file for IMX296
+  echo "Creating modprobe configuration for IMX296..."
+  cat > /etc/modprobe.d/imx296.conf << EOF
+# IMX296 camera module configuration
+# This enables compatibility mode which may help with streaming issues
+options imx296 compatible_mode=1
+EOF
+  
+  # Check for dtoverlay in config.txt
+  if [ -f "/boot/config.txt" ]; then
+    if ! grep -q "dtoverlay=imx296" "/boot/config.txt"; then
+      echo "Adding IMX296 device tree overlay to /boot/config.txt..."
+      echo "# IMX296 Global Shutter Camera" >> /boot/config.txt
+      echo "dtoverlay=imx296" >> /boot/config.txt
+      echo "gpu_mem=128" >> /boot/config.txt
+    else
+      echo "IMX296 device tree overlay already configured."
+    fi
+  fi
+  
+  # Set correct permissions for video devices
+  echo "Setting video device permissions..."
+  if [ -e "/dev/video0" ]; then
+    chmod a+rw /dev/video*
+  fi
+  
+  # Create udev rule for persistent permissions
+  echo "Creating udev rule for IMX296 camera..."
+  cat > /etc/udev/rules.d/99-imx296-camera.rules << EOF
+# IMX296 Camera udev rules
+KERNEL=="video*", SUBSYSTEM=="video4linux", GROUP="video", MODE="0666"
+KERNEL=="media*", SUBSYSTEM=="media", GROUP="video", MODE="0666"
+EOF
+  
+  # Configure v4l2 default formats if possible
+  if command -v v4l2-ctl >/dev/null && [ -e "/dev/video0" ]; then
+    echo "Configuring default V4L2 formats for better compatibility..."
+    
+    # Try to set MJPG format by default
+    v4l2-ctl -d /dev/video0 --set-fmt-video=width=640,height=480,pixelformat=MJPG || true
+    
+    # Check available formats for reference
+    echo "Available camera formats:"
+    v4l2-ctl --list-formats-ext || true
+  fi
+  
+  # Reload udev rules
+  udevadm control --reload-rules || true
+  udevadm trigger || true
+  
+  echo -e "${GREEN}IMX296 camera configuration complete.${NC}"
+}
+
+# Create or update config example
+update_camera_config() {
+  if [ -f "$PROJECT_ROOT/config/config.yaml.example" ]; then
+    echo "Updating camera configuration example..."
+    
+    # Add MKV and MJPG settings to the example config
+    sed -i '/video_format:/c\  video_format: "mkv"  # Use MKV container for better compatibility' "$PROJECT_ROOT/config/config.yaml.example"
+    sed -i '/codec:/c\  codec: "mjpeg"        # Use MJPEG codec for better hardware compatibility' "$PROJECT_ROOT/config/config.yaml.example"
+    
+    # Add note about formats
+    CODEC_NOTE="  # Available codecs: mjpeg, h264 (default). MKV container is more compatible with Debian Bookworm."
+    if ! grep -q "Available codecs" "$PROJECT_ROOT/config/config.yaml.example"; then
+      sed -i "/codec:/a\\$CODEC_NOTE" "$PROJECT_ROOT/config/config.yaml.example"
+    fi
+    
+    if [ -f "$PROJECT_ROOT/config/config.yaml" ]; then
+      echo "Updating main config file with MKV and MJPG settings..."
+      # Update main config if it exists
+      sed -i '/video_format:/c\  video_format: "mkv"  # Use MKV container for better compatibility' "$PROJECT_ROOT/config/config.yaml"
+      sed -i '/codec:/c\  codec: "mjpeg"        # Use MJPEG codec for better hardware compatibility' "$PROJECT_ROOT/config/config.yaml"
+    fi
+  fi
+}
+
 # Test the camera
 echo -e "${YELLOW}----- Testing Camera Hardware -----${NC}"
 if command -v libcamera-hello >/dev/null; then
   echo "Checking for cameras with libcamera-hello..."
   if libcamera-hello --list-cameras | grep -i "imx296"; then
     echo -e "${GREEN}✓ IMX296 camera found!${NC}"
+    
+    # Configure IMX296 camera
+    configure_imx296_camera
     
     # Check for video group membership
     if ! groups $SUDO_USER | grep -q "video"; then
@@ -435,7 +529,7 @@ if command -v libcamera-hello >/dev/null; then
       if lsmod | grep -q "imx296"; then
         modprobe -r imx296 || true
         sleep 1
-        modprobe imx296 || true
+        modprobe imx296 compatible_mode=1 || true
       fi
     fi
   else

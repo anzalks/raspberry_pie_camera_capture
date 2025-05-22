@@ -59,6 +59,14 @@ def load_config(config_file="config/config.yaml"):
     try:
         with open(config_file, 'r') as f:
             config = yaml.safe_load(f)
+        
+        # Set defaults for video format if not specified
+        if 'recording' in config:
+            if 'video_format' not in config['recording']:
+                config['recording']['video_format'] = 'mkv'
+            if 'codec' not in config['recording']:
+                config['recording']['codec'] = 'mjpeg'
+        
         return config
     except Exception as e:
         print(f"Error loading config file {config_file}: {e}")
@@ -547,7 +555,8 @@ def camera_thread(config):
         "--height", str(height),
         "--framerate", str(fps),
         "--timeout", "1000",  # 1 second timeout
-        "--output", "/tmp/test_capture.h264",  # Use a real file path with format
+        "--codec", "mjpeg",   # Use MJPEG codec for better compatibility
+        "--output", "/tmp/test_capture.mkv",  # Use MKV format for better compatibility
         "--nopreview",  # Add this to prevent display issues
         "--inline"      # Add inline for better format handling
     ]
@@ -561,8 +570,8 @@ def camera_thread(config):
         logger.info(f"libcamera-vid test capture output:\n{output}")
         # Clean up the test file
         try:
-            if os.path.exists("/tmp/test_capture.h264"):
-                os.remove("/tmp/test_capture.h264")
+            if os.path.exists("/tmp/test_capture.mkv"):
+                os.remove("/tmp/test_capture.mkv")
         except:
             pass
     except subprocess.CalledProcessError as e:
@@ -575,10 +584,10 @@ def camera_thread(config):
             basic_cmd = [
                 libcamera_vid_path,
                 "--timeout", "1000",         # 1 second timeout
-                "--output", "/tmp/test_capture.h264",
+                "--codec", "mjpeg",          # Use MJPEG codec
+                "--output", "/tmp/test_capture.mkv",  # Use MKV container
                 "--nopreview",
-                "--codec", "yuv420",         # Try different codec
-                "--rawfull"                  # Use raw format to bypass encoding issues
+                "--inline"                   # Use inline for better format handling
             ]
             output = subprocess.check_output(basic_cmd, universal_newlines=True, stderr=subprocess.STDOUT)
             logger.info(f"Raw format test output:\n{output}")
@@ -608,6 +617,7 @@ def camera_thread(config):
         "--shutter", str(exposure_time_us),
         "--denoise", "cdn_off",
         "--save-pts", pts_file_path,
+        "--codec", "mjpeg",  # Use MJPEG codec for better compatibility
         "--inline",
         "--flush",
         "-o", "-"  # Output to stdout
@@ -652,7 +662,8 @@ def camera_thread(config):
             "--shutter", str(exposure_time),  # Use calculated exposure
             "--timeout", "0",
             "--nopreview",  # Add nopreview to avoid display issues
-            "--inline",  # Important for proper H264 output
+            "--codec", "mjpeg",  # Use MJPEG codec for better compatibility
+            "--inline",  # Important for proper output
             "-o", "-"  # Output to stdout
         ]
 
@@ -724,7 +735,8 @@ def camera_thread(config):
         
         # Initialize variables for frame collection
         current_frame = bytearray()
-        frame_start_marker = b'\x00\x00\x00\x01'  # H.264 NAL unit start code
+        frame_start_marker = b'\xFF\xD8'  # JPEG SOI marker for MJPEG streams
+        frame_end_marker = b'\xFF\xD9'    # JPEG EOI marker
         frame_count = 0
         last_pts_read_time = 0
         pts_data = []
@@ -1069,7 +1081,8 @@ def video_writer_thread(config):
     # Generate output filename with timestamp
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = config['recording']['output_dir']
-    format_ext = config['recording']['format']
+    format_ext = config['recording'].get('video_format', 'mkv')  # Default to MKV format
+    codec = config['recording'].get('codec', 'mjpeg')  # Default to MJPEG codec
     
     # Ensure output directory exists with proper permissions
     os.makedirs(output_dir, exist_ok=True)
@@ -1116,15 +1129,18 @@ def video_writer_thread(config):
     # Configure FFmpeg command with optimized settings for robust recording
     ffmpeg_path = config['system']['ffmpeg_path']
     
-    # Use a simpler ffmpeg command that's less likely to fail
+    # Determine input format based on codec
+    input_format = "mjpeg" if codec == "mjpeg" else "h264"
+    
+    # Use ffmpeg command with appropriate settings for the codec and container
     cmd = [
         ffmpeg_path,
-        "-f", "h264",            # Input format is H.264
-        "-i", "-",               # Input from stdin
-        "-c:v", "copy",          # Copy video codec (no re-encoding)
-        "-an",                   # No audio
-        "-y",                    # Overwrite output file if exists
-        output_file              # Output file
+        "-f", input_format,        # Input format based on codec
+        "-i", "-",                 # Input from stdin
+        "-c:v", "copy",            # Copy video codec (no re-encoding)
+        "-an",                     # No audio
+        "-y",                      # Overwrite output file if exists
+        output_file                # Output file (.mkv)
     ]
     
     logger.info(f"Starting ffmpeg with command: {' '.join(cmd)}")
