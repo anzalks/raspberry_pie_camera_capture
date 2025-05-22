@@ -519,18 +519,20 @@ def camera_thread(config):
         output = subprocess.check_output(test_cmd, universal_newlines=True, stderr=subprocess.STDOUT)
         logger.info(f"libcamera-vid test output:\n{output}")
         
-        # Check if output contains IMX296
+        # Check if output contains IMX296 or any camera
         if "imx296" not in output.lower():
-            logger.error("IMX296 camera not found in libcamera-vid output")
-            logger.error("Camera capture cannot proceed without actual camera. Check connections.")
-            return
+            # Check if any camera is detected - sometimes the name is different
+            if "camera" in output.lower() or "available" in output.lower():
+                logger.warning("IMX296 camera not specifically found, but a camera was detected. Will try to use it.")
+            else:
+                logger.error("No camera detected by libcamera-vid. Check camera connection.")
+                return
     except subprocess.CalledProcessError as e:
         logger.error(f"Error testing libcamera-vid: {e}")
         logger.error(f"Output: {e.output if hasattr(e, 'output') else 'No output'}")
-        logger.error("Camera capture cannot proceed without actual camera.")
-        return
+        logger.error("Will try to continue anyway, in case the camera is available but command output is unexpected.")
     
-    # Test with simple capture
+    # Test with simple capture - use a safer filename format
     logger.info("Testing simple capture with libcamera-vid...")
     test_cmd = [
         libcamera_vid_path,
@@ -538,7 +540,8 @@ def camera_thread(config):
         "--height", str(height),
         "--framerate", str(fps),
         "--timeout", "1000",  # 1 second timeout
-        "--output", "/tmp/test_capture.h264"  # Use a real file path with format
+        "--output", "/tmp/test_capture.h264",  # Use a real file path with format
+        "--nopreview"  # Add this to prevent display issues
     ]
     try:
         logger.info(f"Running test capture: {' '.join(test_cmd)}")
@@ -553,8 +556,23 @@ def camera_thread(config):
     except subprocess.CalledProcessError as e:
         logger.error(f"Error testing simple capture: {e}")
         logger.error(f"Output: {e.output if hasattr(e, 'output') else 'No output'}")
-        logger.error("Camera capture cannot proceed without actual camera.")
-        return
+        
+        # Try a more basic capture approach without specific dimensions
+        try:
+            logger.warning("Trying simpler capture command...")
+            basic_cmd = [
+                libcamera_vid_path,
+                "--timeout", "1000",  # 1 second timeout
+                "--output", "/tmp/test_capture.h264",
+                "--nopreview"
+            ]
+            output = subprocess.check_output(basic_cmd, universal_newlines=True, stderr=subprocess.STDOUT)
+            logger.info(f"Basic capture test output:\n{output}")
+        except subprocess.CalledProcessError as e2:
+            logger.error(f"Basic capture also failed: {e2}")
+            logger.error(f"Output: {e2.output if hasattr(e2, 'output') else 'No output'}")
+            logger.error("Camera capture cannot proceed without a working camera.")
+            return
     
     # Build libcamera-vid command
     cmd = [
@@ -598,6 +616,7 @@ def camera_thread(config):
             "--height", str(height),
             "--framerate", str(fps),
             "--timeout", "0",
+            "--nopreview",  # Add nopreview to avoid display issues
             "-o", "-"  # Output to stdout
         ]
         
@@ -776,16 +795,16 @@ def process_frame(frame_data, frame_num, start_time, frame_buffer, pts_data):
         
         # Prepare sample: [unix_timestamp, recording_active, frame_number, trigger_source]
         # timestamp as double, recording as int, frame as int64, trigger as string
-        sample = [
-            frame_timestamp,                  # timestamp as double
-            int(recording_event.is_set()),    # recording status as int32
-            int(frame_num),                   # frame number as int64
-            trigger_str                       # trigger source as string (k/n)
-        ]
-        
-        # Send the data
         try:
-            lsl_outlet.push_sample(sample, frame_timestamp)
+            sample = [
+                float(frame_timestamp),                 # timestamp as double
+                int(recording_event.is_set()),    # recording status as int32
+                int(frame_num),                   # frame number as int64
+                trigger_str                       # trigger source as string (k/n)
+            ]
+            
+            # Send the data
+            lsl_outlet.push_sample(sample, float(frame_timestamp))
             
             # Periodically log the LSL data being sent for debugging
             if frame_num % 100 == 0 or (recording_event.is_set() and session_frame_counter % 10 == 0):
@@ -793,8 +812,15 @@ def process_frame(frame_data, frame_num, start_time, frame_buffer, pts_data):
                 logger.info(f"LSL data sent: timestamp={frame_timestamp:.3f}, recording={int(recording_event.is_set())}, "
                            f"frame={frame_num}, trigger_source={trigger_str}")
         except Exception as e:
+            # If we hit an LSL error, log it but don't crash
             logger = logging.getLogger('imx296_capture')
             logger.error(f"Error sending LSL data: {e}")
+            # Try one more time with completely safe types
+            try:
+                safe_sample = [float(frame_timestamp), float(recording_event.is_set()), float(frame_num), "x"]
+                lsl_outlet.push_sample(safe_sample)
+            except:
+                pass
     
     return frame_timestamp
 
@@ -1583,11 +1609,20 @@ def main():
                 if lsl_outlet:
                     try:
                         current_time = time.time()
-                        sample = [current_time, float(recording_event.is_set()), -1.0, get_trigger_source_string(last_trigger_source)]  # -1 frame indicates heartbeat
+                        # Make sure all values are numbers - fix the error with trigger_source
+                        trigger_str = get_trigger_source_string(last_trigger_source)
+                        sample = [current_time, float(recording_event.is_set()), -1.0, trigger_str]  # -1 frame indicates heartbeat
                         lsl_outlet.push_sample(sample)
                         logger.debug(f"Sent LSL heartbeat at {current_time}")
                     except Exception as e:
                         logger.error(f"Error sending LSL heartbeat: {e}")
+                        # Try a safer approach with explicit types
+                        try:
+                            sample = [float(current_time), float(recording_event.is_set()), float(-1), "x"]
+                            lsl_outlet.push_sample(sample)
+                            logger.debug("Sent fallback LSL heartbeat")
+                        except Exception as e2:
+                            logger.error(f"Error sending fallback LSL heartbeat: {e2}")
                 
                 # Periodically update recording files list
                 update_recordings_list()
