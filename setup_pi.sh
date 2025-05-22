@@ -194,6 +194,9 @@ echo "Installing required Python packages in virtual environment..."
 "$PROJECT_DIR/$VENV_DIR/bin/pip" install pylsl numpy scipy
 "$PROJECT_DIR/$VENV_DIR/bin/pip" install -e "$PROJECT_DIR"
 
+echo "Installing picamera2 in virtual environment..."
+"$PROJECT_DIR/$VENV_DIR/bin/pip" install picamera2
+
 echo "Python virtual environment setup complete with pylsl installed."
 
 # --- Setup Recordings Directory Structure ---
