@@ -236,7 +236,12 @@ fi
 
 # Enable preview in config
 echo "Updating config to enable preview..."
-sed -i 's/preview: false/preview: true/' "$CONFIG_FILE"
+if [ -f "$CONFIG_FILE" ]; then
+    sed -i 's/preview: false/preview: true/' "$CONFIG_FILE"
+    echo "Updated preview setting in config file"
+else
+    echo "WARNING: Config file not found, skipping preview update"
+fi
 
 echo "Camera setup complete. A reboot is recommended to ensure camera detection."
 
@@ -450,8 +455,14 @@ if [ -e "/dev/video0" ]; then
   chmod 666 /dev/video0
 fi
 
-# Ensure preview is enabled in config
-sed -i 's/preview: false/preview: true/' "$CONFIG_FILE"
+# Enable preview in config
+echo "Updating config to enable preview..."
+if [ -f "$CONFIG_FILE" ]; then
+    sed -i 's/preview: false/preview: true/' "$CONFIG_FILE"
+    echo "Updated preview setting in config file"
+else
+    echo "WARNING: Config file not found, skipping preview update"
+fi
 
 # Start the service
 systemctl start raspie-capture.service
@@ -674,7 +685,12 @@ fi
 
 # Enable preview in config
 echo "Updating config to enable preview..."
-sed -i 's/preview: false/preview: true/' "$CONFIG_FILE"
+if [ -f "$CONFIG_FILE" ]; then
+    sed -i 's/preview: false/preview: true/' "$CONFIG_FILE"
+    echo "Updated preview setting in config file"
+else
+    echo "WARNING: Config file not found, skipping preview update"
+fi
 
 echo "Camera setup complete. A reboot is recommended to ensure camera detection."
 
