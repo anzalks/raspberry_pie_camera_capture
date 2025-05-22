@@ -384,127 +384,69 @@ def verify_with_libcamera_hello(config):
 # =============================================================================
 
 def setup_lsl_stream(config):
-    """Set up the LSL stream for camera metadata."""
-    global lsl_outlet
-    
-    logger = logging.getLogger('imx296_capture')
-    
-    # Log that we're setting up LSL
-    logger.info("Setting up LSL stream...")
+    """Set up LSL stream for camera frames metadata."""
+    global lsl_outlet, lsl_has_string_support
     
     try:
+        # Import pylsl
         import pylsl
-        logger.info(f"Using pylsl version: {pylsl.__version__ if hasattr(pylsl, '__version__') else 'unknown'}")
     except ImportError:
-        logger.error("Failed to import pylsl. Is it installed?")
-        return False
-    except Exception as e:
-        logger.error(f"Error importing pylsl: {e}")
-        return False
+        logger = logging.getLogger('imx296_capture')
+        logger.warning("PyLSL not found. Streaming will be disabled.")
+        return None
     
-    # Get LSL configuration from config file
-    lsl_config = config.get('lsl', {})
+    # Create a new LSL stream info
+    logger = logging.getLogger('imx296_capture')
+    logger.info("Creating LSL stream for camera metadata")
     
-    # Log the LSL configuration
-    logger.info(f"LSL Configuration: {lsl_config}")
+    # Stream name from config or default
+    stream_name = config.get('lsl', {}).get('name', 'CameraFrames')
+    stream_type = config.get('lsl', {}).get('type', 'VideoMetadata')
+    stream_id = config.get('lsl', {}).get('id', 'cam1')
     
-    stream_name = lsl_config.get('stream_name', 'IMX296_Metadata')
-    stream_type = lsl_config.get('stream_type', 'CameraEvents')
-    channel_count = lsl_config.get('channel_count', 4)  # Updated to 4 channels
-    nominal_srate = lsl_config.get('nominal_srate', 100)
-    
-    # Log the LSL stream parameters
-    logger.info(f"LSL Stream Parameters:")
-    logger.info(f"  stream_name: {stream_name}")
-    logger.info(f"  stream_type: {stream_type}")
-    logger.info(f"  channel_count: {channel_count}")
-    logger.info(f"  nominal_srate: {nominal_srate}")
-    
-    # FORCE NUMERIC VALUES ONLY - Fix for "must be real number, not str" errors
-    has_string_support = False
-    logger.info("FORCING NUMERIC VALUES ONLY for LSL to fix 'must be real number, not str' errors")
-    
-    # Create channel formats based on capabilities - NUMERIC ONLY
-    channel_info = [
-        {"name": "CaptureTimeUnix", "format": pylsl.cf_double64},
-        {"name": "ntfy_notification_active", "format": pylsl.cf_double64},
-        {"name": "session_frame_no", "format": pylsl.cf_double64},
-        {"name": "trigger_source_code", "format": pylsl.cf_double64}  # Use numeric code instead of string
-    ]
-    
-    # Create channel names list for logging
-    channel_names = [ch["name"] for ch in channel_info]
-    
-    # Log the channel names
-    logger.info(f"LSL Channels: {', '.join(channel_names)}")
-    format_strs = [str(ch["format"]) for ch in channel_info]
-    logger.info(f"Channel formats: {', '.join(format_strs)}")
-    
+    # Define the stream info - only numeric values supported (no strings)
     try:
-        # Create LSL StreamInfo
-        logger.info("Creating LSL StreamInfo")
-        try:
-            # Use only double format for all channels
-            info = pylsl.StreamInfo(
-                name=stream_name,
-                type=stream_type,
-                channel_count=channel_count,
-                nominal_srate=nominal_srate,
-                channel_format=pylsl.cf_double64,  # FORCE DOUBLE PRECISION FOR ALL
-                source_id=f"imx296_{os.getpid()}"
-            )
-        except AttributeError:
-            # Fall back to double format for all channels if cf_mixed isn't available
-            logger.warning("pylsl.cf_mixed not available, falling back to double format")
-            info = pylsl.StreamInfo(
-                name=stream_name,
-                type=stream_type,
-                channel_count=channel_count,
-                nominal_srate=nominal_srate,
-                channel_format=pylsl.cf_double64,  # Use double format for all channels
-                source_id=f"imx296_{os.getpid()}"
-            )
+        # Define channel format - always floats for reliability
+        channel_format = pylsl.cf_double  # Always use double precision to avoid type issues
         
-        # Add channel metadata
-        logger.info("Adding channel metadata")
-        channels = info.desc().append_child("channels")
-        for ch in channel_info:
-            chan = channels.append_child("channel")
-            chan.append_child_value("label", ch["name"])
-            chan.append_child_value("type", str(ch["format"]))
+        # Create stream info with full numeric channel info
+        stream_info = pylsl.StreamInfo(
+            name=stream_name,
+            type=stream_type,
+            channel_count=4,  # [timestamp, recording_active, frame_count, trigger_source]
+            nominal_srate=config.get('fps', 30),  # Expected sample rate based on camera FPS
+            channel_format=channel_format,
+            source_id=stream_id
+        )
         
-        # Add some acquisition metadata
-        info.desc().append_child("acquisition").append_child_value("manufacturer", "Sony")
-        info.desc().append_child("acquisition").append_child_value("model", "IMX296")
-        info.desc().append_child("acquisition").append_child_value("fps", str(config['camera']['fps']))
-        info.desc().append_child("acquisition").append_child_value("resolution", f"{config['camera']['width']}x{config['camera']['height']}")
+        # Add metadata to the stream to describe the channels
+        channels = stream_info.desc().append_child("channels")
+        channels.append_child("channel").append_child_value("label", "timestamp").append_child_value("type", "time").append_child_value("unit", "s")
+        channels.append_child("channel").append_child_value("label", "recording").append_child_value("type", "status").append_child_value("unit", "bool")
+        channels.append_child("channel").append_child_value("label", "frame").append_child_value("type", "index").append_child_value("unit", "count")
+        channels.append_child("channel").append_child_value("label", "trigger").append_child_value("type", "code").append_child_value("unit", "id")
+        
+        # Add description of trigger source codes in stream metadata
+        trigger_codes = stream_info.desc().append_child("trigger_codes")
+        trigger_codes.append_child_value("0", "none")
+        trigger_codes.append_child_value("1", "ntfy")
+        trigger_codes.append_child_value("2", "keyboard")
         
         # Create outlet
-        logger.info("Creating LSL outlet")
-        lsl_outlet = pylsl.StreamOutlet(info)
+        lsl_outlet = pylsl.StreamOutlet(stream_info)
+        logger.info(f"Created LSL stream: {stream_name} ({stream_type})")
         
-        # Test with NUMERIC VALUES ONLY
-        logger.info("Testing LSL stream with numeric values only")
-        test_sample = [time.time(), 0.0, 0.0, 0.0]
-        lsl_outlet.push_sample(test_sample)
-        logger.info(f"Sent test LSL sample (numeric only): {test_sample}")
+        # Now, check if we can even send a test message
+        sample = [time.time(), 0.0, 0.0, 0.0]  # All numeric: timestamp, not recording, frame 0, no trigger
+        lsl_outlet.push_sample(sample)
+        logger.info("Sent test LSL sample successfully")
         
-        logger.info(f"Created LSL stream '{stream_name}' with {channel_count} channels at {nominal_srate} Hz")
-        logger.info(f"String format support: DISABLED (using numeric values only)")
-        
-        # Log a success message that the dashboard can easily find
-        logger.info(f"LSL_STREAM_READY: stream_name={stream_name}, channels={channel_count}, rate={nominal_srate}")
-        
-        # Set global flag for string support
-        global lsl_has_string_support
-        lsl_has_string_support = False  # FORCE FALSE to ensure numeric values only
-        
-        return True
+        # Return the outlet for use
+        return lsl_outlet
+    
     except Exception as e:
-        logger.error(f"Failed to create LSL stream: {e}")
-        import traceback
-        logger.error(f"LSL setup traceback: {traceback.format_exc()}")
-        return False
+        logger.error(f"Error creating LSL stream: {e}")
+        return None
 
 # =============================================================================
 # Camera Capture Thread
@@ -879,10 +821,8 @@ def process_frame(frame_data, frame_num, start_time, frame_buffer, pts_data):
                 logger = logging.getLogger('imx296_capture')
                 # Convert trigger source numeric code to string (for log display only)
                 trigger_str = get_trigger_source_string(last_trigger_source)
-                # Log the data that's being sent
-                data = [frame_timestamp, int(recording_event.is_set()), int(session_frame_counter), float(last_trigger_source)]
-                logger.info(f"LSL output: {data}")
-                logger.info(f"Trigger source is: {last_trigger_source} ({trigger_str})")
+                # Log the data that's being sent - using string format for display
+                logger.info(f"Frame: {session_frame_counter}, Trigger: {trigger_str} ({last_trigger_source})")
         except queue.Full:
             # If queue is full, we're probably too slow to write frames, log warning
             logger = logging.getLogger('imx296_capture')
@@ -890,35 +830,41 @@ def process_frame(frame_data, frame_num, start_time, frame_buffer, pts_data):
     
     # Send metadata to LSL regardless of recording status
     if lsl_outlet:
-        # Prepare sample - NUMERIC ONLY
+        # Prepare sample - NUMERIC ONLY for LSL
         try:
-            # Always use numeric values - fix for "must be real number, not str" errors
+            # Always ensure trigger source is numeric
+            numeric_trigger = get_numeric_trigger_source(last_trigger_source)
+            
+            # Format all values as floats for LSL
             sample = [
-                float(frame_timestamp),            # timestamp as double
-                float(recording_event.is_set()),   # recording status as float
-                float(frame_num),                  # frame number as float
-                float(last_trigger_source)         # trigger source as numeric code
+                float(frame_timestamp),             # timestamp as double
+                float(recording_event.is_set()),    # recording status as float (0.0 or 1.0)
+                float(frame_num),                   # frame number as float
+                float(numeric_trigger)              # trigger source as numeric code
             ]
             
-            # Send the data
+            # Send the data with timestamp
             lsl_outlet.push_sample(sample, float(frame_timestamp))
             
             # Periodically log the LSL data being sent for debugging
-            if frame_num % 100 == 0 or (recording_event.is_set() and session_frame_counter % 10 == 0):
+            if frame_num % 100 == 0:
                 logger = logging.getLogger('imx296_capture')
-                logger.info(f"LSL data sent: timestamp={frame_timestamp:.3f}, recording={int(recording_event.is_set())}, "
-                           f"frame={frame_num}, trigger_source={last_trigger_source}")
+                logger.debug(f"LSL data: timestamp={frame_timestamp:.3f}, recording={int(recording_event.is_set())}, "
+                           f"frame={frame_num}, trigger={numeric_trigger}")
         except Exception as e:
             # If we hit an LSL error, log it but don't crash
             logger = logging.getLogger('imx296_capture')
             logger.error(f"Error sending LSL data: {e}")
-            # Try one more time with completely safe types - absolutely numeric
+            # Try one more time with completely safe types
             try:
-                safe_sample = [float(frame_timestamp), float(recording_event.is_set()), float(frame_num), float(last_trigger_source)]
+                safe_sample = [float(frame_timestamp), 
+                              0.0 if not recording_event.is_set() else 1.0, 
+                              float(frame_num), 
+                              float(get_numeric_trigger_source(last_trigger_source))]
                 lsl_outlet.push_sample(safe_sample)
-                logger.debug("Sent fallback LSL heartbeat")
+                logger.debug("Sent fallback LSL data")
             except Exception as e2:
-                logger.error(f"Error sending fallback LSL heartbeat: {e2}")
+                logger.error(f"Error sending fallback LSL data: {e2}")
     
     return frame_timestamp
 
@@ -933,13 +879,26 @@ def find_timestamp_for_frame(frame_num, pts_data, start_time):
     return time.time()
 
 def get_trigger_source_string(numeric_code):
-    """Convert numeric trigger source code to string format."""
-    if numeric_code == 1:
-        return 'n'  # ntfy
-    elif numeric_code == 2:
-        return 'k'  # keyboard
+    """Convert numeric trigger source code to string format for logging."""
+    # This function should return string values for logging purposes
+    if numeric_code == 1 or numeric_code == 1.0:
+        return 'ntfy'  # notification trigger
+    elif numeric_code == 2 or numeric_code == 2.0:
+        return 'keyboard'  # keyboard trigger
     else:
-        return 'x'  # unknown/none
+        return 'unknown'  # unknown/none
+
+def get_numeric_trigger_source(code):
+    """Ensure the trigger source is always a floating point number for LSL."""
+    # Always return a numeric value
+    if isinstance(code, (int, float)):
+        return float(code)
+    elif code == 'ntfy' or code == 'n':
+        return 1.0
+    elif code == 'keyboard' or code == 'k':
+        return 2.0
+    else:
+        return 0.0  # unknown/default
 
 def log_stderr_output(stderr, process_name):
     """Thread function to log stderr output from a subprocess."""
@@ -1117,8 +1076,59 @@ def video_writer_thread(config):
     codec = config['recording'].get('codec', 'mjpeg')  # Default to MJPEG codec
     
     # Ensure output directory exists with proper permissions
-    os.makedirs(output_dir, exist_ok=True)
-    os.chmod(output_dir, 0o777)  # Make sure directory is writeable
+    try:
+        # Expand user directory (handles ~/ notation)
+        output_dir = os.path.expanduser(output_dir)
+        
+        # Verify if directory exists
+        if not os.path.exists(output_dir):
+            logger.warning(f"Recording directory does not exist: {output_dir}")
+            try:
+                # Create directory with all parent directories
+                os.makedirs(output_dir, exist_ok=True)
+                logger.info(f"Successfully created recording directory: {output_dir}")
+            except PermissionError:
+                logger.error(f"Permission denied creating directory: {output_dir}")
+                # Try alternative directories
+                alt_dirs = [
+                    "/tmp/recordings",  # /tmp is usually writeable
+                    os.path.expanduser("~/recordings"),  # Home directory
+                    os.path.join(os.getcwd(), "recordings")  # Current working directory
+                ]
+                
+                for alt_dir in alt_dirs:
+                    try:
+                        logger.warning(f"Trying alternative directory: {alt_dir}")
+                        os.makedirs(alt_dir, exist_ok=True)
+                        if os.access(alt_dir, os.W_OK):
+                            output_dir = alt_dir
+                            logger.info(f"Using alternative directory: {output_dir}")
+                            break
+                    except:
+                        continue
+        
+        # Now set permissions if we have access
+        try:
+            os.chmod(output_dir, 0o777)  # Make sure directory is writeable
+            logger.info(f"Set permissions on directory: {output_dir}")
+        except PermissionError:
+            logger.warning(f"Cannot set permissions on {output_dir}, but directory exists")
+            # Continue anyway as long as directory exists
+            
+        # Final check if directory exists and is writeable
+        if not os.path.exists(output_dir):
+            logger.error(f"Directory still doesn't exist: {output_dir}")
+            output_dir = "/tmp"  # Fallback to /tmp as last resort
+            logger.warning(f"Falling back to {output_dir}")
+        elif not os.access(output_dir, os.W_OK):
+            logger.error(f"Directory exists but is not writeable: {output_dir}")
+            output_dir = "/tmp"  # Fallback to /tmp as last resort
+            logger.warning(f"Falling back to {output_dir}")
+                
+    except Exception as e:
+        logger.error(f"Error handling output directory: {e}")
+        output_dir = "/tmp"  # Final fallback
+        logger.warning(f"Using {output_dir} as final fallback")
     
     # Create absolute path for output file
     output_file = os.path.join(os.path.abspath(output_dir), f"recording_{timestamp}.{format_ext}")
@@ -1139,24 +1149,33 @@ def video_writer_thread(config):
         output_file = f"/tmp/recording_{timestamp}.{format_ext}"
         logger.info(f"Using fallback path: {output_file}")
     
-    # Create the file and set permissions
+    # Create the file and set permissions with improved error handling
     try:
-        with open(output_file, 'wb') as f:
-            f.write(b'\0')  # Write a single byte to create the file
-        os.chmod(output_file, 0o666)  # Make file readable/writable by all
-        logger.info(f"Created and set permissions on {output_file}")
+        # Use os.open to create the file with correct permissions from the start
+        fd = os.open(output_file, os.O_CREAT | os.O_WRONLY, 0o666)
+        os.close(fd)
+        logger.info(f"Created output file with proper permissions: {output_file}")
     except Exception as e:
-        logger.error(f"Error creating output file: {e}")
-        # Try /tmp as fallback
-        output_file = f"/tmp/recording_{timestamp}.{format_ext}"
-        logger.info(f"Using fallback path: {output_file}")
+        logger.error(f"Error creating output file {output_file}: {e}")
         try:
-            with open(output_file, 'wb') as f:
-                f.write(b'\0')
-            os.chmod(output_file, 0o666)
+            # Try alternative approach - create in /tmp
+            output_file = f"/tmp/recording_{timestamp}.{format_ext}"
+            logger.warning(f"Using fallback path: {output_file}")
+            
+            fd = os.open(output_file, os.O_CREAT | os.O_WRONLY, 0o666)
+            os.close(fd)
+            logger.info(f"Created fallback file: {output_file}")
         except Exception as e2:
             logger.error(f"Failed to create fallback file too: {e2}")
-            return
+            # Last resort: use a truly temporary file
+            try:
+                tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=f".{format_ext}")
+                tmp_file.close()
+                output_file = tmp_file.name
+                logger.warning(f"Using temporary file as last resort: {output_file}")
+            except Exception as e3:
+                logger.error(f"All file creation methods failed: {e3}")
+                return  # Cannot proceed without a file
     
     # Configure FFmpeg command with optimized settings for robust recording
     ffmpeg_path = config['system']['ffmpeg_path']
@@ -1387,7 +1406,7 @@ def keyboard_trigger_thread(config):
                 logger.info(f"Found keyboard start marker: {start_markers[0]}")
                 
                 # Set trigger source to keyboard before starting recording
-                last_trigger_source = 2
+                last_trigger_source = 2  # Use numeric code (2) for keyboard
                 logger.info(f"Setting trigger source to KEYBOARD (2)")
                 
                 # If not already recording, start recording
@@ -1410,7 +1429,7 @@ def keyboard_trigger_thread(config):
                 logger.info(f"Found keyboard stop marker: {stop_markers[0]}")
                 
                 # Set trigger source to keyboard
-                last_trigger_source = 2
+                last_trigger_source = 2  # Use numeric code (2) for keyboard
                 logger.info(f"Setting trigger source to KEYBOARD (2)")
                 
                 # If recording, stop recording
@@ -1458,8 +1477,8 @@ def start_recording_keyboard(config):
         except queue.Empty:
             break
     
-    # Set trigger source before starting recording
-    last_trigger_source = 2  # keyboard
+    # Set trigger source before starting recording - ensure it's numeric
+    last_trigger_source = 2.0  # keyboard as float
     
     # Start recording
     is_recording_active = True
@@ -1475,9 +1494,13 @@ def start_recording_keyboard(config):
     
     # Send a test LSL sample to show in dashboard
     if lsl_outlet:
-        sample = [time.time(), 1.0, 0.0, 'k']  # timestamp, recording=true, frame=0, trigger=keyboard
-        lsl_outlet.push_sample(sample)
-        logger.info(f"Sent LSL start marker: {sample}")
+        try:
+            # All values must be numeric
+            sample = [time.time(), 1.0, 0.0, 2.0]  # timestamp, recording=true, frame=0, trigger=keyboard
+            lsl_outlet.push_sample(sample)
+            logger.info(f"Sent LSL start marker: {sample}")
+        except Exception as e:
+            logger.error(f"Error sending LSL start marker: {e}")
     
     logger.info("Recording started via keyboard")
 
@@ -1494,15 +1517,22 @@ def stop_recording_keyboard():
     
     logger.info("Handling keyboard stop trigger - ending recording")
     
+    # Set trigger source to numeric value
+    last_trigger_source = 2.0  # keyboard as float
+    
     # Stop recording
     is_recording_active = False
     recording_event.clear()
     
     # Send a test LSL sample to show in dashboard
     if lsl_outlet:
-        sample = [time.time(), 0.0, float(session_frame_counter), 'k']  # timestamp, recording=false, frame=current, trigger=keyboard
-        lsl_outlet.push_sample(sample)
-        logger.info(f"Sent LSL stop marker: {sample}")
+        try:
+            # All values must be numeric
+            sample = [time.time(), 0.0, float(session_frame_counter), 2.0]  # timestamp, recording=false, frame=current, trigger=keyboard
+            lsl_outlet.push_sample(sample)
+            logger.info(f"Sent LSL stop marker: {sample}")
+        except Exception as e:
+            logger.error(f"Error sending LSL stop marker: {e}")
     
     logger.info("Recording stopped via keyboard")
 
@@ -1576,30 +1606,55 @@ def update_recordings_list():
         config = load_config()
         output_dir = config['recording']['output_dir']
         
+        # Expand user path if needed
+        output_dir = os.path.expanduser(output_dir)
+        
         # Check if directory exists
         if not os.path.isdir(output_dir):
             logger.warning(f"Recording directory does not exist: {output_dir}")
-            return
+            
+            # Try to create it automatically
+            try:
+                os.makedirs(output_dir, exist_ok=True)
+                logger.info(f"Created recording directory: {output_dir}")
+                
+                # Set permissions if possible
+                try:
+                    os.chmod(output_dir, 0o777)
+                except Exception as perm_e:
+                    logger.warning(f"Could not set permissions on created directory: {perm_e}")
+            except Exception as e:
+                logger.error(f"Failed to create recording directory: {e}")
+                return
+            
+            # Check again if directory now exists
+            if not os.path.isdir(output_dir):
+                logger.error("Directory could not be created. Cannot update recordings list.")
+                return
         
         # Find all MKV files in the directory
         recording_files = []
-        for file in os.listdir(output_dir):
-            if file.endswith('.mkv'):
-                file_path = os.path.join(output_dir, file)
-                try:
-                    # Get file stats
-                    stats = os.stat(file_path)
-                    file_size = stats.st_size
-                    mod_time = stats.st_mtime
-                    
-                    recording_files.append({
-                        'path': file_path,
-                        'name': file,
-                        'size': file_size,
-                        'time': mod_time
-                    })
-                except Exception as e:
-                    logger.error(f"Error getting stats for {file_path}: {e}")
+        try:
+            for file in os.listdir(output_dir):
+                if file.endswith('.mkv') or file.endswith('.mp4'):
+                    file_path = os.path.join(output_dir, file)
+                    try:
+                        # Get file stats
+                        stats = os.stat(file_path)
+                        file_size = stats.st_size
+                        mod_time = stats.st_mtime
+                        
+                        recording_files.append({
+                            'path': file_path,
+                            'name': file,
+                            'size': file_size,
+                            'time': mod_time
+                        })
+                    except Exception as e:
+                        logger.error(f"Error getting stats for {file_path}: {e}")
+        except Exception as list_e:
+            logger.error(f"Error listing directory contents: {list_e}")
+            return
         
         # Sort by modification time (newest first)
         recording_files.sort(key=lambda x: x['time'], reverse=True)
@@ -1613,6 +1668,8 @@ def update_recordings_list():
     
     except Exception as e:
         logger.error(f"Error updating recordings list: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
 
 # =============================================================================
 # Main Function
@@ -1656,9 +1713,11 @@ def main():
         
         # Check output directory
         output_dir = config['recording']['output_dir']
-        if not os.path.isdir(output_dir):
-            logger.warning(f"Creating output directory: {output_dir}")
-            os.makedirs(output_dir, exist_ok=True)
+        output_dir = os.path.expanduser(output_dir)  # Handle ~ in path
+        
+        # Create output directory with better error handling
+        logger.info(f"Checking recording directory: {output_dir}")
+        create_recording_dir(output_dir, logger)
         
         # Log existing recordings
         update_recordings_list()
@@ -1756,6 +1815,67 @@ def main():
         import traceback
         traceback.print_exc()
         return 1
+
+# Add a new helper function for directory creation
+def create_recording_dir(dir_path, logger):
+    """Create recording directory with proper error handling and permissions."""
+    try:
+        # Ensure path is absolute
+        dir_path = os.path.abspath(os.path.expanduser(dir_path))
+        
+        if os.path.isdir(dir_path):
+            logger.info(f"Recording directory exists: {dir_path}")
+            
+            # Check if writable
+            if os.access(dir_path, os.W_OK):
+                logger.info(f"Directory is writable: {dir_path}")
+            else:
+                logger.warning(f"Directory exists but is not writable: {dir_path}")
+                try:
+                    os.chmod(dir_path, 0o777)  # Try to set permissions
+                    logger.info(f"Set permissions on existing directory: {dir_path}")
+                except Exception as e:
+                    logger.error(f"Failed to set permissions: {e}")
+        else:
+            logger.warning(f"Creating output directory: {dir_path}")
+            try:
+                # Create with parents
+                os.makedirs(dir_path, exist_ok=True)
+                
+                # Set permissions
+                try:
+                    os.chmod(dir_path, 0o777)
+                    logger.info(f"Created directory with full permissions: {dir_path}")
+                except Exception as perm_e:
+                    logger.warning(f"Created directory but couldn't set permissions: {perm_e}")
+                
+                # Verify creation
+                if not os.path.isdir(dir_path):
+                    logger.error(f"Failed to create directory despite no errors: {dir_path}")
+                    return False
+                    
+                # Test write access with a file
+                test_file = os.path.join(dir_path, ".write_test")
+                try:
+                    with open(test_file, 'w') as f:
+                        f.write("test")
+                    os.remove(test_file)
+                    logger.info(f"Successfully verified write access to new directory")
+                except Exception as test_e:
+                    logger.error(f"Directory created but not writable: {test_e}")
+                    return False
+                    
+                logger.info(f"Successfully created and verified directory: {dir_path}")
+                return True
+                
+            except Exception as e:
+                logger.error(f"Failed to create directory {dir_path}: {e}")
+                return False
+                
+        return True
+    except Exception as e:
+        logger.error(f"Unexpected error handling directory {dir_path}: {e}")
+        return False
 
 if __name__ == "__main__":
     sys.exit(main()) 
