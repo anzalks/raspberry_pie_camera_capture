@@ -1,1 +1,0 @@
-bin/check_camera_env.py

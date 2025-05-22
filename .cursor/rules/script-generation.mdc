@@ -1,7 +1,0 @@
----
-description: 
-globs: 
-alwaysApply: false
----
-Donot make extra scripts. 
-Always integrate into existing scripts

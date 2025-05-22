@@ -1,1 +1,0 @@
-scripts/camera-service.sh
