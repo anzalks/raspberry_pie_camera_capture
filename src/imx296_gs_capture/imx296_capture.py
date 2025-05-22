@@ -105,9 +105,40 @@ def find_imx296_media_device(config):
     device_pattern = config['camera']['media_ctl']['device_pattern']
     entity_pattern = config['camera']['media_ctl']['entity_pattern']
     
-    # Try various media devices
-    for i in range(10):  # Check media0 through media9
-        media_dev = device_pattern % i
+    # If a specific device is configured, check that first
+    if not '%d' in device_pattern:
+        logger.info(f"Using configured media device: {device_pattern}")
+        try:
+            cmd = [media_ctl_path, "-d", device_pattern, "-p"]
+            output = subprocess.check_output(cmd, universal_newlines=True)
+            
+            # Look for IMX296 entity in the output
+            for line in output.splitlines():
+                if "imx296" in line.lower():
+                    match = re.search(r'entity\s+\d+:\s+(imx296\s+[a-z0-9\-]+)', line, re.IGNORECASE)
+                    if match:
+                        entity_match = match.group(1)
+                        logger.info(f"Found IMX296 entity: {entity_match}")
+                        return device_pattern, entity_match
+            
+            logger.warning(f"IMX296 not found in configured device {device_pattern}")
+        except subprocess.CalledProcessError as e:
+            logger.warning(f"Error running media-ctl on configured device {device_pattern}: {e}")
+    
+    # If specific device failed or using pattern, try various media devices
+    logger.info("Searching for IMX296 camera in available media devices...")
+    
+    # Check if device_pattern has a %d format specifier
+    if '%d' in device_pattern:
+        device_range = range(10)  # Check media0 through media9
+        pattern_to_check = lambda i: device_pattern % i
+    else:
+        # If no format specifier, we'll try some standard patterns
+        device_range = range(10)
+        pattern_to_check = lambda i: f"/dev/media{i}"
+    
+    for i in device_range:
+        media_dev = pattern_to_check(i)
         if not os.path.exists(media_dev):
             continue
         

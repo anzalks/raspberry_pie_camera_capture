@@ -35,9 +35,73 @@ install_system_dependencies() {
         libcamera-apps \
         ffmpeg \
         tmux \
-        git
-    
+        git \
+        build-essential \
+        cmake \
+        libasio-dev
+
     echo -e "${GREEN}System dependencies installed.${NC}"
+}
+
+# Function to build liblsl from source
+build_liblsl_from_source() {
+    echo -e "${YELLOW}Building liblsl from source...${NC}"
+    
+    # Get username of the user who ran sudo
+    SUDO_USER_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+    
+    # Create a temporary directory for building
+    BUILD_DIR=$(mktemp -d)
+    cd "$BUILD_DIR"
+    
+    # Clone the LSL repository
+    echo "Cloning LSL repository..."
+    if ! sudo -u "$SUDO_USER" git clone --depth=1 https://github.com/sccn/liblsl.git; then
+        echo -e "${RED}Failed to clone liblsl repository. Attempting to install pylsl via pip instead.${NC}"
+        cd "$PROJECT_ROOT"
+        rm -rf "$BUILD_DIR"
+        return 1
+    fi
+    
+    cd liblsl
+    
+    # Create build directory
+    mkdir -p build
+    cd build
+    
+    # Configure and build
+    echo "Configuring and building LSL..."
+    if ! sudo -u "$SUDO_USER" cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local; then
+        echo -e "${RED}Failed to configure liblsl build. Attempting to install pylsl via pip instead.${NC}"
+        cd "$PROJECT_ROOT"
+        rm -rf "$BUILD_DIR"
+        return 1
+    fi
+    
+    if ! sudo -u "$SUDO_USER" cmake --build . -j$(nproc); then
+        echo -e "${RED}Failed to build liblsl. Attempting to install pylsl via pip instead.${NC}"
+        cd "$PROJECT_ROOT"
+        rm -rf "$BUILD_DIR"
+        return 1
+    fi
+    
+    # Install
+    echo "Installing LSL..."
+    if ! make install; then
+        echo -e "${RED}Failed to install liblsl. Attempting to install pylsl via pip instead.${NC}"
+        cd "$PROJECT_ROOT"
+        rm -rf "$BUILD_DIR"
+        return 1
+    fi
+    
+    ldconfig
+    
+    # Clean up
+    cd "$PROJECT_ROOT"
+    rm -rf "$BUILD_DIR"
+    
+    echo -e "${GREEN}liblsl built and installed from source.${NC}"
+    return 0
 }
 
 # Function to create Python virtual environment
@@ -68,6 +132,61 @@ create_virtual_env() {
         psutil
     
     echo -e "${GREEN}Python virtual environment created and packages installed.${NC}"
+}
+
+# Function to detect IMX296 camera and update configuration
+detect_camera_and_update_config() {
+    echo -e "${YELLOW}Detecting IMX296 camera...${NC}"
+    
+    # Find the media device that contains the IMX296 camera
+    CAMERA_DEVICE=""
+    for i in {0..9}; do
+        if [ -e "/dev/media$i" ]; then
+            if media-ctl -d "/dev/media$i" -p 2>/dev/null | grep -q -i "imx296"; then
+                CAMERA_DEVICE="/dev/media$i"
+                echo -e "${GREEN}Found IMX296 camera on ${CAMERA_DEVICE}${NC}"
+                break
+            fi
+        fi
+    done
+    
+    if [ -z "$CAMERA_DEVICE" ]; then
+        echo -e "${RED}Warning: IMX296 camera not detected on any media device.${NC}"
+        echo -e "${YELLOW}The camera might be disconnected or not properly recognized.${NC}"
+        echo -e "${YELLOW}The script will continue but camera detection might fail when running.${NC}"
+        return
+    fi
+    
+    # Update the config.yaml file with the detected device
+    CONFIG_FILE="${PROJECT_ROOT}/config/config.yaml"
+    
+    # Make sure the config directory exists
+    mkdir -p "${PROJECT_ROOT}/config"
+    
+    # Check if config file exists, if not create it
+    if [ ! -f "$CONFIG_FILE" ]; then
+        echo -e "${YELLOW}Config file not found, creating default config...${NC}"
+        # Copy the default config file if it exists
+        if [ -f "${PROJECT_ROOT}/config/config.yaml.example" ]; then
+            cp "${PROJECT_ROOT}/config/config.yaml.example" "$CONFIG_FILE"
+        fi
+    fi
+    
+    # Update the device_pattern in the config file
+    if [ -f "$CONFIG_FILE" ]; then
+        # Create a unique ntfy topic based on hostname
+        HOSTNAME=$(hostname)
+        NTFY_TOPIC="raspie-camera-${HOSTNAME}-$(date +%s | head -c 6)"
+        
+        # Use sed to update the config file
+        sed -i "s|device_pattern: \"/dev/media[0-9]*\"|device_pattern: \"$CAMERA_DEVICE\"|" "$CONFIG_FILE"
+        sed -i "s|topic: \"raspie-camera\"|topic: \"$NTFY_TOPIC\"|" "$CONFIG_FILE"
+        
+        echo -e "${GREEN}Updated config with camera device: ${CAMERA_DEVICE}${NC}"
+        echo -e "${GREEN}Updated ntfy.sh topic to: ${NTFY_TOPIC}${NC}"
+    else
+        echo -e "${RED}Error: Could not update config file. Config file not found.${NC}"
+    fi
 }
 
 # Function to create and register systemd service
@@ -133,8 +252,17 @@ echo -e "${YELLOW}Starting installation...${NC}"
 # Install system dependencies
 install_system_dependencies
 
+# Build liblsl from source for Raspberry Pi OS Bookworm
+if ! build_liblsl_from_source; then
+    echo -e "${YELLOW}Falling back to pip installation of pylsl...${NC}"
+    # We don't need to do anything special here, as create_virtual_env will handle installing pylsl
+fi
+
 # Create Python virtual environment
 create_virtual_env
+
+# Detect camera and update configuration
+detect_camera_and_update_config
 
 # Setup camera permissions
 setup_camera_permissions

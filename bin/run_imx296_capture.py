@@ -68,21 +68,57 @@ def main():
     
     # Check for required Python packages
     print("Checking for required Python packages...")
-    required_packages = ["yaml", "requests", "pylsl"]
+    required_packages = [
+        ("yaml", "pyyaml", "YAML parsing"),
+        ("requests", "requests", "HTTP requests for ntfy.sh"),
+        ("pylsl", "pylsl", "Lab Streaming Layer support")
+    ]
     
     missing_packages = []
-    for package in required_packages:
+    for import_name, pip_name, description in required_packages:
         try:
-            __import__(package)
+            # For yaml, we need to try importing PyYAML
+            if import_name == "yaml":
+                try:
+                    import yaml
+                except ImportError:
+                    missing_packages.append((pip_name, description))
+            else:
+                __import__(import_name)
         except ImportError:
-            missing_packages.append(package)
+            missing_packages.append((pip_name, description))
     
     if missing_packages:
         print("ERROR: Missing required Python packages:")
-        for package in missing_packages:
-            print(f"  - {package}")
-        print("\nPlease install the missing packages and try again.")
-        print("Example: pip install pyyaml requests pylsl")
+        for package, description in missing_packages:
+            print(f"  - {package} ({description})")
+        
+        # Check if we're in a virtual environment
+        in_venv = sys.prefix != sys.base_prefix
+        if in_venv:
+            print("\nYou are in a virtual environment. Install the missing packages with:")
+            print(f"pip install {' '.join([p[0] for p in missing_packages])}")
+        else:
+            print("\nYou are not in a virtual environment. Consider creating one:")
+            print(f"python3 -m venv .venv")
+            print("source .venv/bin/activate")
+            print(f"pip install {' '.join([p[0] for p in missing_packages])}")
+        
+        return 1
+    
+    # Check for the config file
+    if not os.path.isfile(args.config):
+        print(f"ERROR: Config file not found: {args.config}")
+        
+        # Check if example config exists
+        example_config = os.path.join(project_root, "config/config.yaml.example")
+        if os.path.isfile(example_config):
+            print(f"An example config file is available at: {example_config}")
+            print("You can copy and modify it:")
+            print(f"cp {example_config} {args.config}")
+        else:
+            print("No example config found. Please create a config file.")
+        
         return 1
     
     # If check-only flag is set, exit here
@@ -96,6 +132,13 @@ def main():
         return run_camera()
     except ImportError as e:
         print(f"ERROR: Failed to import IMX296 camera module: {e}")
+        print("\nTry running with the project root in your Python path:")
+        print(f"PYTHONPATH={project_root} python3 bin/run_imx296_capture.py")
+        return 1
+    except Exception as e:
+        print(f"ERROR: Unexpected error running camera module: {e}")
+        import traceback
+        traceback.print_exc()
         return 1
 
 def check_tool_exists(tool_name):
