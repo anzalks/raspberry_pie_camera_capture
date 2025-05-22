@@ -259,8 +259,8 @@ def test_camera_capture():
 
         cam = Picamera2()
         
-        # Create a default configuration
-        config = cam.create_preview_configuration()
+        # Create a default configuration, explicitly disabling raw stream for this test
+        config = cam.create_preview_configuration(raw=None)
         cam.configure(config)
         
         print_status(f"Configured for preview: {config}", True)
