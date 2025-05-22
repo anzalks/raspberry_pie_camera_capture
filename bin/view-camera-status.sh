@@ -29,6 +29,50 @@ for arg in "$@"; do
     esac
 done
 
+# Function to start recording
+start_recording() {
+    local ntfy_topic=$(grep -E "topic:" "$PROJECT_ROOT/config/config.yaml" | awk '{print $2}' | tr -d '"')
+    if [ -n "$ntfy_topic" ]; then
+        echo "Starting recording..."
+        curl -s -d "start" https://ntfy.sh/$ntfy_topic
+        echo "Start signal sent!"
+    else
+        echo "No ntfy topic configured. Cannot start recording."
+    fi
+}
+
+# Function to stop recording
+stop_recording() {
+    local ntfy_topic=$(grep -E "topic:" "$PROJECT_ROOT/config/config.yaml" | awk '{print $2}' | tr -d '"')
+    if [ -n "$ntfy_topic" ]; then
+        echo "Stopping recording..."
+        curl -s -d "stop" https://ntfy.sh/$ntfy_topic
+        echo "Stop signal sent!"
+    else
+        echo "No ntfy topic configured. Cannot stop recording."
+    fi
+}
+
+# Function to check for keyboard input without blocking
+check_keyboard() {
+    local key
+    # Raspberry Pi/Bookworm OS supports fractional timeouts
+    read -t 0.1 -n 1 key 2>/dev/null || return 0
+    
+    case "$key" in
+        s|S)
+            start_recording
+            ;;
+        p|P)
+            stop_recording
+            ;;
+        q|Q)
+            echo "Dashboard closed."
+            exit 0
+            ;;
+    esac
+}
+
 # Simple text-based dashboard
 show_dashboard() {
     # Trap for clean exit
@@ -36,6 +80,17 @@ show_dashboard() {
 
     # Flag to track if dashboard should keep running
     KEEP_RUNNING=true
+    
+    # Last file tracking
+    LAST_FILE=""
+    
+    # Make the terminal not wait for Enter key
+    if [ -t 0 ]; then
+        stty -echo -icanon time 0 min 0
+    fi
+    
+    # Set up to restore terminal settings on exit
+    trap 'stty sane; echo "Dashboard closed."; exit 0' SIGINT SIGTERM EXIT
     
     while $KEEP_RUNNING; do
         # Clear screen
@@ -46,20 +101,20 @@ show_dashboard() {
         echo
         
         # Get service status
-        service_status=$(systemctl is-active $SERVICE_NAME 2>/dev/null)
-        pid=$(systemctl show -p MainPID $SERVICE_NAME | cut -d= -f2)
+        service_status=$(systemctl is-active $SERVICE_NAME 2>/dev/null || echo "unknown")
+        pid=$(systemctl show -p MainPID $SERVICE_NAME 2>/dev/null | cut -d= -f2 || echo "0")
         
         echo "=== SERVICE STATUS ==="
         if [ "$service_status" = "active" ] && [ "$pid" != "0" ]; then
             echo "Status: RUNNING"
-            start_time=$(ps -o lstart= -p "$pid")
-            runtime=$(ps -o etime= -p "$pid")
+            start_time=$(ps -o lstart= -p "$pid" 2>/dev/null || echo "Unknown")
+            runtime=$(ps -o etime= -p "$pid" 2>/dev/null || echo "Unknown")
             echo "Running since: $start_time"
             echo "Uptime: $runtime"
             
             # Get CPU and memory usage
-            cpu_usage=$(ps -p $pid -o %cpu --no-headers 2>/dev/null | awk '{printf "%.1f", $1}')
-            mem_usage=$(ps -p $pid -o %mem --no-headers 2>/dev/null | awk '{printf "%.1f", $1}')
+            cpu_usage=$(ps -p $pid -o %cpu --no-headers 2>/dev/null || echo "N/A")
+            mem_usage=$(ps -p $pid -o %mem --no-headers 2>/dev/null || echo "N/A")
             echo "CPU Usage: ${cpu_usage}%"
             echo "Memory Usage: ${mem_usage}%"
         else
@@ -69,7 +124,7 @@ show_dashboard() {
             # If in auto mode and service is not running, try to start it
             if $AUTO_MODE; then
                 echo "Service not running. Attempting to start..."
-                sudo systemctl start $SERVICE_NAME
+                sudo systemctl start $SERVICE_NAME 2>/dev/null
                 sleep 2
             fi
         fi
@@ -78,23 +133,32 @@ show_dashboard() {
         echo "=== BUFFER INFORMATION ==="
         
         # Get buffer information
-        buffer_info=$(journalctl -u $SERVICE_NAME -n 100 | grep -E "Captured|buffer contains" | tail -1)
+        buffer_info=$(journalctl -u $SERVICE_NAME -n 100 2>/dev/null | grep -E "Captured|buffer contains" | tail -1)
         if [ -n "$buffer_info" ]; then
-            total_frames=$(echo "$buffer_info" | grep -oE "Captured [0-9]+" | grep -oE "[0-9]+")
-            buffer_frames=$(echo "$buffer_info" | grep -oE "buffer contains [0-9]+" | grep -oE "[0-9]+")
+            total_frames=$(echo "$buffer_info" | grep -oE "Captured [0-9]+" | grep -oE "[0-9]+" || echo "0")
+            buffer_frames=$(echo "$buffer_info" | grep -oE "buffer contains [0-9]+" | grep -oE "[0-9]+" || echo "0")
             
-            echo "Total Frames: $total_frames"
-            echo "Buffered Frames: $buffer_frames"
+            echo "Total Frames Captured: $total_frames"
+            echo "Frames Currently in Buffer: $buffer_frames"
             
-            if [ -n "$total_frames" ] && [ -n "$buffer_frames" ]; then
+            if [ -n "$total_frames" ] && [ -n "$buffer_frames" ] && [ "$total_frames" != "0" ]; then
                 buffer_percent=$((buffer_frames * 100 / total_frames))
                 echo "Buffer Fullness: ${buffer_percent}%"
+                echo -n "Buffer: ["
+                for i in $(seq 1 20); do
+                    if [ $i -le $((buffer_percent / 5)) ]; then
+                        echo -n "#"
+                    else
+                        echo -n " "
+                    fi
+                done
+                echo "] ${buffer_percent}%"
             fi
             
             # Get FPS information
-            fps_info=$(journalctl -u $SERVICE_NAME -n 30 | grep -E "Current FPS:" | tail -1)
+            fps_info=$(journalctl -u $SERVICE_NAME -n 30 2>/dev/null | grep -E "Current FPS:" | tail -1)
             if [ -n "$fps_info" ]; then
-                current_fps=$(echo "$fps_info" | grep -oE "Current FPS: [0-9]+" | grep -oE "[0-9]+")
+                current_fps=$(echo "$fps_info" | grep -oE "Current FPS: [0-9]+" | grep -oE "[0-9]+" || echo "N/A")
                 echo "Current FPS: $current_fps"
             fi
         else
@@ -105,24 +169,24 @@ show_dashboard() {
         echo "=== RECORDING STATUS ==="
         
         # Get recording information
-        is_recording=$(journalctl -u $SERVICE_NAME -n 50 | grep -E "Recording active:|Recording started|Recording stopped" | tail -1)
+        is_recording=$(journalctl -u $SERVICE_NAME -n 50 2>/dev/null | grep -E "Recording active:|Recording started|Recording stopped" | tail -1)
         if [[ "$is_recording" == *"Recording active"* ]] || [[ "$is_recording" == *"Recording started"* ]]; then
-            echo "Status: ACTIVE"
+            echo "Status: ACTIVE [Press P to stop recording]"
             
             # Extract session frame count 
-            session_frame_info=$(echo "$is_recording" | grep -oE "session frame [0-9]+" | grep -oE "[0-9]+")
+            session_frame_info=$(echo "$is_recording" | grep -oE "session frame [0-9]+" | grep -oE "[0-9]+" || echo "N/A")
             if [ -n "$session_frame_info" ]; then
                 echo "Current session frames: $session_frame_info"
             fi
             
             # Extract queue size
-            queue_info=$(echo "$is_recording" | grep -oE "queue size [0-9]+" | grep -oE "[0-9]+")
+            queue_info=$(echo "$is_recording" | grep -oE "queue size [0-9]+" | grep -oE "[0-9]+" || echo "N/A")
             if [ -n "$queue_info" ]; then
                 echo "Frames queued for writing: $queue_info"
             fi
             
             # Current recording file
-            current_file_info=$(journalctl -u $SERVICE_NAME -n 50 | grep -E "Current output file:|Recording to file" | tail -1)
+            current_file_info=$(journalctl -u $SERVICE_NAME -n 50 2>/dev/null | grep -E "Current output file:|Recording to file" | tail -1)
             if [ -n "$current_file_info" ]; then
                 if [[ "$current_file_info" == *"Current output file:"* ]]; then
                     current_file=$(echo "$current_file_info" | grep -oE "recording_[0-9]+_[0-9]+\.mkv")
@@ -130,26 +194,27 @@ show_dashboard() {
                     current_file=$(echo "$current_file_info" | grep -oE "recording_[0-9]+_[0-9]+\.mkv")
                 fi
                 if [ -n "$current_file" ]; then
-                    echo "Current file: $current_file"
+                    echo "Current file: $RECORDINGS_DIR/$current_file"
+                    LAST_FILE="$RECORDINGS_DIR/$current_file"
                 fi
             fi
             
             # Get frame count for this recording
-            frames_written=$(journalctl -u $SERVICE_NAME -n 50 | grep "frames written" | tail -1 | grep -oE "[0-9]+ frames written" | grep -oE "[0-9]+")
+            frames_written=$(journalctl -u $SERVICE_NAME -n 50 2>/dev/null | grep "frames written" | tail -1 | grep -oE "[0-9]+ frames written" | grep -oE "[0-9]+" || echo "N/A")
             if [ -n "$frames_written" ]; then
-                echo "Frames written: $frames_written"
+                echo "Frames written to file: $frames_written"
             fi
             
             # Disk space info
-            disk_info=$(journalctl -u $SERVICE_NAME -n 50 | grep "free space" | tail -1)
+            disk_info=$(journalctl -u $SERVICE_NAME -n 50 2>/dev/null | grep "free space" | tail -1)
             if [ -n "$disk_info" ]; then
-                free_space=$(echo "$disk_info" | grep -oE "free space: [0-9]+\.[0-9]+ GB" | grep -oE "[0-9]+\.[0-9]+")
+                free_space=$(echo "$disk_info" | grep -oE "free space: [0-9]+\.[0-9]+ GB" | grep -oE "[0-9]+\.[0-9]+" || echo "N/A")
                 if [ -n "$free_space" ]; then
                     echo "Free disk space: ${free_space} GB"
                 fi
             fi
         else
-            echo "Status: INACTIVE"
+            echo "Status: INACTIVE [Press S to start recording]"
             
             # Show next recording file
             timestamp=$(date +%s)
@@ -160,7 +225,16 @@ show_dashboard() {
                     session_id=$timestamp
                 fi
                 next_file="recording_${session_id}_${timestamp}.mkv"
-                echo "Next file: $next_file"
+                echo "Next file will be: $RECORDINGS_DIR/$next_file"
+            fi
+            
+            # Show last file saved
+            if [ -n "$LAST_FILE" ]; then
+                echo "Last file saved: $LAST_FILE"
+                if [ -f "$LAST_FILE" ]; then
+                    file_size=$(du -h "$LAST_FILE" 2>/dev/null | cut -f1 || echo "Unknown")
+                    echo "Last file size: $file_size"
+                fi
             fi
         fi
         
@@ -169,13 +243,13 @@ show_dashboard() {
         
         # Get recent recordings
         if [ -d "$RECORDINGS_DIR" ]; then
-            recent_files=$(find "$RECORDINGS_DIR" -name "*.mkv" -type f -printf "%T@ %p\n" | sort -rn | head -3 | cut -d' ' -f2-)
+            recent_files=$(find "$RECORDINGS_DIR" -name "*.mkv" -type f -printf "%T@ %p\n" 2>/dev/null | sort -rn | head -3 | cut -d' ' -f2- || echo "")
             if [ -n "$recent_files" ]; then
                 printf "%-30s %-10s %s\n" "FILENAME" "SIZE" "TIMESTAMP"
                 echo "---------------------------------------------------------------"
                 echo "$recent_files" | while read file; do
-                    file_size=$(du -h "$file" | cut -f1)
-                    file_time=$(stat -c "%y" "$file" | cut -d'.' -f1)
+                    file_size=$(du -h "$file" 2>/dev/null | cut -f1 || echo "?")
+                    file_time=$(stat -c "%y" "$file" 2>/dev/null | cut -d'.' -f1 || echo "?")
                     filename=$(basename "$file")
                     # Truncate filename if too long
                     if [ ${#filename} -gt 25 ]; then
@@ -194,7 +268,7 @@ show_dashboard() {
         echo "=== LSL STREAM DATA ==="
         
         # Get LSL information
-        lsl_info=$(journalctl -u $SERVICE_NAME -n 100 | grep -E "LSL output:" | tail -3)
+        lsl_info=$(journalctl -u $SERVICE_NAME -n 100 2>/dev/null | grep -E "LSL output:" | tail -3)
         if [ -n "$lsl_info" ]; then
             printf "%-10s %-10s %-10s\n" "TIME" "RECORDING" "FRAME"
             echo "------------------------------"
@@ -205,10 +279,7 @@ show_dashboard() {
                 frame_num=$(echo "$data" | grep -oE "[0-9]+\.[0-9]+" | sed -n '3p')
                 
                 if [ -n "$timestamp" ] && [ -n "$is_recording" ] && [ -n "$frame_num" ]; then
-                    readable_time=$(date -d "@$timestamp" '+%H:%M:%S' 2>/dev/null)
-                    if [ -z "$readable_time" ]; then
-                        readable_time="$(date '+%H:%M:%S')"
-                    fi
+                    readable_time=$(date -d "@$timestamp" '+%H:%M:%S' 2>/dev/null || date '+%H:%M:%S')
                     
                     rec_status="NO"
                     if [ "$is_recording" = "1" ]; then
@@ -220,7 +291,7 @@ show_dashboard() {
             done
         else
             # Check if LSL is active at all
-            lsl_setup=$(journalctl -u $SERVICE_NAME | grep -E "Setting up LSL stream" | tail -1)
+            lsl_setup=$(journalctl -u $SERVICE_NAME 2>/dev/null | grep -E "Setting up LSL stream" | tail -1)
             if [ -n "$lsl_setup" ]; then
                 echo "Stream Name: IMX296_Metadata"
                 echo "Channels: CaptureTimeUnix, ntfy_notification_active, session_frame_no"
@@ -237,17 +308,24 @@ show_dashboard() {
         ntfy_topic=$(grep -E "topic:" "$PROJECT_ROOT/config/config.yaml" | awk '{print $2}' | tr -d '"')
         if [ -n "$ntfy_topic" ]; then
             echo "Topic: $ntfy_topic"
-            echo "Start Recording: curl -d \"start\" https://ntfy.sh/$ntfy_topic"
-            echo "Stop Recording: curl -d \"stop\" https://ntfy.sh/$ntfy_topic"
+            echo "Start Recording: Press S or curl -d \"start\" https://ntfy.sh/$ntfy_topic"
+            echo "Stop Recording: Press P or curl -d \"stop\" https://ntfy.sh/$ntfy_topic"
         else
             echo "No ntfy topic configured"
         fi
         
         echo
+        echo "KEYBOARD CONTROLS: S = Start Recording, P = Stop Recording, Q = Quit"
         echo "Press Ctrl+C to exit. Dashboard refreshes every 2 seconds."
         
-        # Brief pause before refreshing
-        sleep 2
+        # Check for keyboard input
+        check_keyboard
+        
+        # Brief pause before refreshing (divided into smaller intervals to check keyboard more frequently)
+        for i in {1..10}; do
+            sleep 0.2
+            check_keyboard
+        done
     done
 }
 
