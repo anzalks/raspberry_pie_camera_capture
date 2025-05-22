@@ -30,8 +30,7 @@ except ImportError as e:
     PICAMERA2_AVAILABLE = False
 
 # Import pylsl for LabStreamingLayer communication
-from pylsl import StreamInfo, StreamOutlet, local_clock
-import pylsl # Added for pylsl.cf_double
+from pylsl import StreamInfo, StreamOutlet, local_clock, cf_double, cf_string
 
 # Monkey patch for pylsl StreamInfo.__del__ issue
 # This prevents a common error message on exit with some pylsl versions.
@@ -493,7 +492,7 @@ class LSLCameraStreamer:
         # Video stream info
         # Using BGR8 for pixel format as OpenCV uses BGR by default
         info = StreamInfo(name=self.stream_name, type='Video', channel_count=self.num_channels, 
-                          nominal_srate=self.target_fps, channel_format=pylsl.cf_double, # Using pylsl.cf_double
+                          nominal_srate=self.target_fps, channel_format=cf_double, # Use direct cf_double
                           source_id=self.source_id)
         
         # Add metadata to the stream info
@@ -514,7 +513,7 @@ class LSLCameraStreamer:
 
         # Recording status stream info
         status_info = StreamInfo(name=f"{self.stream_name}_Status", type='Markers', channel_count=1,
-                                 nominal_srate=0, channel_format=pylsl.cf_string, # Use pylsl.cf_string for consistency
+                                 nominal_srate=0, channel_format=cf_string, # Use direct cf_string
                                  source_id=f"{self.source_id}_status")
         status_desc = status_info.desc()
         status_desc.append_child_value("description", "Indicates recording status (RECORDING_START, RECORDING_STOP) and frame drops.")
