@@ -284,7 +284,7 @@ camera:
   fps: 100
   codec: mjpg
   container: mkv
-  preview: true
+  preview: true  # Enable preview by default
   enable_crop: auto  # Can be true, false, or auto (detect Global Shutter Camera)
 
 # Storage settings
@@ -509,6 +509,37 @@ mkdir -p "$RECORDINGS_DIR"
 chown $SUDO_USER:$SUDO_USER "$RECORDINGS_DIR"
 echo "Recordings will be saved to $RECORDINGS_DIR/YYYY-MM-DD/{videos|audio}/"
 
+# --- Setup Camera Permissions ---
+echo "Setting up camera permissions and dependencies..."
+
+# Install necessary camera-related packages
+echo "Installing camera utilities and tools..."
+apt install -y v4l-utils libcamera-apps libcamera-tools media-ctl
+
+# Set proper permissions for camera access
+echo "Setting camera group permissions..."
+usermod -a -G video $SUDO_USER
+usermod -a -G input $SUDO_USER
+echo "Added $SUDO_USER to video and input groups"
+
+# Create and set up camera lock file with proper permissions
+echo "Setting up camera lock file with proper permissions..."
+rm -f /tmp/raspie_camera.lock
+touch /tmp/raspie_camera.lock
+chmod 666 /tmp/raspie_camera.lock
+chown $SUDO_USER:$SUDO_USER /tmp/raspie_camera.lock
+echo "Camera lock file created with proper permissions"
+
+# Fix permissions for camera device nodes
+echo "Setting permissions for camera devices..."
+if [ -e "/dev/video0" ]; then
+  chmod 666 /dev/video0
+fi
+
+# Ensure preview is enabled in config
+sed -i 's/preview: false/preview: true/' "$CONFIG_FILE"
+
+# Start the service
 systemctl start raspie-capture.service
 
 # Apply optional performance optimizations

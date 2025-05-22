@@ -21,6 +21,7 @@ setup(
         "opencv-python",
         "requests",
         "psutil",
+        "pyyaml",
         # Audio requirements, will be installed if available
         "sounddevice;platform_system!='Windows' or platform_python_implementation!='PyPy'",
         "scipy",
@@ -39,8 +40,9 @@ setup(
     entry_points={
         "console_scripts": [
             "camera-capture=raspberry_pi_lsl_stream.camera_capture:main",
+            "camera-stream=raspberry_pi_lsl_stream.camera_stream_fixed:main",
             "audio-stream=raspberry_pi_lsl_stream.audio_stream:main",
-            "check-camera-env=check_camera_env:main",
+            "check-camera-env=bin.check_camera_env:main",
         ],
     },
     classifiers=[
@@ -51,6 +53,8 @@ setup(
         "Programming Language :: Python :: 3.7",
         "Programming Language :: Python :: 3.8",
         "Programming Language :: Python :: 3.9",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
         "Topic :: Scientific/Engineering",
     ],
 ) 

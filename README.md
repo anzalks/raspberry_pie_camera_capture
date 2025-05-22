@@ -9,7 +9,9 @@ A camera capture system for Raspberry Pi that supports both standard and Global 
 - Real-time video capture and streaming
 - LSL marker stream integration
 - Video encoding with timestamp overlay
-- Status monitoring via terminal or GUI
+- Status monitoring via interactive terminal UI
+- Automatic date-based recording folder structure
+- Trigger recording via ntfy notifications
 
 ## Prerequisites
 
@@ -56,7 +58,7 @@ For Global Shutter Camera (IMX296):
 Use the provided run script:
 
 ```bash
-./run-camera.sh
+./scripts/run-camera.sh
 ```
 
 This script:
@@ -64,7 +66,27 @@ This script:
 - Configures camera permissions if needed
 - Automatically detects Global Shutter Camera if present
 - Offers optimal crop configurations for high frame rates
-- Starts the camera capture with preview enabled
+- Creates date-based folders for recordings (`recordings/YYYY-MM-DD/`)
+- Starts the camera capture with interactive terminal UI
+
+### Interactive Terminal UI
+
+The system now includes an interactive terminal UI that displays:
+- Camera model and resolution
+- Current frame rate
+- Frames captured and written
+- Buffer status
+- Recording status
+- Available commands
+
+You can use the following commands to control recording:
+```bash
+# Start recording
+curl -d "Start Recording" ntfy.sh/raspie-camera-test
+
+# Stop recording
+curl -d "Stop Recording" ntfy.sh/raspie-camera-test
+```
 
 ### Global Shutter Camera High Frame Rate Configurations
 
@@ -82,23 +104,56 @@ The cropping technique works by:
 
 ### Running as a Service
 
-To run the camera capture as a service:
+To run the camera capture as a service, use our helper script:
 
-1. Copy the service file to systemd:
-   ```bash
-   sudo cp rpi-camera.service /etc/systemd/system/
-   ```
+```bash
+# Install the service
+./scripts/camera-service.sh install
 
-2. Enable and start the service:
-   ```bash
-   sudo systemctl enable rpi-camera.service
-   sudo systemctl start rpi-camera.service
-   ```
+# Enable to start at boot
+./scripts/camera-service.sh enable
 
-3. Check service status:
-   ```bash
-   sudo systemctl status rpi-camera.service
-   ```
+# Start the service
+./scripts/camera-service.sh start
+```
+
+The service management script provides several commands:
+
+```bash
+./scripts/camera-service.sh {start|stop|restart|status|enable|disable|recordings|logs|install|check}
+```
+
+- **start**: Start the camera service
+- **stop**: Stop the camera service
+- **restart**: Restart the camera service
+- **status**: Check service status and recording path
+- **enable**: Enable service to start at boot
+- **disable**: Disable service from starting at boot
+- **recordings**: Show recent recordings with paths
+- **logs**: Show service logs
+- **install**: Install the service file
+- **check**: Run camera environment check
+
+## Recordings and Storage
+
+The system automatically creates a date-based folder structure for recordings:
+
+```
+recordings/
+└── YYYY-MM-DD/
+    └── recording_YYYYMMDD_HHMMSS.mkv
+```
+
+Each recording session uses the MKV container format with MJPG codec for compatibility and high frame rate support. 
+
+The system utilizes a 20-second rolling buffer by default, which allows you to capture events that have already happened when you trigger a recording.
+
+To view your recordings, use:
+
+```bash
+# Show today's recordings with details
+./scripts/camera-service.sh recordings
+```
 
 ## Troubleshooting
 
@@ -108,7 +163,9 @@ If your camera is not detected:
 
 1. Run the environment check tool:
    ```bash
-   python3 check-camera-env.py
+   ./bin/check-camera-env.py
+   # or
+   ./scripts/camera-service.sh check
    ```
 
 2. Ensure proper permissions:
@@ -154,6 +211,17 @@ If you have issues with the Global Shutter Camera:
    media-ctl -d /dev/media0 --set-v4l2 "'imx296 10-001a':0 [fmt:SBGGR10_1X10/688x136 crop:(384,476)/688x136]" -v
    ```
 
+### LSL Stream Issues
+
+If you encounter LSL stream errors:
+
+1. The system now includes automatic fixes for common LSL issues
+2. If you still see "StreamInfo deletion triggered error", this is now handled automatically
+3. You can check LSL stream status with:
+   ```bash
+   python3 -c "from pylsl import resolve_streams; print(resolve_streams())"
+   ```
+
 ### Common Errors
 
 - **Failed to open camera**: Ensure camera is properly connected and enabled in raspi-config
@@ -161,6 +229,8 @@ If you have issues with the Global Shutter Camera:
 - **Preview not showing**: Ensure X server is running and DISPLAY environment variable is set
 - **Lock file issues**: Run `sudo rm -f /tmp/raspie_camera.lock` and then `sudo touch /tmp/raspie_camera.lock && sudo chmod 666 /tmp/raspie_camera.lock`
 - **media-ctl command failing**: Check the device ID (10 for RPi 4, 10/11 for RPi 5 cameras)
+- **ntfy subscription timeout**: This is normal and will auto-reconnect - the system is designed to handle these
+- **No recordings directory**: The system automatically creates `recordings/YYYY-MM-DD/` folders. If missing, run `mkdir -p recordings/$(date +%Y-%m-%d)`
 
 ## Acknowledgments
 

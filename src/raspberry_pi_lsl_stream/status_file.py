@@ -59,26 +59,41 @@ class StatusFileWriter:
         """Write current status to the file."""
         if not self.camera:
             return
-            
-        with open(self.status_file, 'w') as f:
-            # Camera status
-            f.write(f"FPS: {self.camera.current_fps:.1f}/{self.camera.target_fps}\n")
-            f.write(f"Frames captured: {self.camera.frames_captured}\n")
-            
-            if hasattr(self.camera, 'recording') and self.camera.recording:
-                f.write("Status: RECORDING\n")
-                f.write(f"Frames written: {self.camera.frames_written}\n")
-            else:
-                f.write("Status: BUFFERING\n")
-            
-            # Buffer status
-            if self.buffer_manager and hasattr(self.buffer_manager, 'frame_buffer'):
-                buffer = self.buffer_manager.frame_buffer
-                if buffer:
-                    buffer_size = len(buffer)
-                    max_size = buffer.maxlen if hasattr(buffer, 'maxlen') else 0
-                    if max_size > 0:
-                        percent_full = int((buffer_size / max_size) * 100)
-                        f.write(f"Buffer: {buffer_size}/{max_size} frames ({percent_full}% full)\n")
-                    else:
-                        f.write(f"Buffer: {buffer_size} frames\n") 
+        
+        try:    
+            with open(self.status_file, 'w') as f:
+                # Get camera info
+                info = self.camera.get_info() if hasattr(self.camera, 'get_info') else {}
+                
+                # Write camera model and resolution
+                f.write(f"Camera: {info.get('camera_model', 'Unknown')}\n")
+                f.write(f"Resolution: {info.get('width', 0)}x{info.get('height', 0)} @ {info.get('fps', 0)} fps\n")
+                
+                # Write frame counts
+                frame_count = self.camera.get_frame_count() if hasattr(self.camera, 'get_frame_count') else 0
+                frames_written = self.camera.get_frames_written() if hasattr(self.camera, 'get_frames_written') else 0
+                
+                f.write(f"Frames captured: {frame_count}\n")
+                f.write(f"Frames written: {frames_written}\n")
+                
+                # Write recording status
+                recording = info.get('recording', False)
+                if recording:
+                    f.write("Status: RECORDING\n")
+                else:
+                    f.write("Status: WAITING FOR TRIGGER\n")
+                
+                # Buffer status
+                if self.buffer_manager:
+                    buffer_size = self.buffer_manager.get_buffer_size() if hasattr(self.buffer_manager, 'get_buffer_size') else 0
+                    buffer_duration = self.buffer_manager.get_buffer_duration() if hasattr(self.buffer_manager, 'get_buffer_duration') else 0
+                    f.write(f"Buffer: {buffer_size} frames ({buffer_duration:.1f}s)\n")
+                    
+                # Write commands
+                f.write("\nCommands:\n")
+                f.write("  - Start recording: curl -d 'Start Recording' ntfy.sh/raspie-camera-test\n")
+                f.write("  - Stop recording: curl -d 'Stop Recording' ntfy.sh/raspie-camera-test\n")
+                f.write("  - Press Ctrl+C to exit\n")
+                
+        except Exception as e:
+            print(f"Error writing status: {e}") 

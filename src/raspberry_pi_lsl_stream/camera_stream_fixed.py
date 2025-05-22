@@ -1263,3 +1263,142 @@ class LSLCameraStreamer:
                 print(f"Warning: Error validating CPU cores: {e}")
                 
         print("Configuration validation complete.") 
+
+def main():
+    """Run the camera streamer directly from the command line."""
+    import argparse
+    import time
+    import os
+    import sys
+    import logging
+    import signal
+    
+    # Configure logging
+    logging.basicConfig(level=logging.INFO, 
+                        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    logger = logging.getLogger("CameraStream")
+    
+    # Parse arguments
+    parser = argparse.ArgumentParser(description="Raspberry Pi Camera Streamer")
+    parser.add_argument("--width", type=int, default=400, help="Frame width")
+    parser.add_argument("--height", type=int, default=400, help="Frame height")
+    parser.add_argument("--fps", type=int, default=100, help="Target FPS")
+    parser.add_argument("--output", type=str, default=None, help="Output directory (default: recordings/YYYY-MM-DD)")
+    parser.add_argument("--codec", type=str, default="mjpg", help="Video codec (mjpg, h264)")
+    parser.add_argument("--preview", action="store_true", help="Show preview window")
+    parser.add_argument("--no-preview", action="store_true", help="Don't show preview window")
+    parser.add_argument("--no-lsl", action="store_true", help="Disable LSL streaming")
+    parser.add_argument("--no-buffer", action="store_true", help="Disable rolling buffer")
+    parser.add_argument("--buffer-size", type=float, default=20.0, help="Buffer size in seconds")
+    parser.add_argument("--ntfy-topic", type=str, default="raspie-camera-test", help="ntfy.sh topic for triggers")
+    
+    args = parser.parse_args()
+    
+    # Create date-based output directory if not specified
+    if args.output is None:
+        today = time.strftime("%Y-%m-%d")
+        output_dir = os.path.join("recordings", today)
+        os.makedirs(output_dir, exist_ok=True)
+        logger.info(f"Created output directory: {output_dir}")
+    else:
+        output_dir = args.output
+        os.makedirs(output_dir, exist_ok=True)
+        
+    print(f"📁 Recordings will be saved to: {output_dir}")
+    print(f"📹 Files will be named: recording_YYYYMMDD_HHMMSS.mkv")
+    
+    # Determine preview setting
+    show_preview = True
+    if args.no_preview:
+        show_preview = False
+    elif args.preview:
+        show_preview = True
+    
+    # Create and start the camera streamer
+    try:
+        camera = LSLCameraStreamer(
+            width=args.width,
+            height=args.height,
+            target_fps=args.fps,
+            save_video=True,
+            output_path=output_dir,
+            codec=args.codec,
+            show_preview=show_preview,
+            push_to_lsl=not args.no_lsl,
+            stream_name="VideoStream",
+            use_buffer=not args.no_buffer,
+            buffer_size_seconds=args.buffer_size,
+            ntfy_topic=args.ntfy_topic,
+            enable_crop=True,  # Auto-detect Global Shutter Camera
+        )
+        
+        # Register signal handlers
+        def signal_handler(sig, frame):
+            print("Received signal, shutting down...")
+            if camera:
+                camera.stop()
+            sys.exit(0)
+            
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+        
+        # Start the camera
+        camera.start()
+        
+        # Create terminal UI function
+        def print_status_update():
+            # Clear terminal and print header
+            os.system('clear' if os.name != 'nt' else 'cls')
+            print("=" * 60)
+            print("RASPBERRY PI CAMERA CAPTURE".center(60))
+            print("=" * 60)
+            
+            info = camera.get_info()
+            print(f"Camera: {info.get('camera_model', 'Unknown')}")
+            print(f"Resolution: {info.get('width', 0)}x{info.get('height', 0)} @ {info.get('fps', 0)} fps")
+            print(f"Frames captured: {camera.get_frame_count()}")
+            print(f"Frames written: {camera.get_frames_written()}")
+            
+            if camera.buffer_trigger_manager:
+                buffer_size = camera.buffer_trigger_manager.get_buffer_size()
+                buffer_duration = camera.buffer_trigger_manager.get_buffer_duration()
+                print(f"Buffer: {buffer_size} frames ({buffer_duration:.1f}s)")
+                
+            recording = info.get('recording', False)
+            if recording:
+                print("\033[1;32mRECORDING ACTIVE\033[0m")
+            else:
+                print("\033[1;33mWaiting for trigger\033[0m")
+            
+            print("-" * 60)
+            print("Commands:")
+            print(f"  - Start recording: curl -d 'Start Recording' ntfy.sh/{args.ntfy_topic}")
+            print(f"  - Stop recording: curl -d 'Stop Recording' ntfy.sh/{args.ntfy_topic}")
+            print("  - Press Ctrl+C to exit")
+            print("-" * 60)
+        
+        # Main loop
+        status_update_interval = 0.5  # Update status every 0.5 seconds
+        last_update = time.time()
+        
+        while True:
+            # Update status display
+            if time.time() - last_update >= status_update_interval:
+                print_status_update()
+                last_update = time.time()
+                
+            time.sleep(0.1)
+            
+    except KeyboardInterrupt:
+        print("Interrupted by user")
+    except Exception as e:
+        logger.error(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        if 'camera' in locals() and camera:
+            camera.stop()
+            logger.info("Camera stopped")
+
+if __name__ == "__main__":
+    main() 
