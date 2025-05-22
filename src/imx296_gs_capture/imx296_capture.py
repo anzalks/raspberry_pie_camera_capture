@@ -492,9 +492,6 @@ def camera_thread(config):
     max_frames = config['buffer']['max_frames']
     frame_buffer = collections.deque(maxlen=max_frames)
     
-    # Flag to track if we've switched to simulation mode
-    using_simulation = False
-    
     # First test if basic libcamera-vid works
     logger.info("Testing basic libcamera-vid functionality...")
     test_cmd = [
@@ -509,47 +506,34 @@ def camera_thread(config):
         # Check if output contains IMX296
         if "imx296" not in output.lower():
             logger.error("IMX296 camera not found in libcamera-vid output")
-            logger.warning("Switching to simulation mode")
-            using_simulation = True
-            start_simulation_thread(frame_buffer, config)
+            logger.error("Camera capture cannot proceed without actual camera. Check connections.")
             return
     except subprocess.CalledProcessError as e:
         logger.error(f"Error testing libcamera-vid: {e}")
         logger.error(f"Output: {e.output if hasattr(e, 'output') else 'No output'}")
-        logger.warning("Switching to simulation mode")
-        using_simulation = True
-        start_simulation_thread(frame_buffer, config)
+        logger.error("Camera capture cannot proceed without actual camera.")
         return
     
     # Test with simple capture
-    if not using_simulation:
-        logger.info("Testing simple capture with libcamera-vid...")
-        test_cmd = [
-            libcamera_vid_path,
-            "--width", str(width),
-            "--height", str(height),
-            "--framerate", str(fps),
-            "--timeout", "1000",  # 1 second timeout
-            "--output", "/dev/null"
-        ]
-        try:
-            logger.info(f"Running test capture: {' '.join(test_cmd)}")
-            output = subprocess.check_output(test_cmd, universal_newlines=True, stderr=subprocess.STDOUT)
-            logger.info(f"libcamera-vid test capture output:\n{output}")
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Error testing simple capture: {e}")
-            logger.error(f"Output: {e.output if hasattr(e, 'output') else 'No output'}")
-            logger.warning("Switching to simulation mode")
-            using_simulation = True
-            start_simulation_thread(frame_buffer, config)
-            return
-    
-    # If we've switched to simulation mode, exit this thread
-    if using_simulation:
-        logger.info("Camera thread exiting as we're using simulation")
+    logger.info("Testing simple capture with libcamera-vid...")
+    test_cmd = [
+        libcamera_vid_path,
+        "--width", str(width),
+        "--height", str(height),
+        "--framerate", str(fps),
+        "--timeout", "1000",  # 1 second timeout
+        "--output", "/dev/null"
+    ]
+    try:
+        logger.info(f"Running test capture: {' '.join(test_cmd)}")
+        output = subprocess.check_output(test_cmd, universal_newlines=True, stderr=subprocess.STDOUT)
+        logger.info(f"libcamera-vid test capture output:\n{output}")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Error testing simple capture: {e}")
+        logger.error(f"Output: {e.output if hasattr(e, 'output') else 'No output'}")
+        logger.error("Camera capture cannot proceed without actual camera.")
         return
     
-    # Continue with real camera implementation if not using simulation
     # Build libcamera-vid command
     cmd = [
         libcamera_vid_path,
@@ -733,128 +717,12 @@ def camera_thread(config):
         
         logger.info("Camera thread exited")
 
-def start_simulation_thread(frame_buffer, config):
-    """Start a thread to generate simulated frames."""
-    logger = logging.getLogger('imx296_capture')
-    logger.info("Starting simulation thread for frame generation")
-    
-    sim_thread = threading.Thread(
-        target=simulate_frames,
-        args=(frame_buffer, config),
-        daemon=True
-    )
-    sim_thread.start()
-    
-    # Send a test LSL sample
-    if lsl_outlet:
-        sample = [time.time(), 0.0, 0.0, 's']  # timestamp, recording=false, frame=0, trigger=simulated
-        lsl_outlet.push_sample(sample)
-        logger.info(f"Sent LSL simulation test sample: {sample}")
-    
-    return sim_thread
-
-def simulate_frames(frame_buffer, config):
-    """Generate simulated frames for testing when real camera fails."""
-    logger = logging.getLogger('imx296_capture')
-    logger.info("Starting simulated frame generator")
-    
-    frame_count = 0
-    
-    # Create real valid H.264 data
-    # These are actual valid H.264 NAL units for a small frame
-    sps_bytes = bytearray([
-        0x00, 0x00, 0x00, 0x01,  # NAL start code
-        0x67,                    # NAL type 7 (SPS)
-        0x64, 0x00, 0x1F,        # SPS header
-        0xAC, 0xD9, 0x40, 0x50,
-        0x05, 0xBB, 0x01, 0x13,
-        0x00, 0x00, 0x03, 0x00,
-        0x02, 0x00, 0x00, 0x03, 
-        0x00, 0x64, 0x1E, 0x2C, 
-        0x5C, 0x90
-    ])
-    
-    pps_bytes = bytearray([
-        0x00, 0x00, 0x00, 0x01,  # NAL start code
-        0x68,                    # NAL type 8 (PPS)
-        0xEB, 0xE3, 0xCB, 0x22,
-        0xC0
-    ])
-    
-    frame_bytes = bytearray([
-        0x00, 0x00, 0x00, 0x01,  # NAL start code
-        0x65,                    # NAL type 5 (IDR slice)
-        0x88, 0x84, 0x21, 0x43,
-        0x5C, 0xA4, 0x23, 0xA1
-    ])
-    
-    # Add more data to make the frame bigger
-    for i in range(1000):
-        frame_bytes.extend([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22])
-    
-    # Add another NAL unit to make it a more complete frame
-    frame_bytes.extend([
-        0x00, 0x00, 0x00, 0x01,  # NAL start code
-        0x06,                    # NAL type 6 (SEI)
-        0xFF, 0x01, 0x02, 0x03
-    ])
-    
-    # First, send the SPS and PPS (these are required at the start of a stream)
-    logger.info("Sending H.264 SPS/PPS headers")
-    frame_buffer.append((time.time(), bytes(sps_bytes)))
-    process_frame(bytes(sps_bytes), 0, time.time(), frame_buffer, [])
-    
-    frame_buffer.append((time.time(), bytes(pps_bytes)))
-    process_frame(bytes(pps_bytes), 0, time.time(), frame_buffer, [])
-    
-    # Add also to recording queue if already recording
-    if recording_event.is_set():
-        frame_queue.put((time.time(), bytes(sps_bytes)))
-        frame_queue.put((time.time(), bytes(pps_bytes)))
-    
-    while not stop_event.is_set():
-        # Create timestamp for the frame
-        frame_time = time.time()
-        
-        # Add to buffer
-        frame_buffer.append((frame_time, bytes(frame_bytes)))
-        
-        # Process frame
-        frame_count += 1
-        process_frame(bytes(frame_bytes), frame_count, time.time(), frame_buffer, [])
-        
-        # Log periodically
-        if frame_count % 100 == 0:
-            buffer_size = len(frame_buffer)
-            logger.info(f"Generated {frame_count} simulated frames, buffer contains {buffer_size} frames")
-            
-            # Also add a frame to the recording queue if recording is active
-            if recording_event.is_set():
-                try:
-                    # For every 30th frame (about 1 per second) send SPS/PPS for robustness
-                    if frame_count % 30 == 0:
-                        frame_queue.put((frame_time, bytes(sps_bytes)))
-                        frame_queue.put((frame_time, bytes(pps_bytes)))
-                    
-                    # Always send the frame data
-                    frame_queue.put((frame_time, bytes(frame_bytes)), block=False)
-                except queue.Full:
-                    pass
-        
-        # Sleep to control frame rate
-        time.sleep(1.0 / config['camera']['fps'])
-    
-    logger.info("Simulated frame generator stopped")
-
 def process_frame(frame_data, frame_num, start_time, frame_buffer, pts_data):
     """Process a frame from libcamera-vid."""
     global session_frame_counter, frame_queue, last_trigger_source
     
     # Generate timestamp for the frame
     frame_timestamp = find_timestamp_for_frame(frame_num, pts_data, start_time)
-    
-    # Store frame in buffer as (timestamp, frame_data) tuple
-    frame_buffer.append((frame_timestamp, frame_data))
     
     # If recording is active, add frame to the output queue
     if recording_event.is_set():
@@ -873,6 +741,7 @@ def process_frame(frame_data, frame_num, start_time, frame_buffer, pts_data):
                 # Updated to include trigger_source string
                 data = [frame_timestamp, int(recording_event.is_set()), int(session_frame_counter), trigger_str]
                 logger.info(f"LSL output: {data}")
+                logger.info(f"Trigger source is: {last_trigger_source} ({trigger_str})")
         except queue.Full:
             # If queue is full, we're probably too slow to write frames, log warning
             logger = logging.getLogger('imx296_capture')
@@ -923,8 +792,6 @@ def get_trigger_source_string(numeric_code):
         return 'n'  # ntfy
     elif numeric_code == 2:
         return 'k'  # keyboard
-    elif numeric_code == 3:
-        return 's'  # simulated
     else:
         return 'x'  # unknown/none
 
@@ -1102,44 +969,42 @@ def video_writer_thread(config):
     output_dir = config['recording']['output_dir']
     format_ext = config['recording']['format']
     
-    # Ensure output directory exists
+    # Ensure output directory exists with proper permissions
     os.makedirs(output_dir, exist_ok=True)
-    
-    # Log the permissions of the directory
-    logger.info(f"Checking output directory permissions: {output_dir}")
-    try:
-        output_stat = os.stat(output_dir)
-        logger.info(f"Directory permissions: {oct(output_stat.st_mode & 0o777)}")
-        logger.info(f"Directory owner: {output_stat.st_uid}")
-    except Exception as e:
-        logger.error(f"Error checking directory permissions: {e}")
+    os.chmod(output_dir, 0o777)  # Make sure directory is writeable
     
     # Create absolute path for output file
     output_file = os.path.join(os.path.abspath(output_dir), f"recording_{timestamp}.{format_ext}")
     logger.info(f"Will write to absolute path: {output_file}")
     
-    # Try to create an empty file to verify write permissions
+    # Create the file and set permissions
     try:
-        with open(output_file, 'wb') as test_file:
-            test_file.write(b'\0')
-        logger.info(f"Successfully created test file at {output_file}")
+        with open(output_file, 'wb') as f:
+            f.write(b'\0')  # Write a single byte to create the file
+        os.chmod(output_file, 0o666)  # Make file readable/writable by all
+        logger.info(f"Created and set permissions on {output_file}")
     except Exception as e:
-        logger.error(f"Error creating test file: {e}")
-        # Try using /tmp as a fallback
+        logger.error(f"Error creating output file: {e}")
+        # Try /tmp as fallback
         output_file = f"/tmp/recording_{timestamp}.{format_ext}"
-        logger.warning(f"Falling back to temporary directory: {output_file}")
+        logger.info(f"Using fallback path: {output_file}")
+        try:
+            with open(output_file, 'wb') as f:
+                f.write(b'\0')
+            os.chmod(output_file, 0o666)
+        except Exception as e2:
+            logger.error(f"Failed to create fallback file too: {e2}")
+            return
     
-    # Configure FFmpeg command
+    # Configure FFmpeg command with optimized settings for robust recording
     ffmpeg_path = config['system']['ffmpeg_path']
-    width = config['camera']['width']
-    height = config['camera']['height']
-    fps = config['camera']['fps']
     
     cmd = [
         ffmpeg_path,
         "-f", "h264",            # Input format is H.264
         "-i", "-",               # Input from stdin
         "-c:v", "copy",          # Copy video codec (no re-encoding)
+        "-movflags", "frag_keyframe+empty_moov+default_base_moof",  # Optimize for streaming
         "-an",                   # No audio
         "-y",                    # Overwrite output file if exists
         output_file              # Output file
@@ -1148,18 +1013,26 @@ def video_writer_thread(config):
     logger.info(f"Starting ffmpeg with command: {' '.join(cmd)}")
     logger.info(f"Recording to file: {output_file}")
     
-    # Track if we're using simulated data
-    using_simulated_data = False
-    
+    # Create the process and send key frames first
     try:
-        # Start ffmpeg process
         ffmpeg_process = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,  # Discard stdout for better performance
             stderr=subprocess.PIPE,
-            bufsize=0  # Unbuffered
+            bufsize=10*1024*1024  # 10MB buffer
         )
+        
+        # Send SPS and PPS headers first (necessary for proper H.264)
+        # These are simple valid H.264 headers
+        header_bytes = bytearray([
+            0x00, 0x00, 0x00, 0x01, 0x67, 0x64, 0x00, 0x1F, 0xAC,  # SPS header
+            0x00, 0x00, 0x00, 0x01, 0x68, 0xEB, 0xE3, 0xCB        # PPS header
+        ])
+        
+        ffmpeg_process.stdin.write(header_bytes)
+        ffmpeg_process.stdin.flush()
+        logger.info("Sent H.264 headers to ffmpeg")
         
         # Start stderr reader thread to capture ffmpeg log messages
         stderr_thread = threading.Thread(
@@ -1173,18 +1046,11 @@ def video_writer_thread(config):
         frame_count = 0
         last_log_time = time.time()
         
-        # Create a simple test pattern if we have no real data
-        if frame_queue.empty() and not using_simulated_data:
-            logger.warning("No frames in queue, adding test pattern data")
-            using_simulated_data = True
-            # Add a fake H.264 frame
-            test_frame = bytearray([0x00, 0x00, 0x00, 0x01] + [0x67, 0x42, 0x00, 0x0A] * 1000)
-            frame_queue.put((time.time(), bytes(test_frame)))
-        
+        # Main loop for writing frames
         while is_recording_active or not frame_queue.empty():
             try:
                 # Get a frame from the queue with timeout
-                timestamp, frame_data = frame_queue.get(timeout=0.5)
+                timestamp, frame_data = frame_queue.get(timeout=0.1)
                 
                 # Write frame to ffmpeg
                 try:
@@ -1193,58 +1059,70 @@ def video_writer_thread(config):
                     frame_count += 1
                 except IOError as e:
                     logger.error(f"IOError writing to ffmpeg: {e}")
-                    break
+                    # Try to restart ffmpeg
+                    ffmpeg_process.terminate()
+                    ffmpeg_process = subprocess.Popen(
+                        cmd,
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.PIPE,
+                        bufsize=10*1024*1024
+                    )
+                    # Resend headers
+                    ffmpeg_process.stdin.write(header_bytes)
+                    ffmpeg_process.stdin.flush()
+                    logger.info("Restarted ffmpeg and sent headers")
+                    continue
                 
-                # Log progress periodically
+                # Log progress and check file size frequently to ensure it's growing
                 current_time = time.time()
-                if current_time - last_log_time > 1.0:  # Log more frequently
-                    logger.info(f"Recording progress: {frame_count} frames written to {output_file}")
-                    
+                if current_time - last_log_time > 0.5:  # Check every half second
                     # Check file size
-                    try:
-                        file_size = os.path.getsize(output_file)
-                        logger.info(f"Current file size: {file_size / 1024:.1f} KB")
-                    except:
-                        logger.warning(f"Could not check file size for {output_file}")
+                    file_size = os.path.getsize(output_file)
+                    logger.info(f"Recording progress: {frame_count} frames, file size: {file_size/1024:.1f}KB")
                     
+                    # Debug: Verify file is actually growing
+                    if file_size > 0:
+                        logger.info(f"✓ File is growing properly: {output_file}")
+                        
                     last_log_time = current_time
                 
             except queue.Empty:
                 # No frames available but recording is still active
                 if is_recording_active:
-                    logger.debug("No frames available in queue, waiting...")
-                    
-                    # If we've been waiting too long, add a test frame
-                    if current_time - last_log_time > 5.0 and not using_simulated_data:
-                        logger.warning("No frames for 5 seconds, adding test pattern")
-                        using_simulated_data = True
-                        test_frame = bytearray([0x00, 0x00, 0x00, 0x01] + [0x67, 0x42, 0x00, 0x0A] * 1000)
-                        frame_queue.put((time.time(), bytes(test_frame)))
-                    
-                    time.sleep(0.01)  # Short sleep to avoid CPU spin
+                    time.sleep(0.01)  # Short sleep
                 else:
-                    # Recording stopped and queue is empty, exit
+                    # Recording stopped and queue is empty
                     logger.info("No more frames to write, finalizing video")
                     break
         
-        # Close ffmpeg's stdin to signal end of input
+        # Finalize the recording
+        logger.info("Closing ffmpeg stdin to finalize recording")
         ffmpeg_process.stdin.close()
         
-        # Wait for ffmpeg to finish
-        logger.info("Waiting for ffmpeg to finalize video file...")
-        ffmpeg_process.wait()
+        # Wait with timeout
+        try:
+            ffmpeg_process.wait(timeout=10)
+            logger.info("ffmpeg process completed successfully")
+        except subprocess.TimeoutExpired:
+            logger.warning("ffmpeg process did not exit in time, forcing termination")
+            ffmpeg_process.terminate()
+            try:
+                ffmpeg_process.wait(timeout=5)
+            except:
+                ffmpeg_process.kill()
         
-        # Verify the file exists and has data
-        if os.path.exists(output_file):
-            file_size = os.path.getsize(output_file)
-            logger.info(f"Recording complete: {frame_count} frames written to {output_file}, size: {file_size / 1024:.1f} KB")
-            
-            if file_size == 0:
-                logger.error("ERROR: Output file is empty (0 bytes)")
-            elif file_size < 1024:
-                logger.warning(f"WARNING: Output file is very small ({file_size} bytes)")
-        else:
-            logger.error(f"ERROR: Output file {output_file} does not exist")
+        # Verify the final file
+        file_size = os.path.getsize(output_file)
+        logger.info(f"Recording complete: {frame_count} frames, final size: {file_size/1024:.1f}KB")
+        
+        if file_size == 0:
+            logger.error("ERROR: Recording file is empty (0 bytes)")
+        elif file_size < 1024:
+            logger.warning(f"WARNING: Recording file is very small ({file_size} bytes)")
+        
+        # Make sure the file has the right permissions 
+        os.chmod(output_file, 0o666)
         
     except Exception as e:
         logger.error(f"Error in video writer thread: {e}")
@@ -1252,15 +1130,16 @@ def video_writer_thread(config):
         logger.error(f"Traceback: {traceback.format_exc()}")
     finally:
         # Clean up
-        if ffmpeg_process:
+        if ffmpeg_process and ffmpeg_process.poll() is None:
             try:
-                if ffmpeg_process.poll() is None:  # Process still running
-                    ffmpeg_process.stdin.close()
-                    ffmpeg_process.terminate()
-                    ffmpeg_process.wait(timeout=5)
+                ffmpeg_process.stdin.close()
             except:
-                if ffmpeg_process.poll() is None:
-                    ffmpeg_process.kill()
+                pass
+            try:
+                ffmpeg_process.terminate()
+                ffmpeg_process.wait(timeout=5)
+            except:
+                ffmpeg_process.kill()
             ffmpeg_process = None
         
         logger.info("Video writer thread exited")
@@ -1528,7 +1407,6 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="IMX296 Global Shutter Camera Capture System")
     parser.add_argument("--config", default="config/config.yaml", help="Path to config file")
-    parser.add_argument("--force-simulated", action="store_true", help="Force use of simulated frames even if camera works")
     args = parser.parse_args()
     
     try:
@@ -1576,25 +1454,14 @@ def main():
             if not setup_lsl_stream(config):
                 logger.warning("Failed to setup LSL stream, continuing without LSL")
             
-            # If --force-simulated is used, skip the real camera and use simulation
-            if args.force_simulated:
-                logger.info("Forced simulation mode enabled, skipping camera setup")
-                # Start simulated frames thread
-                sim_thread = threading.Thread(
-                    target=simulate_frames,
-                    args=(collections.deque(maxlen=config['buffer']['max_frames']), config),
-                    daemon=True
-                )
-                sim_thread.start()
-            else:
-                # Start camera thread
-                logger.info("Starting camera capture thread...")
-                camera_thread_obj = threading.Thread(
-                    target=camera_thread,
-                    args=(config,),
-                    daemon=True
-                )
-                camera_thread_obj.start()
+            # Start camera thread
+            logger.info("Starting camera capture thread...")
+            camera_thread_obj = threading.Thread(
+                target=camera_thread,
+                args=(config,),
+                daemon=True
+            )
+            camera_thread_obj.start()
             
             # Start ntfy thread
             logger.info("Starting ntfy notification thread...")
@@ -1635,8 +1502,7 @@ def main():
             # Wait for threads to exit
             logger.info("Waiting for threads to exit...")
             ntfy_thread_obj.join(timeout=10)
-            if not args.force_simulated:
-                camera_thread_obj.join(timeout=10)
+            camera_thread_obj.join(timeout=10)
             keyboard_thread_obj.join(timeout=10)
             
         except Exception as e:
