@@ -340,23 +340,104 @@ update_status "Starting camera capture system..."
 # Set parameters for command line if Global Shutter Camera was configured
 GS_PARAMS=""
 if [ "$GS_CAMERA_CONFIGURED" = "true" ]; then
-    GS_PARAMS="--width $CAM_WIDTH --height $CAM_HEIGHT --fps $CAM_FPS"
-    update_status "Using Global Shutter Camera parameters: $GS_PARAMS"
-fi
-
-# Check if we're running Python directly or using a Python module
-if [ -f "camera_stream_fixed.py" ]; then
-    update_status "Running camera_stream_fixed.py directly..."
-    python3 camera_stream_fixed.py --preview=$PREVIEW_ENABLED $GS_PARAMS
-elif [ -d "src/raspberry_pi_lsl_stream" ]; then
-    update_status "Running as module..."
-    # Set PYTHONPATH to ensure module imports work
-    export PYTHONPATH="$PWD:$PYTHONPATH"
-    python3 -m src.raspberry_pi_lsl_stream.camera_stream_fixed --preview=$PREVIEW_ENABLED $GS_PARAMS
+    width=$CAM_WIDTH
+    height=$CAM_HEIGHT
+    fps=$CAM_FPS
+    update_status "Using Global Shutter Camera parameters: ${width}x${height} @ ${fps}fps"
 else
-    update_status "ERROR: Could not find camera_stream_fixed.py"
-    exit 1
+    # Default values if not configured
+    width=400
+    height=400
+    fps=100
 fi
 
-# Exit with the same status as the camera capture
+# Create a temporary Python script that directly uses the LSLCameraStreamer class
+TMP_SCRIPT=$(mktemp)
+cat > $TMP_SCRIPT << EOF
+#!/usr/bin/env python3
+import os
+import sys
+import signal
+import time
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, 
+                   format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger('CameraCapture')
+
+# Add the current directory to the Python path
+sys.path.insert(0, os.getcwd())
+
+# Function to handle signals
+def signal_handler(sig, frame):
+    print("Received signal, shutting down...")
+    global running
+    running = False
+    if camera:
+        camera.stop()
+    sys.exit(0)
+
+# Register signal handlers
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+
+try:
+    # Import the camera streamer class
+    from src.raspberry_pi_lsl_stream.camera_stream_fixed import LSLCameraStreamer
+    
+    # Configuration
+    width = ${width}
+    height = ${height}
+    fps = ${fps}
+    preview = $([ "$PREVIEW_ENABLED" = "true" ] && echo "True" || echo "False")
+    
+    logger.info(f"Starting camera with resolution {width}x{height} @ {fps}fps, preview={preview}")
+    
+    # Create and start the camera streamer
+    camera = LSLCameraStreamer(
+        width=width,
+        height=height,
+        target_fps=fps,
+        save_video=True,
+        output_path="recordings",
+        codec="mjpg",
+        show_preview=preview,
+        push_to_lsl=True,
+        stream_name="VideoStream",
+        use_buffer=True,
+        buffer_size_seconds=20.0,
+        ntfy_topic="raspie-camera-test",
+        enable_crop=True,  # Enable crop for Global Shutter Camera
+        camera_id=0
+    )
+    
+    camera.start()
+    
+    # Keep the script running until Ctrl+C is pressed
+    running = True
+    while running:
+        time.sleep(0.1)
+        
+except Exception as e:
+    logger.error(f"Error: {str(e)}")
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
+finally:
+    # Cleanup
+    if 'camera' in locals() and camera:
+        camera.stop()
+EOF
+
+# Make the temporary script executable
+chmod +x $TMP_SCRIPT
+
+# Run the temporary script
+update_status "Running camera capture with direct approach..."
+python3 $TMP_SCRIPT
+
+# Clean up
+rm -f $TMP_SCRIPT
+
 exit $? 
