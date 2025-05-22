@@ -437,13 +437,45 @@ def camera_thread(config):
     max_frames = config['buffer']['max_frames']
     frame_buffer = collections.deque(maxlen=max_frames)
     
+    # First test if basic libcamera-vid works
+    logger.info("Testing basic libcamera-vid functionality...")
+    test_cmd = [
+        libcamera_vid_path,
+        "--list-cameras"
+    ]
+    try:
+        logger.info(f"Running test command: {' '.join(test_cmd)}")
+        output = subprocess.check_output(test_cmd, universal_newlines=True, stderr=subprocess.STDOUT)
+        logger.info(f"libcamera-vid test output:\n{output}")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Error testing libcamera-vid: {e}")
+        logger.error(f"Output: {e.output if hasattr(e, 'output') else 'No output'}")
+    
+    # Test with simple capture
+    logger.info("Testing simple capture with libcamera-vid...")
+    test_cmd = [
+        libcamera_vid_path,
+        "--width", str(width),
+        "--height", str(height),
+        "--framerate", str(fps),
+        "--timeout", "1000",  # 1 second timeout
+        "--output", "/dev/null"
+    ]
+    try:
+        logger.info(f"Running test capture: {' '.join(test_cmd)}")
+        output = subprocess.check_output(test_cmd, universal_newlines=True, stderr=subprocess.STDOUT)
+        logger.info(f"libcamera-vid test capture output:\n{output}")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Error testing simple capture: {e}")
+        logger.error(f"Output: {e.output if hasattr(e, 'output') else 'No output'}")
+        logger.warning("Will proceed with full command but expect issues...")
+    
     # Build libcamera-vid command
     cmd = [
         libcamera_vid_path,
         "--width", str(width),
         "--height", str(height),
         "--framerate", str(fps),
-        "--global-shutter",  # Essential for IMX296
         "--shutter", str(exposure_time_us),
         "--denoise", "cdn_off",
         "--save-pts", pts_file_path,
@@ -451,6 +483,19 @@ def camera_thread(config):
         "--flush",
         "-o", "-"  # Output to stdout
     ]
+    
+    # Check if global-shutter flag is supported
+    try:
+        help_cmd = [libcamera_vid_path, "--help"]
+        help_output = subprocess.check_output(help_cmd, universal_newlines=True, stderr=subprocess.STDOUT)
+        if "--global-shutter" in help_output:
+            logger.info("--global-shutter flag is supported, adding to command")
+            cmd.insert(1, "--global-shutter")  # Add after the command path
+        else:
+            logger.warning("--global-shutter flag not found in help output, skipping")
+            logger.info("Available options from help:\n" + help_output)
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Error checking libcamera-vid help: {e}")
     
     logger.info(f"Starting libcamera-vid with command: {' '.join(cmd)}")
     logger.info(f"Using RAM buffer of {buffer_duration_sec} seconds (max {max_frames} frames)")
@@ -472,6 +517,45 @@ def camera_thread(config):
         )
         stderr_thread.start()
         
+        # Check if process exits immediately
+        time.sleep(0.5)
+        if libcamera_vid_process.poll() is not None:
+            logger.error(f"libcamera-vid exited immediately with code {libcamera_vid_process.returncode}")
+            logger.warning("Trying with simplified command...")
+            
+            # Try with minimal options
+            simple_cmd = [
+                libcamera_vid_path,
+                "--width", str(width),
+                "--height", str(height),
+                "--framerate", str(fps),
+                "-o", "-"  # Output to stdout
+            ]
+            
+            logger.info(f"Starting libcamera-vid with simplified command: {' '.join(simple_cmd)}")
+            
+            libcamera_vid_process = subprocess.Popen(
+                simple_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                bufsize=0  # Unbuffered
+            )
+            
+            # Start stderr reader thread to capture log messages
+            stderr_thread = threading.Thread(
+                target=log_stderr_output,
+                args=(libcamera_vid_process.stderr, "libcamera-vid-simple"),
+                daemon=True
+            )
+            stderr_thread.start()
+            
+            # Check if even the simple command fails
+            time.sleep(0.5)
+            if libcamera_vid_process.poll() is not None:
+                logger.error(f"Simple libcamera-vid command also failed with code {libcamera_vid_process.returncode}")
+                logger.error("Camera capture cannot proceed. Check camera connection and libcamera setup.")
+                return
+        
         # Record start time for timestamp calculation
         start_time = time.time()
         
@@ -486,6 +570,11 @@ def camera_thread(config):
         logger.info("Camera capture started, buffering frames to RAM")
         
         while not stop_event.is_set():
+            # Check if process is still running
+            if libcamera_vid_process.poll() is not None:
+                logger.error("libcamera-vid process terminated unexpectedly")
+                break
+                
             # Read a chunk of data
             chunk = libcamera_vid_process.stdout.read(4096)
             if not chunk:
@@ -530,6 +619,8 @@ def camera_thread(config):
         
     except Exception as e:
         logger.error(f"Error in camera thread: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
     finally:
         # Clean up
         if libcamera_vid_process:
@@ -580,10 +671,23 @@ def find_timestamp_for_frame(frame_num, pts_data, start_time):
 def log_stderr_output(stderr, process_name):
     """Thread function to log stderr output from a subprocess."""
     logger = logging.getLogger(f'imx296_capture.{process_name}')
+    logger.info(f"Started {process_name} stderr reader thread")
+    
+    # Buffer for collecting lines
+    line_buffer = []
     for line in stderr:
-        line = line.decode('utf-8', errors='replace').strip()
-        if line:
-            logger.debug(f"{process_name}: {line}")
+        try:
+            line_str = line.decode('utf-8', errors='replace').strip()
+            if line_str:
+                logger.debug(f"{process_name}: {line_str}")
+                line_buffer.append(line_str)
+        except Exception as e:
+            logger.error(f"Error decoding {process_name} stderr: {e}")
+    
+    # Log a summary when the process exits
+    logger.info(f"{process_name} process exited, last 10 stderr lines:")
+    for i, line in enumerate(line_buffer[-10:]):
+        logger.info(f"{process_name} stderr[{i}]: {line}")
 
 # =============================================================================
 # NTFY Notification Thread
