@@ -204,47 +204,51 @@ else
       echo "ERROR: Virtual environment activation script not found at '$VENV_DIR/bin/activate'."
       echo "Cannot proceed with Python package installation."
   else
-      echo "Upgrading pip in the virtual environment..."
-      # Run pip install as the original user using the venv's pip
+      # MEMORY-EFFICIENT APPROACH: Install packages one by one with pauses
+      echo "Using memory-efficient approach to install packages..."
+      
+      # Upgrade pip separately
+      echo "Upgrading pip..."
       sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install --upgrade pip
       sleep 2
       
+      # Upgrade setuptools separately
       echo "Upgrading setuptools..."
       sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install --upgrade setuptools
       sleep 2
       
+      # Upgrade wheel separately
       echo "Upgrading wheel..."
       sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install --upgrade wheel
       sleep 2
       
-      echo "Installing PyYAML for configuration file support..."
+      # Install PyYAML
+      echo "Installing PyYAML..."
       sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install pyyaml
       sleep 2
       
-      # Install dependencies in batches to reduce memory pressure
-      echo "Installing Python dependencies in batches to reduce memory usage..."
+      # Install core dependencies one by one to minimize memory usage
+      echo "Installing numpy..."
+      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install numpy
+      sleep 3
       
-      echo "Installing basic dependencies (batch 1)..."
+      echo "Installing OpenCV (headless version)..."
+      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install opencv-python-headless
+      sleep 3
+      
+      echo "Installing pylsl..."
+      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install pylsl
+      sleep 3
+      
+      echo "Installing additional dependencies..."
       sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install requests
       sleep 2
-      
-      echo "Installing core dependencies (batch 2)..."
-      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install numpy
+      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install ntfy
+      sleep 2
+      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install psutil
       sleep 2
       
-      echo "Installing core dependencies (batch 3)..."
-      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install opencv-python-headless
-      sleep 2
-      
-      echo "Installing core dependencies (batch 4)..."
-      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install pylsl
-      sleep 2
-      
-      echo "Installing additional dependencies (batch 5)..."
-      sudo -u "$SUDO_USER" "$VENV_DIR/bin/pip" install ntfy psutil
-      sleep 2
-      
-      echo "Installing project 'raspberry-pi-lsl-stream' in editable mode with minimal build..."
+      echo "Installing project 'raspberry-pi-lsl-stream' in editable mode with reduced memory usage..."
       # Install the project itself as the original user
       # Use --no-build-isolation to reduce memory requirements
       cd "$PROJECT_DIR"
@@ -254,7 +258,8 @@ else
           echo "Project installed successfully into the virtual environment."
       else
           echo "ERROR: Failed to install project using pip."
-          echo "If you're seeing out-of-memory errors, try running the install-low-memory.sh script instead."
+          echo "If you're still experiencing memory issues, try installing dependencies manually one by one."
+          echo "Example: .venv/bin/pip install numpy && .venv/bin/pip install opencv-python-headless && .venv/bin/pip install pylsl"
       fi
   fi
 fi
@@ -279,7 +284,7 @@ camera:
   fps: 100
   codec: mjpg
   container: mkv
-  preview: false
+  preview: true  # Changed to true to enable preview
   enable_crop: auto  # Can be true, false, or auto (detect Global Shutter Camera)
 
 # Storage settings
@@ -321,6 +326,38 @@ EOF
 # Set appropriate permissions
 chown $SUDO_USER:$SUDO_USER "$CONFIG_FILE"
 echo "Default configuration file created at $CONFIG_FILE"
+
+# --- Setup Camera Permissions ---
+echo "Setting up camera permissions and dependencies..."
+
+# Ensure v4l-utils is installed for camera debugging
+echo "Installing v4l-utils for camera debugging capabilities..."
+apt install -y v4l-utils
+
+# Ensure media-ctl and libcamera-apps are installed (critical for Global Shutter Camera)
+echo "Installing media-ctl and libcamera-apps (required for camera operation)..."
+apt install -y libcamera-apps libcamera-tools
+
+# Set camera group permissions to allow non-root access
+echo "Setting camera group permissions..."
+if getent group video > /dev/null; then
+    # Add user to the video group for camera access
+    usermod -a -G video $SUDO_USER
+    echo "Added $SUDO_USER to the video group for camera access"
+fi
+
+if getent group input > /dev/null; then
+    # Add user to the input group for camera access
+    usermod -a -G input $SUDO_USER
+    echo "Added $SUDO_USER to the input group for camera access"
+fi
+
+# Create and set up camera lock file with proper permissions
+echo "Setting up camera lock file with proper permissions..."
+rm -f /tmp/raspie_camera.lock
+touch /tmp/raspie_camera.lock
+chmod 666 /tmp/raspie_camera.lock
+echo "Camera lock file created with proper permissions"
 
 # --- Automatic Service Installation ---
 echo "Installing camera capture service to start automatically at boot..."
