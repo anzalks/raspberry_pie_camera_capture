@@ -1,5 +1,6 @@
 # IMX296 Global Shutter Camera Configuration
 # Author: Anzal KS <anzal.ks@gmail.com>
+# Date: May 23, 2025
 
 # System paths and tools
 system:
@@ -15,42 +16,43 @@ camera:
   sensor_height: 1088
   
   # Target capture specifications
-  width: 400 
+  width: 400  # Match native IMX296 format of 400x400
   height: 400
-  fps: 100
-  exposure_time_us: 5000 # Set to 5ms for high-speed capture
+  fps: 30  # Using 30fps for reliable operation
+  exposure_time_us: 8000  # Exposure in microseconds
   
   # PTS file for timestamp tracking
-  pts_file_path: "/tmp/camera_timestamps.pts"
+  pts_file_path: "/tmp/imx296_pts.txt"  # Store PTS file in /tmp for best compatibility
   
   # Media-ctl configuration for hardware cropping
   media_ctl:
     device_pattern: "/dev/media%d"
-    entity_pattern: "imx296 [0-9]+-[0-9]+"
-    bayer_format: "SRGGB10_1X10"
+    entity_pattern: "imx296 %d-001a"
+    bayer_format: "SBGGR10_1X10"
 
 # RAM buffer settings for pre-trigger storage
 buffer:
-  duration_seconds: 15  # Keep 15 seconds of footage in RAM
-  max_frames: 1500      # Maximum number of frames to store in buffer
+  duration_seconds: 10
+  max_frames: 1000
 
 # LSL stream configuration
 lsl:
   stream_name: "IMX296_Metadata"
   stream_type: "CameraEvents"
   channel_count: 4
-  nominal_srate: 100
+  nominal_srate: 30
 
 # Recording settings
 recording:
-  output_dir: "recordings"
-  format: "mkv"  # MKV container format
+  output_dir: "/home/dawg/recordings"  # Using home directory for reliable permissions
+  video_format: "mkv"  # MKV container for better compatibility
+  codec: "mjpeg"  # MJPEG codec works better than H.264 for IMX296
 
 # ntfy.sh notifications for remote control
 ntfy:
   server: "https://ntfy.sh"
-  topic: "raspie-camera-dawg-123"
-  poll_interval_sec: 5.0
+  topic: "raspie-camera-dawg-123"  # Unique topic name to avoid conflicts
+  poll_interval_sec: 5
 
 # Logging configuration
 logging:
