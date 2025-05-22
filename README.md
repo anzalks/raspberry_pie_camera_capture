@@ -1,147 +1,172 @@
-# IMX296 Global Shutter Camera Capture System
+# IMX296 Global Shutter Camera System
 
-A high-speed, buffer-based camera capture system for Sony IMX296 global shutter cameras on Raspberry Pi. This system is designed for high frame rate (100fps), hardware-cropped capture with LSL integration for synchronization with other data streams.
+This repository contains scripts and utilities for capturing video from an IMX296 global shutter camera on Raspberry Pi.
 
 ## Features
 
-- 100fps capture at 400x400 resolution with hardware cropping via media-ctl
-- RAM buffer for pre-trigger storage (up to 15 seconds)
-- Remote triggering via ntfy.sh notifications
-- Keyboard triggering for local control
-- LSL stream for metadata and synchronization
-- MKV output via ffmpeg for robust recording
-- Detailed status information via dashboard
+- High-frame-rate video capture with IMX296 global shutter camera
+- Real-time video streaming and recording
+- Lab Streaming Layer (LSL) integration for synchronization with other data streams
+- Status dashboard and monitoring tools
+- Systemd service for automatic startup
+
+## Hardware Requirements
+
+- Raspberry Pi 4 or newer (tested on Raspberry Pi 4B 4GB/8GB)
+- IMX296 Global Shutter Camera (connected via CSI interface)
+- Adequate power supply (5V/3A recommended)
+
+## Software Requirements
+
+- Raspberry Pi OS Bullseye or newer
+- Python 3.9+
+- libcamera and v4l2 utilities
+- FFmpeg for video encoding
+- pylsl for Lab Streaming Layer support
 
 ## Installation
 
+### Automatic Installation
+
 1. Clone this repository:
-   ```
+   ```bash
    git clone https://github.com/anzalks/raspberry_pie_camera_capture.git
    cd raspberry_pie_camera_capture
    ```
 
-2. Install dependencies:
+2. Run the installation script (requires sudo):
+   ```bash
+   sudo bash bin/install.sh
    ```
+
+   This script will:
+   - Install system dependencies
+   - Set up Python virtual environment with required packages
+   - Install pylsl for Lab Streaming Layer support
+   - Configure file permissions
+   - Install systemd service
+   - Test the camera
+
+### Manual Installation
+
+If you prefer to install manually, follow these steps:
+
+1. Install system dependencies:
+   ```bash
    sudo apt update
    sudo apt install -y python3-pip python3-venv libcamera-apps ffmpeg v4l-utils
+   ```
 
-   # Create virtual environment
+2. Create a Python virtual environment:
+   ```bash
    python3 -m venv .venv
-   source .venv/bin/activate
-   
-   # Install Python dependencies
-   pip install pyyaml pylsl requests psutil
+   .venv/bin/pip install --upgrade pip
+   .venv/bin/pip install pylsl pyyaml requests psutil
    ```
 
-3. Install as a service (optional):
+3. Create directories and set permissions:
+   ```bash
+   mkdir -p logs recordings
+   chmod -R 777 logs recordings
    ```
+
+4. Make scripts executable:
+   ```bash
+   chmod +x bin/run_imx296_capture.py
+   chmod +x bin/restart_camera.sh
+   chmod +x bin/view-camera-status.sh
+   chmod +x bin/diagnose_camera.sh
+   chmod +x bin/check_recording.sh
+   ```
+
+5. Install systemd service:
+   ```bash
    sudo cp config/imx296-camera.service /etc/systemd/system/
    sudo systemctl daemon-reload
    sudo systemctl enable imx296-camera.service
+   sudo systemctl start imx296-camera.service
    ```
 
 ## Usage
 
-### Starting the system
+### Starting and Stopping the Service
 
+Start the camera service:
 ```bash
-# Manual start
-bin/restart_camera.sh
-
-# Or using systemd
 sudo systemctl start imx296-camera.service
 ```
 
-### Starting/stopping recording
+Stop the camera service:
+```bash
+sudo systemctl stop imx296-camera.service
+```
 
-1. Via ntfy.sh:
-   ```
-   # Start recording
-   curl -d "start" https://ntfy.sh/raspie-camera-dawg-123
-   
-   # Stop recording
-   curl -d "stop" https://ntfy.sh/raspie-camera-dawg-123
-   ```
+Check service status:
+```bash
+sudo systemctl status imx296-camera.service
+```
 
-2. Via keyboard in the dashboard:
-   - Press `S` to start recording
-   - Press `P` to stop recording
+### Monitoring the Camera
 
-### Viewing status
-
+To view the camera status dashboard:
 ```bash
 bin/view-camera-status.sh
 ```
 
-## Troubleshooting
+### Diagnostics and Troubleshooting
 
-### Common Issues
+If you encounter issues, run the diagnostic script:
+```bash
+sudo bin/diagnose_camera.sh
+```
 
-#### Zero-byte recording files
+For more targeted diagnostics, you can run specific checks:
+```bash
+sudo bin/diagnose_camera.sh --camera  # Check only camera hardware
+sudo bin/diagnose_camera.sh --venv    # Check Python environment
+sudo bin/diagnose_camera.sh --test    # Run a camera test capture
+```
 
-If your recordings are empty (0 byte files), try the following:
+If you need to restart the camera system:
+```bash
+sudo bin/restart_camera.sh
+```
 
-1. Run the diagnostic tool:
-   ```
-   bin/diagnose_camera.sh
-   ```
+## Common Issues
 
-2. Check recording functionality:
-   ```
-   bin/check_recording.sh
-   ```
+### Missing pylsl Package
 
-3. Make sure you don't have multiple instances of the camera capture running:
-   ```
-   ps aux | grep 'python3.*imx296.*capture'
-   ```
+If you encounter errors about the `pylsl` package:
+```
+ImportError: No module named 'pylsl'
+```
 
-4. If needed, completely reset the camera:
-   ```
-   bin/restart_camera.sh
-   ```
+Install it using:
+```bash
+.venv/bin/pip install pylsl
+```
 
-#### Simulated frames in dashboard
+### Zero-byte Recording Files
 
-If the dashboard shows "simulated frames" instead of actual camera data:
+If your recordings are 0 bytes in size, try:
+1. Run the diagnostic tool: `sudo bin/diagnose_camera.sh`
+2. Restart the camera: `sudo bin/restart_camera.sh`
+3. Check the system logs: `journalctl -u imx296-camera.service -n 50`
 
-1. Ensure there are no old processes running:
-   ```
-   ps aux | grep 'simulate\|mock\|fake'
-   ```
+### Camera Not Detected
 
-2. Reset the camera system:
-   ```
-   bin/restart_camera.sh
-   ```
-
-#### LSL errors
-
-If you see LSL errors ("must be real number, not str"), it's due to compatibility issues with older pylsl versions. The system now automatically detects and adapts to string capability.
-
-#### V4L2 streaming errors
-
-If you see "Failed to start streaming: Invalid argument" errors:
-
-1. Try resetting the camera:
-   ```
-   bin/restart_camera.sh
-   ```
-
-2. If that doesn't work, reboot the Raspberry Pi:
-   ```
-   sudo reboot
-   ```
+If the camera is not detected:
+1. Check the physical connection
+2. Run `libcamera-hello --list-cameras` to verify system detection
+3. Ensure the camera ribbon cable is properly seated in both the camera and Raspberry Pi
 
 ## Configuration
 
-Edit `config/config.yaml` to customize:
-
-- Camera settings (resolution, fps, exposure)
-- Buffer settings (duration, max frames)
-- Recording format and location
-- ntfy.sh topic for remote control
-- LSL stream parameters
+Edit the configuration file at `config/config.yaml` to customize:
+- Camera settings (resolution, framerate)
+- Recording parameters
+- LSL stream configuration
+- Notification settings
 
 ## License
 
@@ -150,4 +175,8 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 ## Author
 
 Anzal KS <anzal.ks@gmail.com>
-https://github.com/anzalks/ 
+
+## Acknowledgments
+
+- Raspberry Pi Foundation for libcamera
+- Lab Streaming Layer (LSL) community 

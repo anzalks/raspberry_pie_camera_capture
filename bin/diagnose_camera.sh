@@ -1,150 +1,241 @@
 #!/bin/bash
-# IMX296 Camera Diagnostic and Reset Tool
+# IMX296 Camera Diagnostic Script
 # Author: Anzal KS <anzal.ks@gmail.com>
 # Date: May 22, 2025
 
-# Remove set -e to prevent script from exiting on errors
-# set -e
-echo "==== IMX296 Camera Diagnostic Tool ===="
+set -e
 
-# Get script directory and project root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
+echo "===== IMX296 Camera Diagnostic Tool ====="
 echo "Project root: $PROJECT_ROOT"
 
-echo "----- System Information -----"
-echo "Hostname: $(hostname)"
-echo "Kernel: $(uname -r)"
-echo "User: $(whoami)"
-echo "Date: $(date)"
+# Check if Python venv exists
+check_venv() {
+  echo "Checking Python virtual environment..."
+  if [ -d "$PROJECT_ROOT/.venv" ]; then
+    echo "✓ Python virtual environment found."
+  else
+    echo "✗ Python virtual environment not found."
+    echo "  Run the install.sh script to create it."
+    return 1
+  fi
+  return 0
+}
 
-echo "----- Process Check -----"
-echo "Checking for camera processes..."
-ps aux | grep 'python3.*imx296.*capture' | grep -v grep || echo "No python capture processes found"
-ps aux | grep 'libcamera-vid' | grep -v grep || echo "No libcamera-vid processes found"
-ps aux | grep 'ffmpeg' | grep -v grep || echo "No ffmpeg processes found"
-ps aux | grep -E 'simulate|mock|fake' | grep -v grep || echo "No simulation processes found"
+# Check required Python packages
+check_python_packages() {
+  echo "Checking Python packages..."
+  if [ ! -d "$PROJECT_ROOT/.venv" ]; then
+    echo "✗ Cannot check packages: venv not found"
+    return 1
+  fi
+  
+  local REQUIRED_PACKAGES="pylsl pyyaml requests psutil"
+  local MISSING_PACKAGES=""
+  
+  for pkg in $REQUIRED_PACKAGES; do
+    if ! "$PROJECT_ROOT/.venv/bin/pip" list | grep -q "$pkg"; then
+      MISSING_PACKAGES="$MISSING_PACKAGES $pkg"
+    fi
+  done
+  
+  if [ -n "$MISSING_PACKAGES" ]; then
+    echo "✗ Missing Python packages:$MISSING_PACKAGES"
+    echo "  Run: $PROJECT_ROOT/.venv/bin/pip install$MISSING_PACKAGES"
+    return 1
+  else
+    echo "✓ All required Python packages are installed."
+  fi
+  return 0
+}
 
-echo "----- Hardware Check -----"
-echo "Checking camera hardware..."
-if command -v vcgencmd &> /dev/null; then
-    vcgencmd get_camera || echo "Failed to check camera with vcgencmd"
-fi
-
-echo "Checking V4L2 devices..."
-ls -la /dev/video* 2>/dev/null || echo "No video devices found"
-command -v v4l2-ctl >/dev/null && v4l2-ctl --list-devices || echo "v4l2-ctl not found or failed"
-
-echo "Checking media devices..."
-ls -la /dev/media* 2>/dev/null || echo "No media devices found"
-for i in {0..9}; do
+# Check camera hardware
+check_camera_hardware() {
+  echo "Checking camera hardware..."
+  
+  # Check for media devices
+  if ! ls /dev/media* &>/dev/null; then
+    echo "✗ No media devices found."
+    echo "  Check that the camera is connected properly."
+    return 1
+  fi
+  
+  # Look for IMX296 in media devices
+  CAMERA_FOUND=false
+  for i in {0..9}; do
     if [ -e "/dev/media$i" ]; then
-        echo "Media device $i:"
-        media-ctl -d /dev/media$i -p || echo "Failed to get media device info"
+      if media-ctl -d "/dev/media$i" -p 2>/dev/null | grep -q -i "imx296"; then
+        echo "✓ IMX296 camera found on /dev/media$i"
+        CAMERA_FOUND=true
+        break
+      fi
     fi
-done
+  done
+  
+  if [ "$CAMERA_FOUND" = false ]; then
+    echo "✗ IMX296 camera not detected on any media device."
+    return 1
+  fi
+  
+  return 0
+}
 
-echo "----- Camera Test -----"
-echo "Testing camera with libcamera-hello..."
-command -v libcamera-hello >/dev/null && libcamera-hello --list-cameras || echo "libcamera-hello not found or failed"
-
-echo "----- Checking for Simulation Code -----"
-echo "Searching for simulation code in the Python files..."
-grep -r "simulate\|mock\|fake" --include="*.py" $PROJECT_ROOT/src || echo "No simulation code found"
-
-echo "----- Checking Log Files -----"
-echo "Recent log entries:"
-if [ -d "$PROJECT_ROOT/logs" ]; then
-    find "$PROJECT_ROOT/logs" -type f -name "*.log" -exec ls -la {} \; || echo "Failed to list log files"
-    for logfile in $(find "$PROJECT_ROOT/logs" -type f -name "*.log" -mtime -1 2>/dev/null); do
-        echo "====== $logfile ======"
-        tail -n 50 "$logfile" | grep -E "ERROR|WARN|simulate|zero|empty|file size" || echo "No error/warning entries found"
-    done
-else
-    echo "No logs directory found"
-    mkdir -p "$PROJECT_ROOT/logs"
-fi
-
-echo "----- Checking Recording Files -----"
-echo "Recent recordings:"
-find "$PROJECT_ROOT/recordings" -type f -size 0 -name "*.mkv" -exec ls -la {} \; 2>/dev/null || echo "No zero-byte recordings found"
-echo "Total zero-byte recordings: $(find "$PROJECT_ROOT/recordings" -type f -size 0 -name "*.mkv" 2>/dev/null | wc -l)"
-echo "Non-zero recordings: $(find "$PROJECT_ROOT/recordings" -type f -not -size 0 -name "*.mkv" 2>/dev/null | wc -l)"
-
-echo "----- File Permissions Check -----"
-echo "Checking directory permissions..."
-mkdir -p "$PROJECT_ROOT/logs" "$PROJECT_ROOT/recordings"
-touch "$PROJECT_ROOT/logs/test.txt" 2>/dev/null && echo "✓ Logs directory is writable" && rm "$PROJECT_ROOT/logs/test.txt" || echo "✗ Cannot write to logs directory"
-touch "$PROJECT_ROOT/recordings/test.txt" 2>/dev/null && echo "✓ Recordings directory is writable" && rm "$PROJECT_ROOT/recordings/test.txt" || echo "✗ Cannot write to recordings directory"
-
-echo "----- Camera Reset Procedure -----"
-echo "Running camera reset procedure..."
-
-# Kill any existing instances
-echo "Stopping all related processes..."
-sudo pkill -f "python3.*imx296.*capture" 2>/dev/null || echo "No python processes found"
-sudo pkill -f "libcamera-vid" 2>/dev/null || echo "No libcamera-vid processes found"
-sudo pkill -f "ffmpeg" 2>/dev/null || echo "No ffmpeg processes found"
-
-# Clean up temporary files
-echo "Cleaning up temporary files..."
-sudo rm -f /tmp/camera_recording_*.tmp 2>/dev/null || true
-sudo rm -f /tmp/test_capture.h264 2>/dev/null || true
-sudo rm -f /tmp/test_stream.h264 2>/dev/null || true
-
-# Reset V4L2 devices
-echo "Resetting V4L2 devices..."
-for i in {0..9}; do
-    if [ -e "/dev/video$i" ]; then
-        echo "  Resetting /dev/video$i"
-        v4l2-ctl -d /dev/video$i --all > /dev/null 2>&1 || echo "Failed to reset video$i"
-        v4l2-ctl -d /dev/video$i -c timeout_value=3000 > /dev/null 2>&1 || echo "Failed to set timeout on video$i"
+# Check file permissions
+check_permissions() {
+  echo "Checking file permissions..."
+  
+  # Check if recordings directory exists
+  if [ ! -d "$PROJECT_ROOT/recordings" ]; then
+    echo "✗ Recordings directory not found."
+    echo "  Run: mkdir -p $PROJECT_ROOT/recordings"
+    PERMISSION_ISSUES=true
+  fi
+  
+  # Check if logs directory exists
+  if [ ! -d "$PROJECT_ROOT/logs" ]; then
+    echo "✗ Logs directory not found."
+    echo "  Run: mkdir -p $PROJECT_ROOT/logs"
+    PERMISSION_ISSUES=true
+  fi
+  
+  # Check script permissions
+  SCRIPTS=(
+    "$PROJECT_ROOT/bin/run_imx296_capture.py"
+    "$PROJECT_ROOT/bin/restart_camera.sh"
+    "$PROJECT_ROOT/bin/view-camera-status.sh"
+    "$PROJECT_ROOT/bin/check_recording.sh"
+  )
+  
+  for script in "${SCRIPTS[@]}"; do
+    if [ -f "$script" ] && [ ! -x "$script" ]; then
+      echo "✗ Script $script is not executable."
+      echo "  Run: chmod +x $script"
+      PERMISSION_ISSUES=true
     fi
-done
+  done
+  
+  if [ "$PERMISSION_ISSUES" = true ]; then
+    return 1
+  else
+    echo "✓ All file permissions look good."
+  fi
+  return 0
+}
 
-# Reset media devices
-echo "Resetting media devices..."
-for i in {0..9}; do
-    if [ -e "/dev/media$i" ]; then
-        echo "  Resetting media$i"
-        media-ctl -d /dev/media$i -r > /dev/null 2>&1 || echo "Failed to reset media$i"
-    fi
-done
+# Check if the systemd service is properly configured
+check_systemd_service() {
+  echo "Checking systemd service..."
+  
+  if [ ! -f "/etc/systemd/system/imx296-camera.service" ]; then
+    echo "✗ Systemd service file not found."
+    echo "  Run the install.sh script to configure it."
+    return 1
+  fi
+  
+  if systemctl is-active --quiet imx296-camera.service; then
+    echo "✓ IMX296 camera service is running."
+  else
+    echo "✗ IMX296 camera service is not running."
+    echo "  Run: sudo systemctl start imx296-camera.service"
+    return 1
+  fi
+  
+  return 0
+}
 
-# Wait for devices to stabilize
-echo "Waiting for camera devices to stabilize..."
-sleep 2
-
-echo "----- Testing Camera Streaming -----"
-echo "Testing direct streaming with libcamera-vid..."
-# Test for 1 second and output to a test file
-TEST_FILE="/tmp/test_stream_$(date +%s).h264"
-if command -v libcamera-vid >/dev/null; then
-    if ! libcamera-vid --timeout 1000 --width 400 --height 400 --nopreview --output "$TEST_FILE" 2>/dev/null; then
-        echo "First attempt failed, trying with default settings..."
-        libcamera-vid --timeout 1000 --nopreview --output "$TEST_FILE" 2>/dev/null || echo "Camera streaming test failed"
-    fi
-else
-    echo "libcamera-vid not found"
-fi
-
-# Check if the file was created with non-zero size
-if [ -f "$TEST_FILE" ]; then
-    if [ -s "$TEST_FILE" ]; then
-        size=$(du -h "$TEST_FILE" 2>/dev/null | cut -f1)
-        echo "✓ Camera streaming test PASSED: File created with $size data"
+# Test camera capture
+test_camera_capture() {
+  echo "Testing camera capture (will capture 3 seconds of video)..."
+  
+  local TEST_OUTPUT="$PROJECT_ROOT/recordings/test_capture.mp4"
+  
+  # Remove previous test file if it exists
+  rm -f "$TEST_OUTPUT"
+  
+  libcamera-vid -t 3000 --width 1440 --height 1080 --framerate 30 --codec h264 --output "$TEST_OUTPUT"
+  
+  if [ -f "$TEST_OUTPUT" ]; then
+    local FILE_SIZE=$(du -k "$TEST_OUTPUT" | cut -f1)
+    if [ "$FILE_SIZE" -gt 0 ]; then
+      echo "✓ Camera capture test successful."
+      echo "  Test file saved at: $TEST_OUTPUT"
+      echo "  File size: ${FILE_SIZE}KB"
+      return 0
     else
-        echo "✗ Camera streaming test FAILED: File empty"
+      echo "✗ Camera capture test failed - file size is 0KB."
+      return 1
     fi
-    rm "$TEST_FILE" 2>/dev/null || true
-else
-    echo "✗ Camera streaming test FAILED: File not created"
-fi
+  else
+    echo "✗ Camera capture test failed - no output file created."
+    return 1
+  fi
+}
 
-echo "----- Recommendations -----"
-echo "Based on the diagnostics:"
-echo "1. To fix simulation frames: Edit src/imx296_gs_capture/imx296_capture.py"
-echo "2. To fix zero-sized files: Check for FFmpeg streaming issues"
-echo "3. To restart the camera properly: Run bin/restart_camera.sh"
-echo ""
-echo "Done! Run bin/restart_camera.sh next to apply fixes." 
+# Run all checks
+run_all_checks() {
+  local ALL_PASSED=true
+  
+  if ! check_venv; then
+    ALL_PASSED=false
+  fi
+  
+  if ! check_python_packages; then
+    ALL_PASSED=false
+  fi
+  
+  if ! check_camera_hardware; then
+    ALL_PASSED=false
+  fi
+  
+  if ! check_permissions; then
+    ALL_PASSED=false
+  fi
+  
+  # Only check systemd if we're root
+  if [ "$EUID" -eq 0 ]; then
+    if ! check_systemd_service; then
+      ALL_PASSED=false
+    fi
+  else
+    echo "Skipping systemd service check (requires root)"
+  fi
+  
+  echo "Running camera test..."
+  if ! test_camera_capture; then
+    ALL_PASSED=false
+  fi
+  
+  echo ""
+  if [ "$ALL_PASSED" = true ]; then
+    echo "✅ All diagnostics passed! Camera system should be fully operational."
+  else
+    echo "❌ Some diagnostics failed. Please check the issues listed above."
+  fi
+}
+
+# Parse command line arguments
+case "$1" in
+  --venv)
+    check_venv
+    ;;
+  --packages)
+    check_python_packages
+    ;;
+  --camera)
+    check_camera_hardware
+    ;;
+  --permissions)
+    check_permissions
+    ;;
+  --service)
+    check_systemd_service
+    ;;
+  --test)
+    test_camera_capture
+    ;;
+  *)
+    run_all_checks
+    ;;
+esac 
