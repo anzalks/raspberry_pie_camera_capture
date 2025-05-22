@@ -4,16 +4,16 @@
 camera:
   width: 400
   height: 400
-  fps: 100
+  fps: 200
   codec: mjpg
   container: mkv
-  preview: false
+  preview: true  # Enable preview window by default
   enable_crop: auto  # Can be true, false, or auto (detect Global Shutter Camera)
 
 # Storage settings
 storage:
   save_video: true
-  output_dir: recordings
+  output_dir: recordings/  # Will be updated with date folder
   create_date_folders: true
 
 # Buffer settings
@@ -43,4 +43,10 @@ audio:
   bit_depth: 16
   save_audio: true
   audio_format: wav
-  show_preview: false 
+  show_preview: false
+
+# Terminal UI settings
+terminal:
+  colors_enabled: true
+  use_unicode: true  # Enable unicode characters for better display
+  update_frequency: 0.2  # Update 5 times per second for smooth display 
