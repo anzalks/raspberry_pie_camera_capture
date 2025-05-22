@@ -38,6 +38,44 @@ echo "Running as: $(whoami), Script Invoker (SUDO_USER): $SUDO_USER_NAME"
 echo "Project Directory: $PROJECT_DIR"
 echo "Virtual Environment Path: $VENV_PATH"
 
+# --- Swap Management Functions ---
+increase_swap() {
+    echo -e "${YELLOW_TEXT}Attempting to increase swap space...${NC}"
+    SWAP_SIZE_MB=2048 # Increase to 2GB
+    CONF_SWAPSIZE_LINE=$(grep -E "^CONF_SWAPSIZE=" /etc/dphys-swapfile)
+    if [ -n "$CONF_SWAPSIZE_LINE" ]; then
+        ORIG_SWAPSIZE=$(echo "$CONF_SWAPSIZE_LINE" | cut -d'=' -f2)
+        echo "Original CONF_SWAPSIZE was $ORIG_SWAPSIZE"
+        sed -i "s/^CONF_SWAPSIZE=.*/CONF_SWAPSIZE=$SWAP_SIZE_MB/" /etc/dphys-swapfile
+        echo "Set CONF_SWAPSIZE to $SWAP_SIZE_MB"
+        dphys-swapfile swapoff
+        dphys-swapfile setup
+        dphys-swapfile swapon
+        echo "Swap increased. New status:"
+        free -m
+    else
+        echo "CONF_SWAPSIZE not found in /etc/dphys-swapfile. Cannot automatically increase swap."
+    fi
+}
+
+restore_swap() {
+    echo -e "${YELLOW_TEXT}Attempting to restore original swap space...${NC}"
+    if [ -n "$ORIG_SWAPSIZE" ]; then
+        echo "Restoring CONF_SWAPSIZE to $ORIG_SWAPSIZE"
+        sed -i "s/^CONF_SWAPSIZE=.*/CONF_SWAPSIZE=$ORIG_SWAPSIZE/" /etc/dphys-swapfile
+        dphys-swapfile swapoff
+        dphys-swapfile setup
+        dphys-swapfile swapon
+        echo "Swap restored. New status:"
+        free -m
+    else
+        echo "Original swap size not recorded. Please check /etc/dphys-swapfile manually."
+    fi
+}
+
+# --- Increase Swap ---
+increase_swap
+
 echo -e "${YELLOW_TEXT}Updating package list (apt update)...${NC}"
 apt update -qq
 
@@ -296,7 +334,7 @@ echo -e "${YELLOW_TEXT}Installing camera utilities and tools...${NC}"
 # media-ctl is part of v4l-utils on newer systems (like Bookworm)
 # python3-opencv is usually needed for image processing
 # Ensure GStreamer plugins for libcamera are installed if needed for other apps
-# sudo apt install -y v4l-utils libcamera-apps libcamera-tools media-ctl python3-libcamera python3-opencv gstreamer1.0-libcamera
+# sudo apt install -y v4l-utils libcamera-apps libcamera-tools media-ctl python3-libcamera
 sudo apt install -y v4l-utils libcamera-apps libcamera-tools python3-libcamera python3-opencv gstreamer1.0-libcamera
 
 # Check if installation was successful (basic check)
@@ -599,3 +637,8 @@ echo -e "${GREEN_TEXT}especially if this is a fresh install or camera settings w
 echo -e "After reboot, check service status: sudo systemctl status raspie-capture.service$NC"
 echo -e "And check logs: sudo journalctl -fu raspie-capture.service$NC"
 echo -e "${GREEN_TEXT}-----------------------------------------------------$NC" 
+
+# --- Restore Swap ---
+restore_swap
+
+exit 0 
