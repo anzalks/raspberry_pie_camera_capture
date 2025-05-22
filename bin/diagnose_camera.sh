@@ -322,6 +322,9 @@ check_systemd_service() {
 test_camera_capture() {
   echo "Testing camera capture (will capture 3 seconds of video)..."
   
+  # First, try to fix media-ctl ROI configuration
+  fix_media_ctl_roi
+  
   local TEST_OUTPUT="$PROJECT_ROOT/recordings/test_capture.mkv"
   
   # Remove previous test file if it exists
@@ -430,6 +433,77 @@ test_camera_capture() {
     
     return 1
   fi
+}
+
+# Function to diagnose and fix media-ctl ROI configuration
+fix_media_ctl_roi() {
+  echo "Checking and fixing media-ctl ROI configuration..."
+  
+  # Find the media device for IMX296
+  local MEDIA_DEVICE=""
+  for i in {0..9}; do
+    if [ -e "/dev/media$i" ]; then
+      if media-ctl -d "/dev/media$i" -p 2>/dev/null | grep -q -i "imx296"; then
+        MEDIA_DEVICE="/dev/media$i"
+        echo "Found IMX296 camera on $MEDIA_DEVICE"
+        break
+      fi
+    fi
+  done
+  
+  if [ -z "$MEDIA_DEVICE" ]; then
+    echo "❌ Could not find IMX296 camera device."
+    return 1
+  fi
+  
+  # Get current configuration
+  echo "Current media-ctl configuration:"
+  media-ctl -d "$MEDIA_DEVICE" -p
+  
+  # Find the IMX296 entity
+  local ENTITY_NAME=""
+  ENTITY_NAME=$(media-ctl -d "$MEDIA_DEVICE" -p | grep -i "imx296" | head -1 | grep -o "\".*\"" | tr -d '"' || echo "")
+  
+  if [ -z "$ENTITY_NAME" ]; then
+    echo "❌ Could not find IMX296 entity name. Trying alternate method..."
+    ENTITY_NAME=$(media-ctl -d "$MEDIA_DEVICE" -p | grep -i "entity" | grep -i "imx296" | head -1 | awk -F: '{print $2}' | xargs || echo "imx296")
+  fi
+  
+  if [ -z "$ENTITY_NAME" ]; then
+    echo "Using default entity name: imx296"
+    ENTITY_NAME="imx296"
+  else
+    echo "Found IMX296 entity: $ENTITY_NAME"
+  fi
+  
+  # Configure proper 400x400 ROI centered in the sensor
+  # The IMX296 seems to be using 400x400 for raw format
+  echo "Setting 400x400 ROI configuration..."
+  
+  # Try different quoting styles and formats to find what works
+  # First attempt: quoted entity name with explicit format
+  media-ctl -d "$MEDIA_DEVICE" --set-v4l2 "\"$ENTITY_NAME\":0[fmt:SBGGR10_1X10/400x400]" || true
+  
+  # Second attempt: without quotes around entity
+  media-ctl -d "$MEDIA_DEVICE" --set-v4l2 "$ENTITY_NAME:0[fmt:SBGGR10_1X10/400x400]" || true
+  
+  # Third attempt: with crop parameter
+  media-ctl -d "$MEDIA_DEVICE" --set-v4l2 "$ENTITY_NAME:0[fmt:SBGGR10_1X10/400x400 crop:(0,0)/400x400]" || true
+  
+  # Verify the configuration
+  echo "Updated media-ctl configuration:"
+  media-ctl -d "$MEDIA_DEVICE" -p
+  
+  # Verify formats with v4l2-ctl
+  echo "Available formats on video devices:"
+  for v in /dev/video*; do
+    if [ -e "$v" ]; then
+      echo "Device: $v"
+      v4l2-ctl -d "$v" --list-formats-ext 2>/dev/null || true
+    fi
+  done
+  
+  echo "Media-ctl ROI configuration complete"
 }
 
 # Check liblsl and pylsl symlinks 

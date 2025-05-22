@@ -446,17 +446,85 @@ EOF
 KERNEL=="video*", SUBSYSTEM=="video4linux", GROUP="video", MODE="0666"
 KERNEL=="media*", SUBSYSTEM=="media", GROUP="video", MODE="0666"
 EOF
+
+  # Configure ROI with media-ctl
+  echo "Configuring IMX296 ROI with media-ctl..."
   
-  # Configure v4l2 default formats if possible
-  if command -v v4l2-ctl >/dev/null && [ -e "/dev/video0" ]; then
-    echo "Configuring default V4L2 formats for better compatibility..."
+  # Find the media device for IMX296
+  MEDIA_DEVICE=""
+  for i in {0..9}; do
+    if [ -e "/dev/media$i" ]; then
+      if media-ctl -d "/dev/media$i" -p 2>/dev/null | grep -q -i "imx296"; then
+        MEDIA_DEVICE="/dev/media$i"
+        echo "Found IMX296 camera on $MEDIA_DEVICE"
+        break
+      fi
+    fi
+  done
+  
+  if [ -n "$MEDIA_DEVICE" ]; then
+    # Find the IMX296 entity
+    ENTITY_NAME=$(media-ctl -d "$MEDIA_DEVICE" -p | grep -i "imx296" | head -1 | grep -o "\".*\"" | tr -d '"' || echo "")
     
-    # Try to set MJPG format by default
-    v4l2-ctl -d /dev/video0 --set-fmt-video=width=640,height=480,pixelformat=MJPG || true
+    if [ -z "$ENTITY_NAME" ]; then
+      echo "Could not find IMX296 entity name. Trying alternate method..."
+      ENTITY_NAME=$(media-ctl -d "$MEDIA_DEVICE" -p | grep -i "entity" | grep -i "imx296" | head -1 | awk -F: '{print $2}' | xargs || echo "imx296")
+    fi
     
-    # Check available formats for reference
-    echo "Available camera formats:"
-    v4l2-ctl --list-formats-ext || true
+    if [ -z "$ENTITY_NAME" ]; then
+      echo "Using default entity name: imx296"
+      ENTITY_NAME="imx296"
+    else
+      echo "Found IMX296 entity: $ENTITY_NAME"
+    fi
+    
+    # Force a 400x400 ROI since that's what the sensor reports in SBGGR10_1X10 format
+    echo "Setting 400x400 ROI configuration..."
+    
+    # Try different syntax versions
+    CONFIGURED=false
+    
+    # First attempt with quotes
+    if media-ctl -d "$MEDIA_DEVICE" --set-v4l2 "\"$ENTITY_NAME\":0[fmt:SBGGR10_1X10/400x400]" 2>/dev/null; then
+      echo "Configured ROI with quoted entity name."
+      CONFIGURED=true
+    # Second attempt without quotes
+    elif media-ctl -d "$MEDIA_DEVICE" --set-v4l2 "$ENTITY_NAME:0[fmt:SBGGR10_1X10/400x400]" 2>/dev/null; then
+      echo "Configured ROI without quotes."
+      CONFIGURED=true
+    # Third attempt with crop parameter
+    elif media-ctl -d "$MEDIA_DEVICE" --set-v4l2 "$ENTITY_NAME:0[fmt:SBGGR10_1X10/400x400 crop:(0,0)/400x400]" 2>/dev/null; then
+      echo "Configured ROI with crop parameter."
+      CONFIGURED=true
+    fi
+    
+    # Verify configuration
+    echo "Current media-ctl configuration:"
+    media-ctl -d "$MEDIA_DEVICE" -p || true
+    
+    # Test if we can capture a basic frame after configuration
+    echo "Testing camera capture after ROI configuration..."
+    if [ "$CONFIGURED" = true ]; then
+      libcamera-vid -t 1000 --width 400 --height 400 --codec mjpeg --output /tmp/test.mkv --nopreview || true
+      if [ -f "/tmp/test.mkv" ] && [ -s "/tmp/test.mkv" ]; then
+        echo -e "${GREEN}Successfully captured test frame with 400x400 resolution!${NC}"
+        rm -f /tmp/test.mkv
+      else
+        echo -e "${YELLOW}Test capture failed. Will try additional configuration.${NC}"
+        
+        # Try with wider formats
+        media-ctl -d "$MEDIA_DEVICE" --set-v4l2 "$ENTITY_NAME:0[fmt:SBGGR10_1X10/1456x1088 crop:(528,344)/400x400]" 2>/dev/null || true
+        
+        # Try resetting V4L2 device
+        for v in /dev/video*; do
+          if [ -e "$v" ]; then
+            v4l2-ctl -d "$v" --set-fmt-video=width=400,height=400,pixelformat=MJPG 2>/dev/null || true
+          fi
+        done
+      fi
+    fi
+  else
+    echo -e "${YELLOW}No IMX296 camera found. Cannot configure ROI.${NC}"
   fi
   
   # Reload udev rules

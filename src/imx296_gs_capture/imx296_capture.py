@@ -254,57 +254,89 @@ def configure_media_ctl(config):
             logger.error(f"Error during diagnostics: {e}")
         
         return False
+
+    # Important note: According to the logs, the IMX296 sensor format is 400x400-SBGGR10_1X10
+    # We need to make sure we use this format instead of trying to crop to a larger size
     
-    # Calculate crop coordinates to center the 400x400 window in the sensor
-    sensor_width = config['camera']['sensor_width']
-    sensor_height = config['camera']['sensor_height']
-    target_width = config['camera']['width']
-    target_height = config['camera']['height']
+    # Use 400x400 as the target size since that's what the sensor actually supports
+    target_width = 400
+    target_height = 400
     
+    # Calculate crop coordinates to center the 400x400 window in the sensor if needed
+    sensor_width = config['camera'].get('sensor_width', 1456)  # Default to full sensor
+    sensor_height = config['camera'].get('sensor_height', 1088)  # Default to full sensor
+    
+    # Center the crop in the sensor
     crop_x = (sensor_width - target_width) // 2
     crop_y = (sensor_height - target_height) // 2
     
-    bayer_format = config['camera']['media_ctl']['bayer_format']
+    # Use SBGGR10_1X10 as the bayer format since that's what's reported in the logs
+    bayer_format = config['camera']['media_ctl'].get('bayer_format', 'SBGGR10_1X10')
     
     # Log the configuration we're about to apply
     logger.info(f"Configuring IMX296 camera on {media_dev}")
     logger.info(f"Entity: {entity_name}")
-    logger.info(f"Crop: {crop_x},{crop_y}/{target_width}x{target_height}")
+    logger.info(f"Using native sensor format: {target_width}x{target_height}")
     logger.info(f"Format: {bayer_format}")
     
     # Construct and execute the media-ctl command
     try:
-        # Format the command with the calculated crop coordinates
-        cmd = [
-            media_ctl_path, "-d", media_dev,
-            "--set-v4l2", f'"{entity_name}":0[fmt:{bayer_format}/{target_width}x{target_height} crop:({crop_x},{crop_y})/{target_width}x{target_height}]'
+        # Try multiple media-ctl commands with different syntax to find one that works
+        commands = [
+            # Direct 400x400 format without cropping
+            [media_ctl_path, "-d", media_dev, "--set-v4l2", f'"{entity_name}":0[fmt:{bayer_format}/{target_width}x{target_height}]'],
+            
+            # Without quotes around entity name
+            [media_ctl_path, "-d", media_dev, "--set-v4l2", f'{entity_name}:0[fmt:{bayer_format}/{target_width}x{target_height}]'],
+            
+            # With explicit crop parameter
+            [media_ctl_path, "-d", media_dev, "--set-v4l2", f'{entity_name}:0[fmt:{bayer_format}/{target_width}x{target_height} crop:(0,0)/{target_width}x{target_height}]'],
+            
+            # Using centered crop from sensor
+            [media_ctl_path, "-d", media_dev, "--set-v4l2", f'{entity_name}:0[fmt:{bayer_format}/{sensor_width}x{sensor_height} crop:({crop_x},{crop_y})/{target_width}x{target_height}]']
         ]
         
-        logger.info(f"Executing media-ctl command: {' '.join(cmd)}")
+        # Try each command until one works
+        success = False
+        for i, cmd in enumerate(commands):
+            logger.info(f"Trying media-ctl command (attempt {i+1}): {' '.join(cmd)}")
+            try:
+                output = subprocess.check_output(cmd, universal_newlines=True, stderr=subprocess.STDOUT)
+                logger.info(f"media-ctl success, output: {output}")
+                success = True
+                break
+            except subprocess.CalledProcessError as e:
+                logger.warning(f"Command failed: {e}")
+                logger.warning(f"Output: {e.output if hasattr(e, 'output') else 'No output'}")
+                continue
         
-        # Try with different quoting styles if necessary
-        try:
-            output = subprocess.check_output(cmd, universal_newlines=True, stderr=subprocess.STDOUT, shell=False)
-            logger.info(f"media-ctl output: {output}")
-        except subprocess.CalledProcessError:
-            # Try without quotes around the entity name
-            cmd = [
-                media_ctl_path, "-d", media_dev,
-                "--set-v4l2", f'{entity_name}:0[fmt:{bayer_format}/{target_width}x{target_height} crop:({crop_x},{crop_y})/{target_width}x{target_height}]'
-            ]
-            logger.info(f"Retrying with modified command: {' '.join(cmd)}")
-            output = subprocess.check_output(cmd, universal_newlines=True, stderr=subprocess.STDOUT)
-            logger.info(f"media-ctl output: {output}")
+        # If all standard attempts failed, try a more basic approach
+        if not success:
+            logger.warning("All standard media-ctl commands failed. Trying simplified approach.")
+            try:
+                # Get the basic sensor configuration without cropping
+                cmd = [media_ctl_path, "-d", media_dev, "--set-v4l2", f'{entity_name}:0[fmt:{bayer_format}]']
+                subprocess.check_output(cmd, universal_newlines=True, stderr=subprocess.STDOUT)
+                logger.info("Successfully set basic format without crop.")
+                success = True
+            except subprocess.CalledProcessError as e:
+                logger.error(f"Basic format setting also failed: {e}")
         
         # Verify the configuration
         cmd_verify = [media_ctl_path, "-d", media_dev, "-p"]
         verify_output = subprocess.check_output(cmd_verify, universal_newlines=True)
         logger.debug(f"media-ctl verification output: {verify_output}")
         
+        # Look for the verification in the output 
+        if f"{target_width}x{target_height}" in verify_output or "400x400" in verify_output:
+            logger.info(f"✅ Verified: Camera is correctly configured with 400x400 format")
+        else:
+            logger.warning(f"⚠️ Could not verify 400x400 in media-ctl output")
+        
         # Optional: Run libcamera-hello to verify the crop
         verify_with_libcamera_hello(config)
         
-        return True
+        return success
     except subprocess.CalledProcessError as e:
         logger.error(f"Failed to configure media-ctl: {e}")
         logger.error(f"Command output: {e.output if hasattr(e, 'output') else 'No output'}")
