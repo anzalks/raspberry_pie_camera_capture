@@ -30,7 +30,7 @@ for arg in "$@"; do
     esac
 done
 
-# Function to start recording
+# Function to start recording - Improved to verify status better
 start_recording() {
     local ntfy_topic=$(grep -E "topic:" "$PROJECT_ROOT/config/config.yaml" | awk '{print $2}' | tr -d '"')
     if [ -n "$ntfy_topic" ]; then
@@ -38,22 +38,17 @@ start_recording() {
         curl -s -d "start" https://ntfy.sh/$ntfy_topic
         echo "Start signal sent!"
         
-        # Direct verification of recording state
-        echo "Checking for recording status changes..."
-        for i in {1..3}; do
-            sleep 1
-            new_status=$(sudo journalctl -u $SERVICE_NAME -n 5 2>/dev/null | grep -iE "recording|started|notification received" | tail -1)
-            if [ -n "$new_status" ]; then
-                echo "Recording status update: $new_status"
-                break
-            fi
-        done
+        # Create a marker file to indicate we're trying to start recording
+        touch /tmp/camera_recording_start_$$.tmp
+        
+        # We'll check this file in the main loop to verify status
+        echo "Recording start requested. Status will update in next refresh."
     else
         echo "No ntfy topic configured. Cannot start recording."
     fi
 }
 
-# Function to stop recording
+# Function to stop recording - Improved to verify status better
 stop_recording() {
     local ntfy_topic=$(grep -E "topic:" "$PROJECT_ROOT/config/config.yaml" | awk '{print $2}' | tr -d '"')
     if [ -n "$ntfy_topic" ]; then
@@ -61,16 +56,11 @@ stop_recording() {
         curl -s -d "stop" https://ntfy.sh/$ntfy_topic
         echo "Stop signal sent!"
         
-        # Direct verification of recording state
-        echo "Checking for recording status changes..."
-        for i in {1..3}; do
-            sleep 1
-            new_status=$(sudo journalctl -u $SERVICE_NAME -n 5 2>/dev/null | grep -iE "recording stopped|notification received|stop" | tail -1)
-            if [ -n "$new_status" ]; then
-                echo "Recording status update: $new_status"
-                break
-            fi
-        done
+        # Create a marker file to indicate we're trying to stop recording
+        touch /tmp/camera_recording_stop_$$.tmp
+        
+        # We'll check this file in the main loop to verify status
+        echo "Recording stop requested. Status will update in next refresh."
     else
         echo "No ntfy topic configured. Cannot stop recording."
     fi
@@ -116,12 +106,14 @@ check_keyboard() {
 # Simple text-based dashboard
 show_dashboard() {
     # Trap for clean exit
-    trap 'stty sane; echo "Dashboard closed."; exit 0' SIGINT SIGTERM EXIT
+    trap 'stty sane; echo "Dashboard closed."; rm -f /tmp/camera_recording_*.tmp; exit 0' SIGINT SIGTERM EXIT
 
     # Flag to track if dashboard should keep running
     KEEP_RUNNING=true
     
-    # Last file tracking
+    # Status tracking variables
+    RECORDING_STATUS="unknown"
+    REC_START_TIME=0
     LAST_FILE=""
     
     # Make the terminal not wait for Enter key
@@ -177,13 +169,32 @@ show_dashboard() {
         #
         echo "=== BUFFER INFORMATION ==="
         
-        # Get buffer information - focus on essential metrics only
+        # Get buffer information with more focus on time
+        buffer_info=$(sudo journalctl -u $SERVICE_NAME -n 200 2>/dev/null | grep -iE "buffer.*frame|buffer.*second|RAM buffer" | grep -v "Error" | tail -3)
         frame_info=$(sudo journalctl -u $SERVICE_NAME -n 150 2>/dev/null | grep -iE "buffer.*frames|captured.*frames|total.*frames|current.*fps" | grep -v "Error" | tail -3)
         fps_info=$(sudo journalctl -u $SERVICE_NAME -n 150 2>/dev/null | grep -iE "framerate.*|fps:" | grep -v "command" | tail -1)
-        camera_config=$(sudo journalctl -u $SERVICE_NAME -n 150 2>/dev/null | grep -iE "width.*height|resolution|crop" | grep -v "Error" | tail -1)
         
+        # Calculate buffer in seconds if we have frame count and FPS
+        buffer_frames=$(echo "$frame_info" | grep -iE "buffer" | grep -oE "[0-9]+" | tail -1)
+        fps_value=$(echo "$fps_info" | grep -oE "[0-9]+" | head -1 || echo "100")
+        
+        if [ -n "$buffer_frames" ] && [ -n "$fps_value" ] && [ "$fps_value" != "0" ]; then
+            buffer_seconds=$(awk "BEGIN {printf \"%.2f\", $buffer_frames / $fps_value}")
+            printf "%-20s %s\n" "Buffer Size:" "$buffer_frames frames ($buffer_seconds seconds)"
+        elif [ -n "$buffer_info" ]; then
+            # Extract buffer time directly if possible
+            buffer_seconds=$(echo "$buffer_info" | grep -oE "[0-9]+ seconds" | grep -oE "[0-9]+" | head -1)
+            if [ -n "$buffer_seconds" ]; then
+                printf "%-20s %s\n" "Buffer Size:" "$buffer_seconds seconds"
+            else
+                # Just show whatever buffer info we have
+                buffer_text=$(echo "$buffer_info" | head -1 | sed -E 's/.*INFO - //g')
+                printf "%-20s %s\n" "Buffer Info:" "$(truncate_text "$buffer_text" 55)"
+            fi
+        fi
+        
+        # Show real-time buffer status if frames info is available
         if [ -n "$frame_info" ]; then
-            # Extract and display important metrics
             total_frames=$(echo "$frame_info" | grep -iE "total|captured" | grep -oE "[0-9]+" | tail -1)
             buffer_frames=$(echo "$frame_info" | grep -iE "buffer" | grep -oE "[0-9]+" | tail -1)
             
@@ -193,63 +204,102 @@ show_dashboard() {
             
             if [ -n "$buffer_frames" ]; then
                 printf "%-20s %s\n" "Buffered Frames:" "$buffer_frames"
-            fi
-            
-            if [ -n "$fps_info" ]; then
-                fps_value=$(echo "$fps_info" | grep -oE "[0-9]+" | head -1)
-                if [ -n "$fps_value" ]; then
-                    printf "%-20s %s\n" "Current FPS:" "$fps_value"
-                else
-                    printf "%-20s %s\n" "Frame Rate:" "$(truncate_text "$(echo "$fps_info" | cut -d':' -f2-)" 55)"
-                fi
-            fi
-            
-            if [ -n "$camera_config" ]; then
-                config_text=$(echo "$camera_config" | sed -E 's/.*INFO - //g' | sed -E 's/.*: //g')
-                printf "%-20s %s\n" "Camera Mode:" "$(truncate_text "$config_text" 55)"
-            fi
-        else
-            # Capture settings from startup
-            buffer_size=$(sudo journalctl -u $SERVICE_NAME -n 300 2>/dev/null | grep -iE "ram buffer|buffer.*seconds|buffer.*frames" | grep -v "Error" | tail -1)
-            camera_cmd=$(sudo journalctl -u $SERVICE_NAME -n 300 2>/dev/null | grep -iE "starting libcamera|libcamera-vid" | grep -v "Error" | tail -1)
-            
-            if [ -n "$buffer_size" ]; then
-                printf "%-20s %s\n" "Buffer Config:" "$(truncate_text "$(echo "$buffer_size" | sed -E 's/.*INFO - //g')" 55)"
-            fi
-            
-            if [ -n "$camera_cmd" ]; then
-                # Extract key parameters
-                width=$(echo "$camera_cmd" | grep -oE "width [0-9]+" | tail -1 | awk '{print $2}')
-                height=$(echo "$camera_cmd" | grep -oE "height [0-9]+" | tail -1 | awk '{print $2}')
-                fps=$(echo "$camera_cmd" | grep -oE "framerate [0-9]+" | tail -1 | awk '{print $2}')
                 
-                if [ -n "$width" ] && [ -n "$height" ] && [ -n "$fps" ]; then
-                    printf "%-20s %s\n" "Camera Settings:" "${width}x${height} @ ${fps}fps"
-                else
-                    printf "%-20s %s\n" "Camera Command:" "$(truncate_text "$(echo "$camera_cmd" | grep -oE "libcamera-vid.*" | tail -1)" 55)"
+                # Calculate buffer percentage
+                if [ -n "$total_frames" ] && [ "$total_frames" -gt 0 ]; then
+                    buffer_percent=$(( buffer_frames * 100 / total_frames ))
+                    printf "%-20s " "Buffer Status:"
+                    # Draw a visual bar
+                    echo -n "["
+                    for i in $(seq 1 20); do
+                        if [ $i -le $(( buffer_percent / 5 )) ]; then
+                            echo -n "#"
+                        else
+                            echo -n " "
+                        fi
+                    done
+                    echo "] ${buffer_percent}%"
                 fi
-            else
-                echo "No buffer information available"
+            fi
+        fi
+        
+        # Show FPS
+        if [ -n "$fps_value" ] && [ "$fps_value" != "0" ]; then
+            printf "%-20s %s\n" "Current FPS:" "$fps_value"
+        fi
+        
+        # Camera settings
+        camera_settings=$(sudo journalctl -u $SERVICE_NAME -n 300 2>/dev/null | grep -iE "starting libcamera|libcamera-vid.*width" | grep -v "Error" | tail -1)
+        if [ -n "$camera_settings" ]; then
+            # Extract key parameters
+            width=$(echo "$camera_settings" | grep -oE "width [0-9]+" | tail -1 | awk '{print $2}')
+            height=$(echo "$camera_settings" | grep -oE "height [0-9]+" | tail -1 | awk '{print $2}')
+            fps=$(echo "$camera_settings" | grep -oE "framerate [0-9]+" | tail -1 | awk '{print $2}')
+            
+            if [ -n "$width" ] && [ -n "$height" ] && [ -n "$fps" ]; then
+                printf "%-20s %s\n" "Camera Settings:" "${width}x${height} @ ${fps}fps"
             fi
         fi
         
         echo
         
         #
-        # RECORDING STATUS SECTION
+        # RECORDING STATUS SECTION - IMPROVED DETECTION
         #
         echo "=== RECORDING STATUS ==="
         
-        # Get recording information - filter out timeout errors
-        recording_indicators=$(sudo journalctl -u $SERVICE_NAME -n 200 2>/dev/null | grep -iE "recording active|started recording|notification.*start|saving to file" | grep -v "Error|timed out" | tail -1)
-        stop_indicators=$(sudo journalctl -u $SERVICE_NAME -n 50 2>/dev/null | grep -iE "recording stopped|notification.*stop" | grep -v "Error|timed out" | tail -1)
+        # Check for our marker files (set by keyboard shortcuts)
+        if [ -f "/tmp/camera_recording_start_$$.tmp" ]; then
+            RECORDING_STATUS="active"
+            REC_START_TIME=$(date +%s)
+            rm -f "/tmp/camera_recording_start_$$.tmp"
+        elif [ -f "/tmp/camera_recording_stop_$$.tmp" ]; then
+            RECORDING_STATUS="inactive"
+            rm -f "/tmp/camera_recording_stop_$$.tmp"
+        fi
         
-        # Check if recording is active
-        if [ -n "$recording_indicators" ] && [[ "$(date +%s)" -lt "$(date -d "$(echo "$stop_indicators" | grep -oE "[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}" | tail -1)" +%s 2>/dev/null || echo 0)" ]]; then
+        # Also check logs for recording status
+        recent_start=$(sudo journalctl -u $SERVICE_NAME -n 200 2>/dev/null | grep -iE "recording started|notification.*start|ntfy.*start|start recording" | grep -v "Error|timed out" | tail -1)
+        recent_stop=$(sudo journalctl -u $SERVICE_NAME -n 50 2>/dev/null | grep -iE "recording stopped|notification.*stop|ntfy.*stop|stop recording" | grep -v "Error|timed out" | tail -1)
+        
+        # Determine status based on timestamps
+        if [ -n "$recent_start" ]; then
+            start_time=$(date -d "$(echo "$recent_start" | grep -oE "[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}" | tail -1)" +%s 2>/dev/null || echo 0)
+            if [ -n "$recent_stop" ]; then
+                stop_time=$(date -d "$(echo "$recent_stop" | grep -oE "[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}" | tail -1)" +%s 2>/dev/null || echo 0)
+                if [ $start_time -gt $stop_time ]; then
+                    RECORDING_STATUS="active"
+                    REC_START_TIME=$start_time
+                else
+                    RECORDING_STATUS="inactive"
+                fi
+            else
+                RECORDING_STATUS="active"
+                REC_START_TIME=$start_time
+            fi
+        fi
+        
+        # Display recording status with appropriate visuals
+        if [ "$RECORDING_STATUS" = "active" ]; then
             printf "%-20s %s\n" "Status:" "⚫ ACTIVE [Press P to stop]"
-            printf "%-20s %s\n" "Recording Info:" "$(truncate_text "$(echo "$recording_indicators" | sed -E 's/.*INFO - //g')" 55)"
             
-            # Current recording file with expanded search
+            # Calculate recording duration
+            if [ $REC_START_TIME -gt 0 ]; then
+                current_time=$(date +%s)
+                rec_duration=$((current_time - REC_START_TIME))
+                hours=$((rec_duration / 3600))
+                minutes=$(( (rec_duration % 3600) / 60 ))
+                seconds=$((rec_duration % 60))
+                printf "%-20s %02d:%02d:%02d\n" "Recording Time:" $hours $minutes $seconds
+            fi
+            
+            # Show recording info
+            if [ -n "$recent_start" ]; then
+                start_info=$(echo "$recent_start" | sed -E 's/.*INFO - //g')
+                printf "%-20s %s\n" "Start Info:" "$(truncate_text "$start_info" 55)"
+            fi
+            
+            # Current recording file
             current_file_info=$(sudo journalctl -u $SERVICE_NAME -n 50 2>/dev/null | grep -iE "current.*file|recording to|writing to|saving to" | grep -v "Error" | tail -1)
             if [ -n "$current_file_info" ]; then
                 file_text=$(echo "$current_file_info" | sed -E 's/.*INFO - //g')
@@ -274,8 +324,9 @@ show_dashboard() {
             printf "%-20s %s\n" "Status:" "○ INACTIVE [Press S to start]"
             
             # Show recent stop event if exists
-            if [ -n "$stop_indicators" ]; then
-                printf "%-20s %s\n" "Last Stop:" "$(truncate_text "$(echo "$stop_indicators" | sed -E 's/.*INFO - //g')" 55)"
+            if [ -n "$recent_stop" ]; then
+                stop_info=$(echo "$recent_stop" | sed -E 's/.*INFO - //g')
+                printf "%-20s %s\n" "Last Stop:" "$(truncate_text "$stop_info" 55)"
             fi
             
             # Show next recording file
@@ -348,28 +399,56 @@ show_dashboard() {
         echo
         
         #
-        # LSL STREAM DATA SECTION
+        # LSL STREAM DATA SECTION - WITH DATA TABLE
         #
         echo "=== LSL STREAM DATA ==="
         
-        # Get LSL information - show key setup information only
+        # Get LSL setup information
         lsl_setup=$(sudo journalctl -u $SERVICE_NAME -n 300 2>/dev/null | grep -iE "created lsl stream|setting up lsl" | grep -v "Error" | tail -1)
         if [ -n "$lsl_setup" ]; then
             lsl_text=$(echo "$lsl_setup" | sed -E 's/.*INFO - //g')
             printf "%-20s %s\n" "LSL Stream:" "$(truncate_text "$lsl_text" 55)"
             
-            # Try to find actual LSL data transmissions
-            lsl_data=$(sudo journalctl -u $SERVICE_NAME -n 1000 2>/dev/null | grep -iE "lsl output|lsl marker|sending lsl" | grep -v "Error" | tail -3)
+            # Get actual LSL data with 0.5s window (extract latest entries)
+            lsl_data=$(sudo journalctl -u $SERVICE_NAME -n 1000 2>/dev/null | grep -iE "lsl output|sending lsl|lsl data|metadata" | grep -v "Error" | grep -E "\[.*\]" | tail -5)
             if [ -n "$lsl_data" ]; then
                 echo
-                echo "Recent LSL data transmissions:"
+                echo "Recent LSL data (last 0.5s window):"
+                printf "%-15s %-12s %-15s\n" "TIMESTAMP" "REC_STATUS" "FRAME_NUM"
+                echo "------------------------------------------------"
+                
+                # Parse and format LSL data into table
                 echo "$lsl_data" | while read line; do
-                    # Extract and display concise information
-                    data_text=$(echo "$line" | sed -E 's/.*INFO - //g')
-                    echo "  $(truncate_text "$data_text" 75)"
+                    # Extract the data inside brackets
+                    data=$(echo "$line" | grep -oE "\[.*\]")
+                    if [ -n "$data" ]; then
+                        # Extract individual values from array
+                        timestamp=$(echo "$data" | grep -oE "[0-9]+\.[0-9]+" | head -1)
+                        is_recording=$(echo "$data" | grep -oE "[0-9]+\.[0-9]+" | sed -n '2p')
+                        frame_num=$(echo "$data" | grep -oE "[0-9]+\.[0-9]+" | sed -n '3p')
+                        
+                        if [ -n "$timestamp" ] && [ -n "$is_recording" ] && [ -n "$frame_num" ]; then
+                            # Format time for display
+                            time_display=$(date -d "@$timestamp" '+%H:%M:%S.%3N' 2>/dev/null || echo "$timestamp")
+                            
+                            # Format recording status
+                            if [ "$is_recording" = "1" ] || [ "$is_recording" = "1.0" ]; then
+                                rec_display="YES"
+                            else
+                                rec_display="NO"
+                            fi
+                            
+                            # Display as table row
+                            printf "%-15s %-12s %-15s\n" "$time_display" "$rec_display" "$frame_num"
+                        else
+                            # Just show raw data if parsing failed
+                            echo "  Data: $data"
+                        fi
+                    fi
                 done
             else
-                echo "No recent LSL data transmissions found in logs"
+                echo "No recent LSL data transmissions found"
+                echo "LSL data should appear as [timestamp, recording_status, frame_number]"
             fi
         else
             echo "No LSL stream configuration found"
