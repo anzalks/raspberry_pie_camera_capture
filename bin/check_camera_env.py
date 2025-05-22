@@ -79,13 +79,12 @@ def check_camera_modules():
         print_status(f"Error checking camera modules: {e}", False)
     
     try:
-        # Check if picamera2 is available
-        import importlib
-        picamera2_spec = importlib.util.find_spec("picamera2")
-        if picamera2_spec is not None:
+        # Check if picamera2 is available using a more robust method
+        try:
             import picamera2
             print_status(f"picamera2 is installed: {getattr(picamera2, '__version__', 'version unknown')}", "success")
-        else:
+        except ImportError:
+            # If direct import fails, try a simpler check without importlib.util
             print_status("picamera2 is not installed", False)
             print_status("Try running: sudo apt install -y python3-picamera2", "warning")
     except Exception as e:

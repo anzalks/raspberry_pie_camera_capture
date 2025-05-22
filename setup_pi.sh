@@ -374,7 +374,7 @@ After=network.target
 Type=simple
 User=$SUDO_USER
 WorkingDirectory=$PROJECT_DIR
-ExecStart=$PROJECT_DIR/$VENV_DIR/bin/python -m src.raspberry_pi_lsl_stream.camera_capture --config $CONFIG_FILE
+ExecStart=$PROJECT_DIR/$VENV_DIR/bin/python $PROJECT_DIR/src/raspberry_pi_lsl_stream/camera_capture.py --config $CONFIG_FILE
 Environment="PATH=$PROJECT_DIR/$VENV_DIR/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="PYTHONUNBUFFERED=1"
 Environment="PYTHONPATH=$PROJECT_DIR"
