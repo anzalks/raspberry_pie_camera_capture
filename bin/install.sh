@@ -20,7 +20,83 @@ fi
 # Install system dependencies
 echo "----- Installing System Dependencies -----"
 apt update
-apt install -y python3-pip python3-venv libcamera-apps ffmpeg v4l-utils
+apt install -y python3-pip python3-venv libcamera-apps ffmpeg v4l-utils \
+  build-essential cmake pkg-config libasio-dev git
+
+# Function to build liblsl from source with version control
+build_liblsl_from_source() {
+  echo "----- Building liblsl from source -----"
+  
+  # Define repository URL and version tag (using a specific older version)
+  LIBLSL_REPO="https://github.com/sccn/liblsl.git"
+  LIBLSL_VERSION="v1.14.0"  # Specify an older stable version
+  
+  # Create temporary build directory
+  BUILD_DIR="/tmp/liblsl_build_$(date +%s)"
+  mkdir -p "$BUILD_DIR"
+  cd "$BUILD_DIR"
+  
+  echo "Cloning liblsl repository..."
+  git clone --depth=1 --branch "$LIBLSL_VERSION" "$LIBLSL_REPO" liblsl || {
+    echo "Failed to clone liblsl repository."
+    cd - >/dev/null
+    return 1
+  }
+  
+  echo "Building liblsl version $LIBLSL_VERSION..."
+  cd liblsl
+  mkdir -p build
+  cd build
+  
+  # Configure and build
+  cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local || {
+    echo "Failed to configure liblsl build."
+    cd - >/dev/null
+    return 1
+  }
+  
+  # Build with multiple cores for speed
+  cmake --build . -j$(nproc) || {
+    echo "Failed to build liblsl."
+    cd - >/dev/null
+    return 1
+  }
+  
+  # Install
+  make install || {
+    echo "Failed to install liblsl."
+    cd - >/dev/null
+    return 1
+  }
+  
+  # Update shared library cache
+  ldconfig
+  
+  # Return to original directory and cleanup
+  cd "$PROJECT_ROOT"
+  rm -rf "$BUILD_DIR"
+  
+  echo "✓ liblsl built and installed successfully."
+  return 0
+}
+
+# Build and install liblsl
+echo "Checking for liblsl library..."
+if [ -f "/usr/local/lib/liblsl.so" ] || [ -f "/usr/lib/liblsl.so" ]; then
+  echo "liblsl already installed, checking version..."
+  INSTALLED_VER=$(ldconfig -p | grep liblsl | head -1)
+  echo "Installed: $INSTALLED_VER"
+  
+  read -p "Do you want to reinstall liblsl anyway? (y/n): " reinstall_liblsl
+  if [[ "$reinstall_liblsl" == "y" || "$reinstall_liblsl" == "Y" ]]; then
+    build_liblsl_from_source
+  else
+    echo "Using existing liblsl installation."
+  fi
+else
+  echo "liblsl not found. Building from source..."
+  build_liblsl_from_source
+fi
 
 # Setup Python virtual environment
 echo "----- Setting up Python Environment -----"
@@ -35,7 +111,18 @@ fi
 # Install Python dependencies
 echo "Installing Python dependencies..."
 .venv/bin/pip install --upgrade pip
-.venv/bin/pip install pylsl pyyaml requests psutil
+.venv/bin/pip install wheel setuptools
+
+# Install correct version of pylsl
+echo "Installing pylsl and other dependencies..."
+# First try to install pylsl that matches the liblsl version
+.venv/bin/pip install "pylsl==1.14.0" || {
+  echo "Failed to install specific pylsl version, trying latest..."
+  .venv/bin/pip install pylsl
+}
+
+# Install other required packages
+.venv/bin/pip install pyyaml requests psutil numpy
 
 # Create required directories
 echo "----- Creating Required Directories -----"
@@ -106,6 +193,21 @@ if libcamera-hello --list-cameras | grep -i "imx296"; then
   echo "✓ IMX296 camera found!"
 else
   echo "⚠ No IMX296 camera detected. Please check the hardware connection."
+fi
+
+# Test liblsl and pylsl
+echo "----- Testing LSL Installation -----"
+if [ -f "/usr/local/lib/liblsl.so" ] || [ -f "/usr/lib/liblsl.so" ]; then
+  echo "✓ liblsl library found"
+else
+  echo "⚠ liblsl library not found. LSL functionality may not work."
+fi
+
+if "$PROJECT_ROOT/.venv/bin/pip" list | grep -q "pylsl"; then
+  PYLSL_VERSION=$("$PROJECT_ROOT/.venv/bin/pip" show pylsl | grep "Version" | awk '{print $2}')
+  echo "✓ pylsl package installed (version $PYLSL_VERSION)"
+else
+  echo "⚠ pylsl package not installed. LSL functionality will not work."
 fi
 
 echo ""

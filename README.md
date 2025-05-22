@@ -22,7 +22,7 @@ This repository contains scripts and utilities for capturing video from an IMX29
 - Python 3.9+
 - libcamera and v4l2 utilities
 - FFmpeg for video encoding
-- pylsl for Lab Streaming Layer support
+- liblsl and pylsl for Lab Streaming Layer support
 
 ## Installation
 
@@ -41,11 +41,12 @@ This repository contains scripts and utilities for capturing video from an IMX29
 
    This script will:
    - Install system dependencies
+   - Build and install liblsl from source (v1.14.0)
    - Set up Python virtual environment with required packages
-   - Install pylsl for Lab Streaming Layer support
+   - Install pylsl matching the liblsl version
    - Configure file permissions
    - Install systemd service
-   - Test the camera
+   - Test the camera and LSL functionality
 
 ### Manual Installation
 
@@ -54,23 +55,38 @@ If you prefer to install manually, follow these steps:
 1. Install system dependencies:
    ```bash
    sudo apt update
-   sudo apt install -y python3-pip python3-venv libcamera-apps ffmpeg v4l-utils
+   sudo apt install -y python3-pip python3-venv libcamera-apps ffmpeg v4l-utils build-essential cmake pkg-config libasio-dev git
    ```
 
-2. Create a Python virtual environment:
+2. Build and install liblsl from source:
+   ```bash
+   # Clone liblsl repository (specific version)
+   git clone --branch v1.14.0 https://github.com/sccn/liblsl.git
+   cd liblsl
+   mkdir build && cd build
+   
+   # Build and install
+   cmake ..
+   cmake --build . -j$(nproc)
+   sudo make install
+   sudo ldconfig
+   cd ../..
+   ```
+
+3. Create Python virtual environment and install dependencies:
    ```bash
    python3 -m venv .venv
-   .venv/bin/pip install --upgrade pip
-   .venv/bin/pip install pylsl pyyaml requests psutil
+   .venv/bin/pip install --upgrade pip wheel setuptools
+   .venv/bin/pip install "pylsl==1.14.0" pyyaml requests psutil numpy
    ```
 
-3. Create directories and set permissions:
+4. Create directories and set permissions:
    ```bash
    mkdir -p logs recordings
    chmod -R 777 logs recordings
    ```
 
-4. Make scripts executable:
+5. Make scripts executable:
    ```bash
    chmod +x bin/run_imx296_capture.py
    chmod +x bin/restart_camera.sh
@@ -79,7 +95,7 @@ If you prefer to install manually, follow these steps:
    chmod +x bin/check_recording.sh
    ```
 
-5. Install systemd service:
+6. Install systemd service:
    ```bash
    sudo cp config/imx296-camera.service /etc/systemd/system/
    sudo systemctl daemon-reload
@@ -122,9 +138,11 @@ sudo bin/diagnose_camera.sh
 
 For more targeted diagnostics, you can run specific checks:
 ```bash
-sudo bin/diagnose_camera.sh --camera  # Check only camera hardware
-sudo bin/diagnose_camera.sh --venv    # Check Python environment
-sudo bin/diagnose_camera.sh --test    # Run a camera test capture
+sudo bin/diagnose_camera.sh --camera     # Check only camera hardware
+sudo bin/diagnose_camera.sh --venv       # Check Python environment
+sudo bin/diagnose_camera.sh --liblsl     # Check liblsl installation
+sudo bin/diagnose_camera.sh --lsl-compat # Test LSL compatibility
+sudo bin/diagnose_camera.sh --test       # Run a camera test capture
 ```
 
 If you need to restart the camera system:
@@ -133,6 +151,30 @@ sudo bin/restart_camera.sh
 ```
 
 ## Common Issues
+
+### LSL Installation Issues
+
+If you encounter errors with LSL functionality:
+
+1. Check if liblsl is properly installed:
+   ```bash
+   sudo ldconfig -p | grep liblsl
+   ```
+
+2. Check pylsl and its version:
+   ```bash
+   .venv/bin/pip show pylsl
+   ```
+
+3. Reinstall liblsl and pylsl if needed:
+   ```bash
+   sudo bin/install.sh
+   ```
+
+4. Test compatibility:
+   ```bash
+   sudo bin/diagnose_camera.sh --lsl-compat
+   ```
 
 ### Missing pylsl Package
 

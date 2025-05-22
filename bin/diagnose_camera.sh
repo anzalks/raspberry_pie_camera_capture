@@ -51,6 +51,82 @@ check_python_packages() {
   return 0
 }
 
+# Check liblsl installation
+check_liblsl() {
+  echo "Checking liblsl installation..."
+  
+  # Check if liblsl.so exists in system library paths
+  if ldconfig -p | grep -q "liblsl.so"; then
+    echo "✓ liblsl library is installed in system path."
+    echo "  $(ldconfig -p | grep "liblsl.so" | head -1)"
+    return 0
+  elif [ -f "/usr/local/lib/liblsl.so" ]; then
+    echo "✓ liblsl library found in /usr/local/lib/"
+    return 0
+  elif [ -f "/usr/lib/liblsl.so" ]; then
+    echo "✓ liblsl library found in /usr/lib/"
+    return 0
+  else
+    echo "✗ liblsl library not found in system paths."
+    echo "  This is required for LSL functionality."
+    echo "  Run: sudo bin/install.sh to build and install liblsl"
+    return 1
+  fi
+}
+
+# Check pylsl and liblsl compatibility
+check_lsl_compatibility() {
+  echo "Checking LSL compatibility..."
+  
+  # Only check if both prerequisites are installed
+  if ! ldconfig -p | grep -q "liblsl.so" && [ ! -f "/usr/local/lib/liblsl.so" ] && [ ! -f "/usr/lib/liblsl.so" ]; then
+    echo "✗ Cannot check LSL compatibility: liblsl not installed"
+    return 1
+  fi
+  
+  if [ ! -d "$PROJECT_ROOT/.venv" ]; then
+    echo "✗ Cannot check LSL compatibility: venv not found"
+    return 1
+  fi
+  
+  if ! "$PROJECT_ROOT/.venv/bin/pip" list | grep -q "pylsl"; then
+    echo "✗ Cannot check LSL compatibility: pylsl not installed"
+    return 1
+  fi
+  
+  # Create a simple test script
+  local TEST_SCRIPT="/tmp/test_lsl_$$.py"
+  cat > "$TEST_SCRIPT" << EOF
+import sys
+try:
+    import pylsl
+    print(f"pylsl version: {pylsl.__version__}")
+    print("Creating test stream...")
+    info = pylsl.StreamInfo("TestStream", "Markers", 1, 100, pylsl.cf_float32, "test_uid")
+    outlet = pylsl.StreamOutlet(info)
+    outlet.push_sample([1.0])
+    print("LSL test successful")
+    sys.exit(0)
+except Exception as e:
+    print(f"LSL test failed: {str(e)}")
+    sys.exit(1)
+EOF
+  
+  # Run the test script
+  echo "Running LSL compatibility test..."
+  if "$PROJECT_ROOT/.venv/bin/python" "$TEST_SCRIPT"; then
+    echo "✓ LSL compatibility test passed."
+    rm -f "$TEST_SCRIPT"
+    return 0
+  else
+    echo "✗ LSL compatibility test failed."
+    echo "  This may indicate version incompatibility between liblsl and pylsl."
+    echo "  Try reinstalling both with: sudo bin/install.sh"
+    rm -f "$TEST_SCRIPT"
+    return 1
+  fi
+}
+
 # Check camera hardware
 check_camera_hardware() {
   echo "Checking camera hardware..."
@@ -185,6 +261,14 @@ run_all_checks() {
     ALL_PASSED=false
   fi
   
+  if ! check_liblsl; then
+    ALL_PASSED=false
+  fi
+  
+  if ! check_lsl_compatibility; then
+    ALL_PASSED=false
+  fi
+  
   if ! check_camera_hardware; then
     ALL_PASSED=false
   fi
@@ -222,6 +306,12 @@ case "$1" in
     ;;
   --packages)
     check_python_packages
+    ;;
+  --liblsl)
+    check_liblsl
+    ;;
+  --lsl-compat)
+    check_lsl_compatibility
     ;;
   --camera)
     check_camera_hardware
