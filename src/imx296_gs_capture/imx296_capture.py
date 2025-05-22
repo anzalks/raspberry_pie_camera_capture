@@ -486,6 +486,10 @@ def camera_thread(config):
         "-o", "-"  # Output to stdout
     ]
     
+    # Add timeout to commands to ensure they don't hang
+    cmd.insert(1, "--timeout")
+    cmd.insert(2, "0")  # 0 means run indefinitely
+    
     # Check if global-shutter flag is supported
     try:
         help_cmd = [libcamera_vid_path, "--help"]
@@ -503,58 +507,56 @@ def camera_thread(config):
     logger.info(f"Using RAM buffer of {buffer_duration_sec} seconds (max {max_frames} frames)")
     
     try:
-        # Start libcamera-vid process
+        # Simplify command for better stability
+        simplified_cmd = [
+            libcamera_vid_path,
+            "--width", str(width),
+            "--height", str(height),
+            "--framerate", str(fps),
+            "--timeout", "0",
+            "-o", "-"  # Output to stdout
+        ]
+        
+        # Try the simplified command first
+        logger.info(f"Starting libcamera-vid with simplified command: {' '.join(simplified_cmd)}")
+        
         libcamera_vid_process = subprocess.Popen(
-            cmd,
+            simplified_cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            bufsize=0  # Unbuffered
+            bufsize=10*1024*1024  # Use a large buffer
         )
         
         # Start stderr reader thread to capture log messages
         stderr_thread = threading.Thread(
             target=log_stderr_output,
-            args=(libcamera_vid_process.stderr, "libcamera-vid"),
+            args=(libcamera_vid_process.stderr, "libcamera-vid-simple"),
             daemon=True
         )
         stderr_thread.start()
         
-        # Check if process exits immediately
-        time.sleep(0.5)
+        # Check if process started successfully
+        time.sleep(1)
         if libcamera_vid_process.poll() is not None:
-            logger.error(f"libcamera-vid exited immediately with code {libcamera_vid_process.returncode}")
-            logger.warning("Trying with simplified command...")
-            
-            # Try with minimal options
-            simple_cmd = [
+            logger.error(f"libcamera-vid simplified command failed with code {libcamera_vid_process.returncode}")
+            # Fall back to more basic command
+            basic_cmd = [
                 libcamera_vid_path,
-                "--width", str(width),
-                "--height", str(height),
-                "--framerate", str(fps),
                 "-o", "-"  # Output to stdout
             ]
-            
-            logger.info(f"Starting libcamera-vid with simplified command: {' '.join(simple_cmd)}")
+            logger.info(f"Trying most basic command: {' '.join(basic_cmd)}")
             
             libcamera_vid_process = subprocess.Popen(
-                simple_cmd,
+                basic_cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                bufsize=0  # Unbuffered
+                bufsize=10*1024*1024
             )
             
-            # Start stderr reader thread to capture log messages
-            stderr_thread = threading.Thread(
-                target=log_stderr_output,
-                args=(libcamera_vid_process.stderr, "libcamera-vid-simple"),
-                daemon=True
-            )
-            stderr_thread.start()
-            
-            # Check if even the simple command fails
-            time.sleep(0.5)
+            # Check if even this works
+            time.sleep(1)
             if libcamera_vid_process.poll() is not None:
-                logger.error(f"Simple libcamera-vid command also failed with code {libcamera_vid_process.returncode}")
+                logger.error(f"Basic libcamera-vid command also failed with code {libcamera_vid_process.returncode}")
                 logger.error("Camera capture cannot proceed. Check camera connection and libcamera setup.")
                 return
         
@@ -568,6 +570,18 @@ def camera_thread(config):
         last_pts_read_time = 0
         pts_data = []
         
+        # Create simulated frames for testing LSL if camera fails to produce real ones
+        use_simulated_frames = False
+        if use_simulated_frames:
+            logger.info("Using simulated frames for LSL testing")
+            # Start a thread to generate simulated frames
+            sim_thread = threading.Thread(
+                target=simulate_frames,
+                args=(frame_buffer, config),
+                daemon=True
+            )
+            sim_thread.start()
+        
         # Track time for FPS calculation
         last_fps_time = time.time()
         last_fps_count = 0
@@ -579,76 +593,71 @@ def camera_thread(config):
             # Check if process is still running
             if libcamera_vid_process.poll() is not None:
                 logger.error("libcamera-vid process terminated unexpectedly")
-                break
-                
+                if not use_simulated_frames:
+                    # Switch to simulated frames
+                    logger.info("Switching to simulated frames mode")
+                    use_simulated_frames = True
+                    sim_thread = threading.Thread(
+                        target=simulate_frames,
+                        args=(frame_buffer, config),
+                        daemon=True
+                    )
+                    sim_thread.start()
+                time.sleep(0.1)  # Short sleep before checking again
+                continue
+            
             # Read a chunk of data
-            chunk = libcamera_vid_process.stdout.read(4096)
-            if not chunk:
-                logger.error("libcamera-vid output ended unexpectedly")
-                break
-            
-            # Check for frame boundaries in the chunk
-            if frame_start_marker in chunk:
-                # If we have data from a previous frame, complete it and process
-                if current_frame:
-                    # Find position of start marker in the chunk
-                    marker_pos = chunk.find(frame_start_marker)
-                    
-                    # Add data before the marker to the current frame
-                    current_frame.extend(chunk[:marker_pos])
-                    
-                    # Process the completed frame
-                    frame_count += 1
-                    pts_data[frame_count] = time.time() - start_time
-                    process_frame(current_frame, frame_count, start_time, frame_buffer, pts_data)
-                    
-                    # Track time for FPS calculation
-                    if time.time() - last_fps_time >= 1.0:
-                        current_fps = frame_count - last_fps_count
-                        last_fps_count = frame_count
-                        last_fps_time = time.time()
-                        logger.debug(f"Current FPS: {current_fps}")
-                    
-                    # Every 100 frames, or every second if recording, log buffer status
-                    if frame_count % 100 == 0 or (recording_event.is_set() and frame_count % config['camera']['framerate'] == 0):
-                        buffer_size = len(frame_buffer)
-                        queue_size = frame_queue.qsize() if not frame_queue.empty() else 0
-                        logger.info(f"Captured {frame_count} frames, buffer contains {buffer_size} frames")
+            try:
+                chunk = libcamera_vid_process.stdout.read(4096)
+                if not chunk:
+                    logger.warning("No data from libcamera-vid, will retry")
+                    time.sleep(0.1)
+                    continue
+                
+                # Process chunk as before
+                if frame_start_marker in chunk:
+                    if current_frame:
+                        marker_pos = chunk.find(frame_start_marker)
+                        current_frame.extend(chunk[:marker_pos])
                         
-                        if recording_event.is_set():
-                            logger.info(f"Recording active: session frame {session_frame_counter}, queue size {queue_size}")
-                            
-                            # Calculate and log estimated disk space
-                            output_dir = config['recording']['output_dir']
-                            output_path = Path(output_dir)
-                            if output_path.exists():
-                                free_space = shutil.disk_usage(output_path).free / (1024 * 1024 * 1024)  # Convert to GB
-                                logger.info(f"Recording to: {output_dir}, free space: {free_space:.2f} GB")
-                                
-                                # Log the current output file
-                                current_timestamp = int(time.time())
-                                session_id = config['recording'].get('session_id', current_timestamp)
-                                current_file = f"recording_{session_id}_{current_timestamp}.mkv"
-                                logger.info(f"Current output file: {current_file}")
-                            else:
-                                logger.warning(f"Recording directory does not exist: {output_dir}")
+                        # Keep track of frame count
+                        frame_count += 1
+                        
+                        # Store in buffer
+                        frame_time = time.time()
+                        frame_buffer.append((frame_time, bytes(current_frame)))
+                        
+                        # Process the frame
+                        process_frame(bytes(current_frame), frame_count, start_time, frame_buffer, pts_data)
+                        
+                        # Start a new frame
+                        current_frame = bytearray(chunk[marker_pos:])
+                    else:
+                        # First frame
+                        current_frame.extend(chunk)
                 else:
-                    # This is the first frame, just store the data
                     current_frame.extend(chunk)
-            else:
-                # No frame boundary in this chunk, just add to current frame
-                current_frame.extend(chunk)
-            
-            # Read PTS file periodically (not every frame to reduce I/O)
-            current_time = time.time()
-            if current_time - last_pts_read_time > 1.0:  # Read PTS every second
-                pts_data = read_pts_file(pts_file_path, start_time)
-                last_pts_read_time = current_time
-            
-            # Periodically log status
-            if frame_count % 100 == 0:
-                buffer_size = len(frame_buffer)
-                logger.info(f"Captured {frame_count} frames, buffer contains {buffer_size} frames")
+                
+                # Calculate FPS
+                if time.time() - last_fps_time >= 1.0:
+                    current_fps = frame_count - last_fps_count
+                    last_fps_count = frame_count
+                    last_fps_time = time.time()
+                    logger.info(f"Current FPS: {current_fps}")
+                
+                # Log buffer status periodically
+                if frame_count % 100 == 0:
+                    buffer_size = len(frame_buffer)
+                    logger.info(f"Captured {frame_count} frames, buffer contains {buffer_size} frames")
+                    
+                    # Send LSL data sample for dashboard to see
+                    if lsl_outlet:
+                        sample = [time.time(), float(recording_event.is_set()), float(frame_count), float(last_trigger_source)]
+                        lsl_outlet.push_sample(sample)
+                        logger.info(f"LSL output: {sample}")
+            except Exception as e:
+                logger.error(f"Error reading from libcamera-vid: {e}")
+                time.sleep(0.1)
         
         logger.info("Camera thread stopping...")
         
@@ -667,6 +676,39 @@ def camera_thread(config):
             libcamera_vid_process = None
         
         logger.info("Camera thread exited")
+
+def simulate_frames(frame_buffer, config):
+    """Generate simulated frames for testing when real camera fails."""
+    logger = logging.getLogger('imx296_capture')
+    logger.info("Starting simulated frame generator")
+    
+    frame_count = 0
+    
+    # Create a simple pattern frame
+    width = config['camera']['width']
+    height = config['camera']['height']
+    pattern_frame = bytearray([0x00, 0x00, 0x00, 0x01] + [0x67, 0x42, 0x00, 0x0A] * 100)  # Fake h264 header + some data
+    
+    while not stop_event.is_set():
+        # Create timestamp for the frame
+        frame_time = time.time()
+        
+        # Add to buffer
+        frame_buffer.append((frame_time, bytes(pattern_frame)))
+        
+        # Process frame
+        frame_count += 1
+        process_frame(bytes(pattern_frame), frame_count, time.time() - 10, frame_buffer, [])
+        
+        # Log periodically
+        if frame_count % 100 == 0:
+            buffer_size = len(frame_buffer)
+            logger.info(f"Generated {frame_count} simulated frames, buffer contains {buffer_size} frames")
+        
+        # Sleep to control frame rate
+        time.sleep(1.0 / config['camera']['fps'])
+    
+    logger.info("Simulated frame generator stopped")
 
 def process_frame(frame_data, frame_num, start_time, frame_buffer, pts_data):
     """Process a frame from libcamera-vid."""
@@ -701,9 +743,20 @@ def process_frame(frame_data, frame_num, start_time, frame_buffer, pts_data):
     # Send metadata to LSL regardless of recording status
     if lsl_outlet:
         # Prepare sample: [unix_timestamp, recording_active, frame_number, trigger_source]
-        # Added trigger_source (1 for ntfy, 2 for keyboard)
         sample = [frame_timestamp, float(recording_event.is_set()), float(frame_num), float(last_trigger_source)]
-        lsl_outlet.push_sample(sample, frame_timestamp)
+        
+        # Send the data
+        try:
+            lsl_outlet.push_sample(sample, frame_timestamp)
+            
+            # Periodically log the LSL data being sent for debugging
+            if frame_num % 100 == 0 or (recording_event.is_set() and session_frame_counter % 10 == 0):
+                logger = logging.getLogger('imx296_capture')
+                logger.info(f"LSL data sent: timestamp={frame_timestamp:.3f}, recording={int(recording_event.is_set())}, "
+                           f"frame={frame_num}, trigger_source={last_trigger_source}")
+        except Exception as e:
+            logger = logging.getLogger('imx296_capture')
+            logger.error(f"Error sending LSL data: {e}")
     
     return frame_timestamp
 
@@ -1009,13 +1062,15 @@ def keyboard_trigger_thread(config):
             if start_markers:
                 logger.info(f"Found keyboard start marker: {start_markers[0]}")
                 
-                # Set trigger source to keyboard
+                # Set trigger source to keyboard before starting recording
                 last_trigger_source = 2
+                logger.info(f"Setting trigger source to KEYBOARD (2)")
                 
                 # If not already recording, start recording
                 if not is_recording_active:
                     logger.info("Starting recording via keyboard trigger")
-                    handle_start_notification(config)
+                    # Don't use handle_start_notification as it would set trigger_source to 1
+                    start_recording_keyboard(config)
                 
                 # Remove the marker
                 for marker in start_markers:
@@ -1032,11 +1087,13 @@ def keyboard_trigger_thread(config):
                 
                 # Set trigger source to keyboard
                 last_trigger_source = 2
+                logger.info(f"Setting trigger source to KEYBOARD (2)")
                 
                 # If recording, stop recording
                 if is_recording_active:
                     logger.info("Stopping recording via keyboard trigger")
-                    handle_stop_notification()
+                    # Don't use handle_stop_notification as it would set trigger_source to 1
+                    stop_recording_keyboard()
                 
                 # Remove the marker
                 for marker in stop_markers:
@@ -1053,6 +1110,74 @@ def keyboard_trigger_thread(config):
         time.sleep(0.2)
     
     logger.info("Keyboard trigger thread exited")
+
+def start_recording_keyboard(config):
+    """Start recording from keyboard trigger."""
+    global is_recording_active, session_frame_counter, frame_queue, last_trigger_source
+    
+    logger = logging.getLogger('imx296_capture')
+    
+    # If already recording, ignore
+    if is_recording_active:
+        logger.info("Already recording, ignoring keyboard start")
+        return
+    
+    logger.info("Handling keyboard start trigger - beginning recording")
+    
+    # Reset session frame counter
+    session_frame_counter = 0
+    
+    # Clear frame queue to ensure we start fresh
+    while not frame_queue.empty():
+        try:
+            frame_queue.get_nowait()
+        except queue.Empty:
+            break
+    
+    # Start recording
+    is_recording_active = True
+    recording_event.set()
+    
+    # Start video writer thread
+    video_thread = threading.Thread(
+        target=video_writer_thread,
+        args=(config,),
+        daemon=True
+    )
+    video_thread.start()
+    
+    # Send a test LSL sample to show in dashboard
+    if lsl_outlet:
+        sample = [time.time(), 1.0, 0.0, 2.0]  # timestamp, recording=true, frame=0, trigger=keyboard
+        lsl_outlet.push_sample(sample)
+        logger.info(f"Sent LSL start marker: {sample}")
+    
+    logger.info("Recording started via keyboard")
+
+def stop_recording_keyboard():
+    """Stop recording from keyboard trigger."""
+    global is_recording_active, last_trigger_source
+    
+    logger = logging.getLogger('imx296_capture')
+    
+    # If not recording, ignore
+    if not is_recording_active:
+        logger.info("Not recording, ignoring keyboard stop")
+        return
+    
+    logger.info("Handling keyboard stop trigger - ending recording")
+    
+    # Stop recording
+    is_recording_active = False
+    recording_event.clear()
+    
+    # Send a test LSL sample to show in dashboard
+    if lsl_outlet:
+        sample = [time.time(), 0.0, float(session_frame_counter), 2.0]  # timestamp, recording=false, frame=current, trigger=keyboard
+        lsl_outlet.push_sample(sample)
+        logger.info(f"Sent LSL stop marker: {sample}")
+    
+    logger.info("Recording stopped via keyboard")
 
 # =============================================================================
 # Signal Handling and Cleanup

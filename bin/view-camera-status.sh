@@ -451,6 +451,8 @@ show_dashboard() {
                 "$(sudo journalctl -u $SERVICE_NAME -n 1000 2>/dev/null | grep -E "\[[0-9,. ]+\]" | tail -10)"
                 # Pattern 3: Look for trigger or marker mentions
                 "$(sudo journalctl -u $SERVICE_NAME -n 500 2>/dev/null | grep -iE "trigger|marker|timestamp" | grep -v "setup|create" | tail -10)"
+                # Pattern 4: Look for more detailed LSL data logs 
+                "$(sudo journalctl -u $SERVICE_NAME -n 500 2>/dev/null | grep -iE "LSL data sent:" | tail -10)"
             )
             
             # Combine all pattern results
@@ -474,49 +476,95 @@ show_dashboard() {
                 
                 # Parse each line
                 echo "$lsl_data" | tail -5 | while read -r line; do
-                    # Extract inside square brackets or parentheses
-                    data_part=$(echo "$line" | grep -oE "\[[^]]+\]|\([^)]+\)" | head -1)
-                    
-                    if [ -n "$data_part" ]; then
-                        # Remove brackets and split by comma or space
-                        clean_data=$(echo "$data_part" | sed 's/[\[\]()]//g')
+                    # First check for new improved format
+                    if [[ "$line" == *"LSL data sent:"* ]]; then
+                        # Extract values from well-formatted log line
+                        timestamp=$(echo "$line" | grep -oE "timestamp=[0-9.]*" | cut -d= -f2)
+                        recording=$(echo "$line" | grep -oE "recording=[0-9]" | cut -d= -f2)
+                        frame=$(echo "$line" | grep -oE "frame=[0-9]*" | cut -d= -f2)
+                        trigger=$(echo "$line" | grep -oE "trigger_source=[0-9]" | cut -d= -f2)
                         
-                        # Try comma-separated values first
-                        if [[ "$clean_data" == *","* ]]; then
-                            IFS=',' read -ra values <<< "$clean_data" 2>/dev/null
-                            
-                            # Extract values with placeholders for missing values
-                            time="${values[0]:-N/A}"
-                            frame="${values[1]:-N/A}"
-                            trigger="${values[2]:-N/A}"
-                            source="${values[3]:-N/A}"
-                            
-                            # Format time nicely if it's a timestamp
-                            if [[ "$time" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
-                                time_str=$(date -d "@$time" '+%H:%M:%S.%3N' 2>/dev/null || echo "$time")
-                            else
-                                time_str="$time"
-                            fi
-                            
-                            printf "%-15s %-10s %-15s %-15s\n" "$time_str" "$frame" "$trigger" "$source"
-                        else
-                            # Space-separated values
-                            read -r time frame trigger source <<< "$clean_data" 2>/dev/null
-                            
-                            # Use placeholders for missing values
-                            printf "%-15s %-10s %-15s %-15s\n" "${time:-N/A}" "${frame:-N/A}" "${trigger:-N/A}" "${source:-N/A}"
+                        # Format time nicely
+                        time_str=$(date -d "@$timestamp" '+%H:%M:%S.%3N' 2>/dev/null || echo "$timestamp")
+                        
+                        # Format trigger source as text
+                        trigger_name="Unknown"
+                        if [ "$trigger" = "1" ]; then
+                            trigger_name="ntfy"
+                        elif [ "$trigger" = "2" ]; then
+                            trigger_name="keyboard"
+                        elif [ "$trigger" = "0" ]; then
+                            trigger_name="none"
                         fi
+                        
+                        printf "%-15s %-10s %-15s %-15s\n" "$time_str" "$frame" "$recording" "$trigger_name"
                     else
-                        # Try to extract any numbers as a fallback
-                        data_values=$(echo "$line" | grep -oE "[0-9]+(\.[0-9]+)?" | head -4)
-                        if [ -n "$data_values" ]; then
-                            # Read up to 4 values
-                            read -r time frame trigger source <<< "$data_values" 2>/dev/null
-                            printf "%-15s %-10s %-15s %-15s\n" "${time:-N/A}" "${frame:-N/A}" "${trigger:-N/A}" "${source:-N/A}"
+                        # Extract inside square brackets or parentheses
+                        data_part=$(echo "$line" | grep -oE "\[[^]]+\]|\([^)]+\)" | head -1)
+                        
+                        if [ -n "$data_part" ]; then
+                            # Remove brackets and split by comma or space
+                            clean_data=$(echo "$data_part" | sed 's/[\[\]()]//g')
+                            
+                            # Try comma-separated values first
+                            if [[ "$clean_data" == *","* ]]; then
+                                IFS=',' read -ra values <<< "$clean_data" 2>/dev/null
+                                
+                                # Extract values with placeholders for missing values
+                                time="${values[0]:-N/A}"
+                                frame="${values[1]:-N/A}"
+                                trigger="${values[2]:-N/A}"
+                                source="${values[3]:-N/A}"
+                                
+                                # Format time nicely if it's a timestamp
+                                if [[ "$time" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+                                    time_str=$(date -d "@$time" '+%H:%M:%S.%3N' 2>/dev/null || echo "$time")
+                                else
+                                    time_str="$time"
+                                fi
+                                
+                                # Format trigger source as text if it's a number
+                                if [[ "$source" =~ ^[0-9]+$ ]]; then
+                                    if [ "$source" = "1" ]; then
+                                        source="ntfy"
+                                    elif [ "$source" = "2" ]; then
+                                        source="keyboard"
+                                    elif [ "$source" = "0" ]; then
+                                        source="none"
+                                    fi
+                                fi
+                                
+                                printf "%-15s %-10s %-15s %-15s\n" "$time_str" "$frame" "$trigger" "$source"
+                            else
+                                # Space-separated values
+                                read -r time frame trigger source <<< "$clean_data" 2>/dev/null
+                                
+                                # Format trigger source if it's a number
+                                if [[ "$source" =~ ^[0-9]+$ ]]; then
+                                    if [ "$source" = "1" ]; then
+                                        source="ntfy"
+                                    elif [ "$source" = "2" ]; then
+                                        source="keyboard"
+                                    elif [ "$source" = "0" ]; then
+                                        source="none"
+                                    fi
+                                fi
+                                
+                                # Use placeholders for missing values
+                                printf "%-15s %-10s %-15s %-15s\n" "${time:-N/A}" "${frame:-N/A}" "${trigger:-N/A}" "${source:-N/A}"
+                            fi
                         else
-                            # Last resort - just show the content of the line
-                            msg=$(echo "$line" | sed -E 's/.*INFO - //g')
-                            echo "  Raw: $(truncate_text "$msg" 60)"
+                            # Try to extract any numbers as a fallback
+                            data_values=$(echo "$line" | grep -oE "[0-9]+(\.[0-9]+)?" | head -4)
+                            if [ -n "$data_values" ]; then
+                                # Read up to 4 values
+                                read -r time frame trigger source <<< "$data_values" 2>/dev/null
+                                printf "%-15s %-10s %-15s %-15s\n" "${time:-N/A}" "${frame:-N/A}" "${trigger:-N/A}" "${source:-N/A}"
+                            else
+                                # Last resort - just show the content of the line
+                                msg=$(echo "$line" | sed -E 's/.*INFO - //g')
+                                echo "  Raw: $(truncate_text "$msg" 60)"
+                            fi
                         fi
                     fi
                 done
