@@ -34,12 +34,11 @@ install_system_dependencies() {
         v4l-utils \
         libcamera-apps \
         ffmpeg \
-        tmux \
         git \
         build-essential \
         cmake \
         libasio-dev
-
+    
     echo -e "${GREEN}System dependencies installed.${NC}"
 }
 
@@ -50,42 +49,61 @@ build_liblsl_from_source() {
     # Get username of the user who ran sudo
     SUDO_USER_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
     
-    # Create a temporary directory for building
-    BUILD_DIR=$(mktemp -d)
-    cd "$BUILD_DIR"
+    # Create a temporary directory in the user's home where they have permission
+    BUILD_DIR="$SUDO_USER_HOME/tmp_liblsl_build_$(date +%s)"
+    mkdir -p "$BUILD_DIR"
+    chown "$SUDO_USER":"$(id -gn "$SUDO_USER")" "$BUILD_DIR"
+    
+    echo "Using build directory: $BUILD_DIR"
+    
+    # Change to the build directory
+    cd "$BUILD_DIR" || {
+        echo -e "${RED}Failed to change to build directory. Falling back to pip installation.${NC}"
+        return 1
+    }
     
     # Clone the LSL repository
     echo "Cloning LSL repository..."
-    if ! sudo -u "$SUDO_USER" git clone --depth=1 https://github.com/sccn/liblsl.git; then
+    if ! su -c "git clone --depth=1 https://github.com/sccn/liblsl.git" "$SUDO_USER"; then
         echo -e "${RED}Failed to clone liblsl repository. Attempting to install pylsl via pip instead.${NC}"
         cd "$PROJECT_ROOT"
         rm -rf "$BUILD_DIR"
         return 1
     fi
     
-    cd liblsl
+    cd liblsl || {
+        echo -e "${RED}Failed to change to liblsl directory. Falling back to pip installation.${NC}"
+        cd "$PROJECT_ROOT"
+        rm -rf "$BUILD_DIR"
+        return 1
+    }
     
     # Create build directory
     mkdir -p build
-    cd build
+    cd build || {
+        echo -e "${RED}Failed to create/enter build directory. Falling back to pip installation.${NC}"
+        cd "$PROJECT_ROOT"
+        rm -rf "$BUILD_DIR"
+        return 1
+    }
     
     # Configure and build
     echo "Configuring and building LSL..."
-    if ! sudo -u "$SUDO_USER" cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local; then
+    if ! su -c "cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local" "$SUDO_USER"; then
         echo -e "${RED}Failed to configure liblsl build. Attempting to install pylsl via pip instead.${NC}"
         cd "$PROJECT_ROOT"
         rm -rf "$BUILD_DIR"
         return 1
     fi
     
-    if ! sudo -u "$SUDO_USER" cmake --build . -j$(nproc); then
+    if ! su -c "cmake --build . -j$(nproc)" "$SUDO_USER"; then
         echo -e "${RED}Failed to build liblsl. Attempting to install pylsl via pip instead.${NC}"
         cd "$PROJECT_ROOT"
         rm -rf "$BUILD_DIR"
         return 1
     fi
     
-    # Install
+    # Install (this needs to be done as root)
     echo "Installing LSL..."
     if ! make install; then
         echo -e "${RED}Failed to install liblsl. Attempting to install pylsl via pip instead.${NC}"
@@ -97,7 +115,7 @@ build_liblsl_from_source() {
     ldconfig
     
     # Clean up
-    cd "$PROJECT_ROOT"
+    cd "$PROJECT_ROOT" || true
     rm -rf "$BUILD_DIR"
     
     echo -e "${GREEN}liblsl built and installed from source.${NC}"
