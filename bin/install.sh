@@ -427,19 +427,37 @@ echo -e "${YELLOW}----- Testing pylsl Installation -----${NC}"
 TEST_SCRIPT="/tmp/pylsl_test_$$.py"
 cat > "$TEST_SCRIPT" << 'EOF'
 #!/usr/bin/env python3
-try:
-    import pylsl
-    import sys
-    print(f"pylsl version: {pylsl.__version__}")
-    # Test creating a stream to verify functionality
-    info = pylsl.StreamInfo("TestStream", "Markers", 1, 100, pylsl.cf_float32, "test_uid")
-    outlet = pylsl.StreamOutlet(info)
-    outlet.push_sample([1.0])
-    print("LSL test successful: created stream and pushed sample")
+import sys
+
+def test_pylsl():
+    try:
+        import pylsl
+        print("pylsl successfully imported")
+        
+        # Create test stream
+        info = pylsl.StreamInfo("TestStream", "Markers", 1, 100, pylsl.cf_float32, "test_uid")
+        print("Created StreamInfo object")
+        
+        # Create outlet
+        outlet = pylsl.StreamOutlet(info)
+        print("Created StreamOutlet object")
+        
+        # Push sample
+        outlet.push_sample([1.0])
+        print("Successfully pushed sample through LSL")
+        return True
+    except ImportError:
+        print("ERROR: Failed to import pylsl module")
+        return False
+    except Exception as e:
+        print(f"ERROR: {str(e)}")
+        return False
+
+if test_pylsl():
+    print("LSL TEST PASSED: All functionality works correctly")
     sys.exit(0)
-except Exception as e:
-    import sys
-    print(f"Error testing pylsl: {str(e)}")
+else:
+    print("LSL TEST FAILED: Could not complete LSL test")
     sys.exit(1)
 EOF
 
@@ -455,8 +473,48 @@ if [ -d "$PROJECT_ROOT/.venv" ]; then
     echo -e "${GREEN}✓ pylsl package installed and working correctly${NC}"
   else
     echo -e "${RED}⚠ pylsl package test failed. LSL functionality will not work.${NC}"
-    echo "Try reinstalling with:"
-    echo "  cd $PROJECT_ROOT && .venv/bin/pip install pylsl==1.12.2"
+    echo "Checking for liblsl shared library..."
+    
+    if [ -f "/usr/local/lib/liblsl.so" ]; then
+      LIBLSL_PATH="/usr/local/lib/liblsl.so"
+      echo "Found liblsl at: $LIBLSL_PATH"
+      
+      # Find pylsl directory
+      PYTHON_VERSION=$(ls "$PROJECT_ROOT/.venv/lib/" | grep "python3" | head -1)
+      if [ -n "$PYTHON_VERSION" ]; then
+        SITE_PKG_DIR="$PROJECT_ROOT/.venv/lib/$PYTHON_VERSION/site-packages"
+        PYLSL_DIR="$SITE_PKG_DIR/pylsl"
+        
+        if [ -d "$PYLSL_DIR" ]; then
+          echo "Creating symlinks for liblsl in pylsl directory..."
+          mkdir -p "$PYLSL_DIR/lib"
+          ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/liblsl.so"
+          ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/liblsl32.so"
+          ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/liblsl64.so"
+          ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/lib/liblsl.so"
+          ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/lib/liblsl32.so"
+          ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/lib/liblsl64.so"
+          
+          # Set permissions
+          if [ -n "$SUDO_USER" ]; then
+            chown -R "$SUDO_USER:$(id -g $SUDO_USER)" "$PYLSL_DIR"
+          fi
+          
+          echo "Symlinks created. Running test again..."
+          if sudo -u "$SUDO_USER" "$PROJECT_ROOT/.venv/bin/python" "$TEST_SCRIPT"; then
+            echo -e "${GREEN}✓ LSL now working with created symlinks${NC}"
+          else
+            echo -e "${RED}⚠ LSL still not working. Try installing a different pylsl version:${NC}"
+            echo "  $PROJECT_ROOT/.venv/bin/pip install pylsl==1.15.0"
+          fi
+        fi
+      fi
+    else
+      echo "You may need to reinstall pylsl or liblsl:"
+      echo "  sudo apt install -y libboost-all-dev"
+      echo "  sudo ldconfig"
+      echo "  $PROJECT_ROOT/.venv/bin/pip install pylsl==1.12.2"
+    fi
   fi
 fi
 

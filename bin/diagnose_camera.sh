@@ -74,7 +74,7 @@ check_liblsl() {
   fi
 }
 
-# Check pylsl and liblsl compatibility
+# Test pylsl installation with specific guidance
 check_lsl_compatibility() {
   echo "Checking LSL compatibility..."
   
@@ -99,24 +99,44 @@ check_lsl_compatibility() {
   PYLSL_VERSION=$("$PROJECT_ROOT/.venv/bin/pip" show pylsl | grep "Version" | awk '{print $2}')
   echo "Detected pylsl version: $PYLSL_VERSION"
   
-  # Create a simple test script with proper permissions
+  # Create a simple test script
   local TEST_SCRIPT="/tmp/test_lsl_$$.py"
-  cat > "$TEST_SCRIPT" << EOF
+  cat > "$TEST_SCRIPT" << 'EOF'
+#!/usr/bin/env python3
 import sys
-try:
-    import pylsl
-    print(f"pylsl version: {pylsl.__version__}")
-    print("Creating test stream...")
-    info = pylsl.StreamInfo("TestStream", "Markers", 1, 100, pylsl.cf_float32, "test_uid")
-    outlet = pylsl.StreamOutlet(info)
-    outlet.push_sample([1.0])
-    print("LSL test successful")
+
+def test_pylsl():
+    try:
+        import pylsl
+        print("pylsl successfully imported")
+        
+        # Create test stream
+        info = pylsl.StreamInfo("TestStream", "Markers", 1, 100, pylsl.cf_float32, "test_uid")
+        print("Created StreamInfo object")
+        
+        # Create outlet
+        outlet = pylsl.StreamOutlet(info)
+        print("Created StreamOutlet object")
+        
+        # Push sample
+        outlet.push_sample([1.0])
+        print("Successfully pushed sample through LSL")
+        return True
+    except ImportError:
+        print("ERROR: Failed to import pylsl module")
+        return False
+    except Exception as e:
+        print(f"ERROR: {str(e)}")
+        return False
+
+if test_pylsl():
+    print("LSL TEST PASSED: All functionality works correctly")
     sys.exit(0)
-except Exception as e:
-    print(f"LSL test failed: {str(e)}")
+else:
+    print("LSL TEST FAILED: Could not complete LSL test")
     sys.exit(1)
 EOF
-
+  
   # Ensure test script has correct permissions
   chmod 755 "$TEST_SCRIPT"
   # If running as root, make sure the current user can access it
@@ -141,12 +161,65 @@ EOF
     fi
   fi
   
-  echo "✗ LSL compatibility test failed."
-  echo "  This may indicate version incompatibility between liblsl and pylsl."
+  echo "✗ LSL compatibility test failed. Attempting auto-fix..."
+  
+  # Auto-fix: Try creating symlinks
+  LIBLSL_PATH=""
+  if [ -f "/usr/local/lib/liblsl.so" ]; then
+    LIBLSL_PATH="/usr/local/lib/liblsl.so"
+  elif ldconfig -p | grep -q "liblsl\.so"; then
+    LIBLSL_PATH=$(ldconfig -p | grep "liblsl\.so" | head -1 | awk '{print $4}')
+  fi
+  
+  if [ -n "$LIBLSL_PATH" ]; then
+    echo "Found liblsl at: $LIBLSL_PATH"
+    
+    # Find Python packages directory
+    PYTHON_VERSION=$(ls "$PROJECT_ROOT/.venv/lib/" | grep "python3" | head -1)
+    if [ -n "$PYTHON_VERSION" ]; then
+      SITE_PKG_DIR="$PROJECT_ROOT/.venv/lib/$PYTHON_VERSION/site-packages"
+      PYLSL_DIR="$SITE_PKG_DIR/pylsl"
+      
+      if [ -d "$PYLSL_DIR" ]; then
+        echo "Creating symlinks for liblsl in pylsl directory..."
+        mkdir -p "$PYLSL_DIR/lib"
+        ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/liblsl.so"
+        ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/liblsl32.so"
+        ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/liblsl64.so"
+        ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/lib/liblsl.so"
+        ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/lib/liblsl32.so"
+        ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/lib/liblsl64.so"
+        
+        # Set permissions
+        if [ "$EUID" -eq 0 ] && [ -n "$SUDO_USER" ]; then
+          chown -R "$SUDO_USER:$(id -g $SUDO_USER)" "$PYLSL_DIR"
+        fi
+        
+        echo "Symlinks created. Running test again..."
+        if [ "$EUID" -eq 0 ] && [ -n "$SUDO_USER" ]; then
+          if sudo -u "$SUDO_USER" "$PROJECT_ROOT/.venv/bin/python" "$TEST_SCRIPT"; then
+            echo "✓ LSL now working with created symlinks."
+            rm -f "$TEST_SCRIPT"
+            return 0
+          fi
+        else
+          if "$PROJECT_ROOT/.venv/bin/python" "$TEST_SCRIPT"; then
+            echo "✓ LSL now working with created symlinks."
+            rm -f "$TEST_SCRIPT"
+            return 0
+          fi
+        fi
+      fi
+    fi
+  fi
+  
+  echo "✗ LSL compatibility test failed after auto-fix attempt."
   echo "  Try reinstalling pylsl with a compatible version:"
   echo "  $PROJECT_ROOT/.venv/bin/pip install pylsl==1.12.2"
   echo "  If that fails, try: $PROJECT_ROOT/.venv/bin/pip install pylsl==1.15.0"
   echo "  Or: $PROJECT_ROOT/.venv/bin/pip install pylsl==1.16.1"
+  echo "  You may also need to reinstall the libboost dependencies:"
+  echo "  sudo apt install -y libboost-all-dev"
   rm -f "$TEST_SCRIPT"
   return 1
 }
