@@ -1,135 +1,109 @@
 # IMX296 Global Shutter Camera for Raspberry Pi
 
-This repository contains code for capturing video from the IMX296 global shutter camera on a Raspberry Pi. It includes systemd services for automatic startup, LSL integration, and advanced camera controls.
-
-**Author:** Anzal KS <anzal.ks@gmail.com>  
-**GitHub:** https://github.com/anzalks/raspberry_pie_camera_capture  
-**Date:** May 23, 2025
+This repository contains the code for setting up and running an IMX296 global shutter camera on a Raspberry Pi.
 
 ## Features
 
-- 400x400 global shutter video capture at 30fps
-- Low-latency encoding with MJPEG codec
-- Real-time video streaming via LSL
-- Automatic recording to MKV files
-- Remote control via ntfy.sh notifications
-- Dashboard for camera monitoring
-- Diagnostic tools for troubleshooting
+- Captures from IMX296 global shutter camera at 400x400 resolution
+- Supports 100fps native capture in raw SBGGR10_1X10 format
+- Records video using MJPEG codec in MKV format
+- Streams data to LSL (Lab Streaming Layer) with numeric values
+- Web dashboard for monitoring camera status
 
-## Hardware Requirements
+## Installation
 
-- Raspberry Pi 4 or newer
-- IMX296 Global Shutter Camera (400x400 max resolution)
-- Sufficient storage for recordings
-
-## Quick Start (No Installation)
-
-Run the camera directly from the repository without system-wide installation:
+Run the installation script on your Raspberry Pi:
 
 ```bash
-# Clone the repository
 git clone https://github.com/anzalks/raspberry_pie_camera_capture.git
 cd raspberry_pie_camera_capture
-
-# Set up a virtual environment (recommended)
-python3 -m venv .venv
-source .venv/bin/activate
-pip install pylsl pyyaml python-dateutil psutil ntfy
-
-# Run locally (automatically tests camera first)
-./install.sh local
-
-# Run in background if needed
-./install.sh local --background
-```
-
-This will:
-1. Create local directories (recordings, logs)
-2. Verify the camera works by running a test capture
-3. Run the camera software, saving recordings to the local directory
-
-### Running Without Virtual Environment
-
-If you don't want to use a virtual environment, you'll need to install the required packages with your system package manager:
-
-```bash
-# Install system packages
-sudo apt install python3-pylsl python3-yaml python3-dateutil python3-psutil python3-ntfy
-
-# Then run locally (without sudo)
-./install.sh local
-```
-
-**Important:** Do not use `sudo` with the local mode, as it may cause Python package installation issues on Debian-based systems due to PEP 668 restrictions.
-
-## System Installation (Optional)
-
-For a complete system installation with systemd services:
-
-```bash
-# Clone the repository
-git clone https://github.com/anzalks/raspberry_pie_camera_capture.git
-cd raspberry_pie_camera_capture
-
-# Install with root privileges
+chmod +x install.sh
 sudo ./install.sh
 ```
 
-The installation script:
-1. Installs required dependencies
-2. Sets up the systemd service
-3. Configures directories and permissions
-4. Performs a basic camera test
-5. Starts the service
+The script will:
+1. Check for required dependencies
+2. Install Python packages
+3. Create necessary directories
+4. Apply fixes for common issues
+5. Set up a systemd service
 
 ## Configuration
 
-Edit the config.yaml file to customize camera settings:
+Edit the `config.yaml` file to adjust settings:
 
-```bash
-nano config/config.yaml
+```yaml
+# IMX296 Camera Configuration
+camera:
+  width: 400
+  height: 400
+  fps: 100
+  format: "SBGGR10_1X10"
+  libcamera_path: "/usr/bin/libcamera-vid"
+  ffmpeg_path: "/usr/bin/ffmpeg"
+
+recording:
+  enabled: true
+  output_dir: "/home/dawg/recordings"
+  codec: "mjpeg"
+  format: "mkv"
+  compression_level: 5
+  
+lsl:
+  enabled: true
+  stream_name: "IMX296Camera"
+  stream_type: "VideoEvents"
+  stream_id: "imx296_01"
+  
+web:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8080
+  update_interval_ms: 500
 ```
-
-Key configuration options:
-- `camera.width` and `camera.height`: Camera resolution (IMX296 native is 400x400)
-- `camera.fps`: Frame rate (default: 30fps)
-- `camera.exposure_time_us`: Exposure time in microseconds
-- `recording.codec`: Video codec (mjpeg or h264)
-- `recording.output_dir`: Where to save recordings
-
-After changing the configuration, restart the service or the local instance.
 
 ## Troubleshooting
 
-If you encounter issues, use the included diagnostic and fix scripts:
+### Common Issues & Fixes
+
+1. **Empty recording files (4KB only)**
+   - Fix: Added `-vsync 0` to ffmpeg command
+   - Fix: Added file creation with proper permissions
+   - Fix: Ensured output directory exists with proper permissions
+
+2. **LSL Stream Not Found**
+   - Fix: Ensured all LSL values are numeric (no strings)
+   - Fix: Set `lsl_has_string_support = False`
+   - Fix: Added explicit float conversion for all numeric values
+
+3. **Missing Recordings Directory**
+   - Fix: Auto-creates missing directories with proper permissions
+   - Fix: Falls back to /tmp if unable to create specified directory
+
+## Tools & Scripts
+
+The `bin/` directory contains various helper scripts:
+
+- `fix_camera_issues.sh`: Main script to fix common camera issues
+- Diagnostic tools for testing camera and LSL functionality
+
+## Checking Status
+
+Check the status of the camera service:
 
 ```bash
-# Diagnose camera issues
-sudo ./bin/diagnose_imx296.sh
-
-# Fix common issues (empty recordings and LSL stream)
-sudo ./bin/fix_camera_issues.sh
-
-# Test direct camera capture
-sudo ./bin/test_direct_capture.py -d 5 -v
+sudo systemctl status imx296-camera
 ```
 
-### Common Issues
+View logs:
 
-1. **Empty 4KB video files**
-   - Problem: FFmpeg creates empty files containing only headers
-   - Solution: Run `sudo ./bin/fix_camera_issues.sh` to fix directory permissions and ensure MKV/MJPEG settings
+```bash
+sudo journalctl -u imx296-camera -f
+```
 
-2. **Missing LSL Stream**
-   - Problem: "No LSL stream configuration found" in dashboard
-   - Solution: Run `sudo ./bin/fix_camera_issues.sh` to fix LSL numeric values configuration
+The web dashboard is available at: http://[raspberry-pi-ip]:8080
 
-### File Organization
+## Author
 
-For a complete description of all files and what they do, see the [FILE_STRUCTURE.md](FILE_STRUCTURE.md) file.
-
-All main scripts are in the `bin/` directory for better organization.
-
-## License
-
-MIT License. See LICENSE file for details. 
+Anzal KS <anzal.ks@gmail.com>
+https://github.com/anzalks/ 
