@@ -492,6 +492,9 @@ def camera_thread(config):
     exposure_time_us = config['camera']['exposure_time_us']
     pts_file_path = config['camera']['pts_file_path']
     
+    # Get the codec from config (default to mjpeg for better reliability)
+    codec = config['recording'].get('codec', 'mjpeg').lower()
+    
     # Create RAM buffer using deque
     buffer_duration_sec = config['buffer']['duration_seconds']
     max_frames = config['buffer']['max_frames']
@@ -529,7 +532,7 @@ def camera_thread(config):
         "--height", str(height),
         "--framerate", str(fps),
         "--timeout", "1000",  # 1 second timeout
-        "--codec", "mjpeg",   # Use MJPEG codec for better compatibility
+        "--codec", codec,     # Use codec from config
         "--output", "/tmp/test_capture.mkv",  # Use MKV format for better compatibility
         "--nopreview",  # Add this to prevent display issues
         "--inline"      # Add inline for better format handling
@@ -558,7 +561,7 @@ def camera_thread(config):
             basic_cmd = [
                 libcamera_vid_path,
                 "--timeout", "1000",         # 1 second timeout
-                "--codec", "mjpeg",          # Use MJPEG codec
+                "--codec", codec,            # Use codec from config
                 "--output", "/tmp/test_capture.mkv",  # Use MKV container
                 "--nopreview",
                 "--inline"                   # Use inline for better format handling
@@ -591,9 +594,10 @@ def camera_thread(config):
         "--shutter", str(exposure_time_us),
         "--denoise", "cdn_off",
         "--save-pts", pts_file_path,
-        "--codec", "mjpeg",  # Use MJPEG codec for better compatibility
+        "--codec", codec,  # Use codec from config
         "--inline",
         "--flush",
+        "--no-raw",  # Disable raw format for better compatibility
         "-o", "-"  # Output to stdout
     ]
     
@@ -616,6 +620,7 @@ def camera_thread(config):
     
     logger.info(f"Starting libcamera-vid with command: {' '.join(cmd)}")
     logger.info(f"Using RAM buffer of {buffer_duration_sec} seconds (max {max_frames} frames)")
+    logger.info(f"Codec: {codec}")
     
     try:
         # Calculate exposure time based on framerate standards
@@ -636,8 +641,9 @@ def camera_thread(config):
             "--shutter", str(exposure_time),  # Use calculated exposure
             "--timeout", "0",
             "--nopreview",  # Add nopreview to avoid display issues
-            "--codec", "mjpeg",  # Use MJPEG codec for better compatibility
+            "--codec", codec,  # Use codec from config 
             "--inline",  # Important for proper output
+            "--no-raw",  # Disable raw format for better compatibility
             "-o", "-"  # Output to stdout
         ]
 
@@ -1180,18 +1186,18 @@ def video_writer_thread(config):
     # Configure FFmpeg command with optimized settings for robust recording
     ffmpeg_path = config['system']['ffmpeg_path']
     
-    # Determine input format based on codec
-    input_format = "mjpeg" if codec == "mjpeg" else "h264"
+    # Determine input format based on codec used in config
+    input_format = "mjpeg" if codec.lower() == "mjpeg" else "h264"
     
     # Use ffmpeg command with appropriate settings for the codec and container
     cmd = [
         ffmpeg_path,
-        "-f", input_format,        # Input format based on codec
-        "-i", "-",                 # Input from stdin
-        "-c:v", "copy",            # Copy video codec (no re-encoding)
-        "-an",                     # No audio
-        "-y",                      # Overwrite output file if exists
-        output_file                # Output file (.mkv)
+        "-f", input_format,       # Input format based on codec from config
+        "-i", "-",                # Input from stdin
+        "-c:v", "copy",           # Copy video codec (no re-encoding)
+        "-an",                    # No audio
+        "-y",                     # Overwrite output file if exists
+        output_file              # Output file
     ]
     
     logger.info(f"Starting ffmpeg with command: {' '.join(cmd)}")
