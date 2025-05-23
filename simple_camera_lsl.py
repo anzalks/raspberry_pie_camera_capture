@@ -79,6 +79,18 @@ def is_on_bookworm():
     
     return False
 
+def run_elevated_command(cmd):
+    """Run a command with elevated privileges using pkexec or sudo"""
+    # First try pkexec, which will prompt for password if needed
+    if shutil.which('pkexec'):
+        elevated_cmd = ['pkexec'] + cmd
+    else:
+        # Fallback to sudo if pkexec is not available
+        elevated_cmd = ['sudo'] + cmd
+    
+    logger.debug(f"Running elevated command: {' '.join(elevated_cmd)}")
+    return subprocess.run(elevated_cmd, capture_output=True, text=True)
+
 def find_imx296_media_device():
     """Find the media device for the IMX296 camera using thorough search"""
     logger.info("Searching for IMX296 camera media device...")
@@ -107,7 +119,13 @@ def find_imx296_media_device():
         # Build command to check if this is the right media device
         test_cmd = ["media-ctl", "-d", media_dev_path, "-p"]
         try:
-            result = subprocess.run(test_cmd, capture_output=True, text=True)
+            # Make sure user has access to media device
+            try:
+                result = subprocess.run(test_cmd, capture_output=True, text=True)
+            except PermissionError:
+                logger.info(f"Permission error, trying with elevated privileges")
+                result = run_elevated_command(test_cmd)
+                
             if result.returncode != 0:
                 continue
                 
@@ -119,6 +137,51 @@ def find_imx296_media_device():
     
     logger.error("Could not find IMX296 camera media device")
     return None, None
+
+def ensure_device_permission(media_dev_path):
+    """Ensure the current user has read/write access to the media device"""
+    try:
+        # Check if we can access the device
+        with open(media_dev_path, 'rb') as f:
+            pass  # Just checking if we can open it
+        return True
+    except PermissionError:
+        logger.warning(f"No permission to access {media_dev_path}, attempting to fix...")
+        
+        # Try to fix permissions
+        try:
+            # Get current user
+            user = os.environ.get('USER', os.environ.get('USERNAME'))
+            if not user:
+                logger.warning("Could not determine current user")
+                return False
+                
+            # Use pkexec/sudo to adjust permissions
+            cmd = ["chgrp", "video", media_dev_path]
+            result = run_elevated_command(cmd)
+            if result.returncode != 0:
+                logger.warning(f"Failed to change group: {result.stderr}")
+                return False
+                
+            cmd = ["chmod", "g+rw", media_dev_path]
+            result = run_elevated_command(cmd)
+            if result.returncode != 0:
+                logger.warning(f"Failed to change permissions: {result.stderr}")
+                return False
+                
+            # Add user to video group if needed
+            cmd = ["usermod", "-aG", "video", user]
+            result = run_elevated_command(cmd)
+            if result.returncode != 0:
+                logger.warning(f"Failed to add user to video group: {result.stderr}")
+                return False
+                
+            logger.info(f"Permission fixed for {media_dev_path}")
+            logger.info("You may need to log out and log back in for group changes to take effect")
+            return True
+        except Exception as e:
+            logger.error(f"Error fixing permissions: {e}")
+            return False
 
 def configure_media_ctl(media_dev_path, entity_name, width, height):
     """Configure the IMX296 sensor using media-ctl for hardware cropping"""
@@ -136,10 +199,11 @@ def configure_media_ctl(media_dev_path, entity_name, width, height):
     format_str = f"fmt:SBGGR10_1X10/{width}x{height} crop:({x_offset},{y_offset})/{width}x{height}"
     
     # Execute media-ctl command with the exact format from the bash script
-    cmd = ["sudo", "media-ctl", "-d", media_dev_path, "--set-v4l2", f"{entity_name}:0 [{format_str}]", "-v"]
-    logger.info(f"Running command: {' '.join(cmd)}")
+    # Use pkexec or sudo for elevation
+    cmd = ["media-ctl", "-d", media_dev_path, "--set-v4l2", f"{entity_name}:0 [{format_str}]", "-v"]
+    logger.info(f"Running media-ctl command with elevation...")
     
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = run_elevated_command(cmd)
     if result.returncode != 0:
         logger.error(f"Failed to configure media-ctl: {result.stderr}")
         return False
@@ -439,10 +503,47 @@ def check_even_dimensions(width, height):
         return False
     return True
 
+def setup_device_permissions():
+    """Set up device permissions for the current user"""
+    # Try to add current user to the video group
+    try:
+        # Get current user
+        user = os.environ.get('USER', os.environ.get('USERNAME'))
+        if not user:
+            logger.warning("Could not determine current user")
+            return False
+            
+        # Check if the user is already in the video group
+        cmd = ["groups", user]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if "video" in result.stdout:
+            logger.info(f"User {user} is already in the video group")
+            return True
+            
+        # Add user to video group
+        logger.info(f"Adding user {user} to video group...")
+        cmd = ["usermod", "-aG", "video", user]
+        result = run_elevated_command(cmd)
+        if result.returncode != 0:
+            logger.warning(f"Failed to add user to video group: {result.stderr}")
+            logger.warning("You may need to run as sudo or ensure the user has video group access")
+            return False
+        
+        logger.info(f"Added user {user} to video group")
+        logger.info("You may need to log out and log back in for group changes to take effect")
+        return True
+    except Exception as e:
+        logger.error(f"Error setting up device permissions: {e}")
+        return False
+
 def main():
     """Main function"""
     global lsl_outlet, stop_event, IS_RPI5, lsl_data
-    
+
+    # Setup signal handlers
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Simplified IMX296 Camera Recorder with LSL')
     parser.add_argument('--width', type=int, default=400, help='Camera width (default: 400)')
@@ -455,15 +556,20 @@ def main():
     parser.add_argument('--lsl-type', type=str, default='Video', help='LSL stream type (default: Video)')
     parser.add_argument('--cam1', action='store_true', help='Use camera 1 instead of camera 0')
     parser.add_argument('--preview', action='store_true', help='Show camera preview during recording')
+    parser.add_argument('--setup-permissions', action='store_true', help='Set up device permissions for the current user')
     args = parser.parse_args()
+
+    # Set up device permissions if requested
+    if args.setup_permissions:
+        if setup_device_permissions():
+            logger.info("Device permissions set up successfully. Please log out and log back in.")
+        else:
+            logger.error("Failed to set up device permissions")
+        return 0
     
     # Check if width and height are even numbers
     if not check_even_dimensions(args.width, args.height):
         return 1
-    
-    # Setup signal handlers
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
     
     # Set camera selection environment variable if needed
     if args.cam1:
@@ -478,6 +584,11 @@ def main():
     if not media_dev_path or not entity_name:
         logger.error("Camera not found. Exiting.")
         return 1
+    
+    # Ensure we have access to the media device
+    if not ensure_device_permission(media_dev_path):
+        logger.warning("Could not ensure permission to media device.")
+        logger.warning("You might need to run with --setup-permissions once, then log out and back in.")
     
     # Configure camera cropping
     if not configure_media_ctl(media_dev_path, entity_name, args.width, args.height):
