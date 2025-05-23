@@ -101,31 +101,34 @@ After changing the configuration, restart the service or the local instance.
 
 ## Troubleshooting
 
-If you encounter issues, use the included diagnostic script:
+If you encounter issues, use the included diagnostic and fix scripts:
 
 ```bash
+# Diagnose camera issues
 sudo ./bin/diagnose_imx296.sh
+
+# Fix common issues (empty recordings and LSL stream)
+sudo ./bin/fix_camera_issues.sh
+
+# Test direct camera capture
+sudo ./bin/test_direct_capture.py -d 5 -v
 ```
 
 ### Common Issues
 
 1. **Empty 4KB video files**
    - Problem: FFmpeg creates empty files containing only headers
-   - Solution: Make sure the codec is set to 'mjpeg' in config.yaml
+   - Solution: Run `sudo ./bin/fix_camera_issues.sh` to fix directory permissions and ensure MKV/MJPEG settings
 
 2. **Missing LSL Stream**
    - Problem: "No LSL stream configuration found" in dashboard
-   - Solution: Install pylsl with `pip install pylsl`
+   - Solution: Run `sudo ./bin/fix_camera_issues.sh` to fix LSL numeric values configuration
 
-### Test Individual Components
+### File Organization
 
-Test the camera directly:
+For a complete description of all files and what they do, see the [FILE_STRUCTURE.md](FILE_STRUCTURE.md) file.
 
-```bash
-sudo ./bin/test_direct_capture.py -d 5
-```
-
-This will create a test recording and verify if the camera is working properly.
+All main scripts are in the `bin/` directory for better organization.
 
 ## License
 

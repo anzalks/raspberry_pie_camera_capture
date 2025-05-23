@@ -905,4 +905,38 @@ echo ""
 echo -e "${YELLOW}Next steps:${NC}"
 echo "1. Edit config/config.yaml to customize camera settings"
 echo "2. Start the service with: sudo systemctl start imx296-camera.service"
-echo "3. Check status with: $PROJECT_ROOT/bin/view-camera-status.sh" 
+echo "3. Check status with: $PROJECT_ROOT/bin/view-camera-status.sh"
+
+# After the section where liblsl is installed, add our fixes for recording directories and LSL
+
+# Create required directories with proper permissions
+echo -e "${YELLOW}----- Setting up recording directories -----${NC}"
+mkdir -p /home/dawg/recordings
+chown -R dawg:dawg /home/dawg/recordings
+chmod -R 777 /home/dawg/recordings
+echo -e "${GREEN}✓ Recording directory created with proper permissions${NC}"
+
+# Create log directory with proper permissions
+echo -e "${YELLOW}----- Setting up log directory -----${NC}"
+mkdir -p /var/log/imx296-camera
+chown -R dawg:dawg /var/log/imx296-camera
+chmod -R 777 /var/log/imx296-camera
+echo -e "${GREEN}✓ Log directory created with proper permissions${NC}"
+
+# Additional fixes for LSL stream numeric values
+echo -e "${YELLOW}----- Testing LSL stream configuration -----${NC}"
+# Test if we can create an LSL stream with numeric values
+if python3 -c 'import pylsl; info = pylsl.StreamInfo("Test", "Markers", 1, 0, "float32", "test"); outlet = pylsl.StreamOutlet(info); outlet.push_sample([123.456]); print("✓ Numeric LSL values work")' 2>/dev/null; then
+  echo -e "${GREEN}✓ LSL stream test successful${NC}"
+else
+  echo -e "${RED}LSL stream test failed. Installing pylsl directly...${NC}"
+  # Force reinstall pylsl without using virtualenv to ensure system-wide availability
+  python3 -m pip install --break-system-packages pylsl==1.16.2
+  
+  # Test again
+  if python3 -c 'import pylsl; info = pylsl.StreamInfo("Test", "Markers", 1, 0, "float32", "test"); outlet = pylsl.StreamOutlet(info); outlet.push_sample([123.456]); print("✓ Numeric LSL values work")' 2>/dev/null; then
+    echo -e "${GREEN}✓ LSL stream fixed successfully${NC}"
+  else
+    echo -e "${RED}LSL stream still not working. Check Python environment.${NC}"
+  fi
+fi 
