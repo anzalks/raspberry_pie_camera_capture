@@ -26,6 +26,7 @@ fi
 MARKERS_FILE="/dev/shm/camera_markers.txt"
 echo "Starting recording" > "$MARKERS_FILE"
 echo "Markers file created at $MARKERS_FILE" >&2
+chmod 666 "$MARKERS_FILE" 2>/dev/null || true
 
 # Check for Bookworm OS
 workaround=""; 
@@ -79,6 +80,32 @@ rm -f /dev/shm/tst.pts
 FIFO="/dev/shm/camera_fifo"
 rm -f "$FIFO"
 mkfifo "$FIFO"
+chmod 666 "$FIFO" 2>/dev/null || true
+
+# Function to process output and detect frames
+process_output() {
+    local line="$1"
+    local frame_num="$2"
+    echo "$line" >&2
+
+    # Check for various frame indicators - be more thorough
+    if [[ "$line" == *"frame"* || "$line" == *"Frame"* ]]; then
+        # Try to extract frame number if present
+        local detected_frame
+        if [[ "$line" =~ frame[^0-9]*([0-9]+) ]]; then
+            detected_frame="${BASH_REMATCH[1]}"
+        else
+            # If no frame number in output, increment our counter
+            detected_frame=$((frame_num + 1))
+        fi
+
+        local timestamp=$(date +%s.%N)
+        echo "$detected_frame $timestamp" >> "$MARKERS_FILE"
+        echo "Recorded frame $detected_frame at $timestamp" >&2
+        return $detected_frame
+    fi
+    return $frame_num
+}
 
 # Start recording based on Pi version
 if [[ "" != "$(grep "Revision.*: ...17.$" /proc/cpuinfo)" ]]
@@ -93,34 +120,16 @@ then
     echo "Starting rpicam-vid with output to $OUTPUT_FILE" >&2
     
     # Start rpicam-vid with configurable AWB
-    RPICAM_CMD="rpicam-vid $workaround ${cam1:+--camera 1} --width $1 --height $2 --denoise cdn_off --framerate $3 $AWB_PARAM -t $4 $SHTR $5 -o $OUTPUT_FILE -n"
+    # Add --verbose for more frame info
+    RPICAM_CMD="rpicam-vid $workaround --verbose ${cam1:+--camera 1} --width $1 --height $2 --denoise cdn_off --framerate $3 $AWB_PARAM -t $4 $SHTR $5 -o $OUTPUT_FILE -n"
     echo "Command: $RPICAM_CMD" >&2
     
     # Execute command and capture output
-    eval "$RPICAM_CMD" 2>&1 | tee "$FIFO" &
-    
-    PID=$!
-    
-    # Monitor output for frame markers
-    exec 3<"$FIFO"
     frame_num=0
-    while read -r line <&3; do
-        echo "Output: $line" >&2
-        if [[ "$line" == *"frame"* || "$line" == *"Frame"* ]]; then
-            frame_num=$((frame_num + 1))
-            timestamp=$(date +%s.%N)
-            echo "$frame_num $timestamp" >> "$MARKERS_FILE"
-            echo "Recorded frame $frame_num at $timestamp" >&2
-        fi
-    done &
-    
-    # Wait for process to finish
-    wait $PID
-    
-    # Run timestamp analysis if tools exist
-    if [[ -x ~/venv/bin/python && -f ~/rpicam-apps/utils/timestamp.py ]]; then
-        ~/venv/bin/python ~/rpicam-apps/utils/timestamp.py --plot ${narrow:+--narrow} "$OUTPUT_FILE"
-    fi
+    eval "$RPICAM_CMD" 2>&1 | while read -r line; do
+        process_output "$line" "$frame_num"
+        frame_num=$?
+    done
 else
     # Older Raspberry Pi - use libcamera-vid with PTS file
     if [[ -n "$OUTPUT_PATH" ]]; then
@@ -132,18 +141,15 @@ else
     echo "Starting libcamera-vid with output to $OUTPUT_FILE" >&2
     
     # Start libcamera-vid with configurable AWB
-    LIBCAM_CMD="libcamera-vid $workaround --width $1 --height $2 --denoise cdn_off --framerate $3 $AWB_PARAM --save-pts /dev/shm/tst.pts -t $4 $SHTR $5 -o $OUTPUT_FILE -n"
+    # Add --verbose for more frame info
+    LIBCAM_CMD="libcamera-vid $workaround --verbose --width $1 --height $2 --denoise cdn_off --framerate $3 $AWB_PARAM --save-pts /dev/shm/tst.pts -t $4 $SHTR $5 -o $OUTPUT_FILE -n"
     echo "Command: $LIBCAM_CMD" >&2
     
     # Execute the command and process output for frame markers
+    frame_num=0
     eval "$LIBCAM_CMD" 2>&1 | while read -r line; do
-        echo "Output: $line" >&2
-        if [[ "$line" == *"frame"* || "$line" == *"Frame"* ]]; then
-            frame_num=$((frame_num + 1))
-            timestamp=$(date +%s.%N)
-            echo "$frame_num $timestamp" >> "$MARKERS_FILE"
-            echo "Recorded frame $frame_num at $timestamp" >&2
-        fi
+        process_output "$line" "$frame_num"
+        frame_num=$?
     done
     
     # Run PTS analysis
@@ -152,13 +158,20 @@ else
         
         # Copy PTS data to markers file for LSL sync
         if [[ -f "/dev/shm/tst.pts" ]]; then
-            cat "/dev/shm/tst.pts" >> "$MARKERS_FILE"
+            # Append PTS data in a format the monitor can understand
+            echo "Adding PTS data to markers file" >&2
+            cat /dev/shm/tst.pts | while read -r pts_line; do
+                if [[ -n "$pts_line" && "$pts_line" =~ ^([0-9]+)[^0-9]+([0-9.]+) ]]; then
+                    echo "${BASH_REMATCH[1]} ${BASH_REMATCH[2]}" >> "$MARKERS_FILE"
+                fi
+            done
         fi
     fi
 fi
 
 echo "Recording complete. Output saved to: $OUTPUT_FILE" >&2
 echo "Frame markers saved to: $MARKERS_FILE" >&2
+echo "Total frames detected: $(grep -v "Starting" "$MARKERS_FILE" | wc -l)" >&2
 
 # Disable debug output
 set +x 

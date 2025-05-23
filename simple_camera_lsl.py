@@ -178,6 +178,8 @@ def monitor_markers_file():
     # Keep track of the last read position
     last_pos = 0
     last_frame = 0
+    check_count = 0
+    last_check_time = time.time()
     
     logger.info("Starting to monitor markers file for frame data")
     
@@ -197,10 +199,25 @@ def monitor_markers_file():
                     
                     # Read new content
                     new_lines = f.readlines()
+                    current_pos = f.tell()
+                    
+                    # If nothing new was read but it's been a while since we saw new data
+                    if not new_lines and time.time() - last_check_time > 2.0:
+                        check_count += 1
+                        if check_count % 5 == 0:
+                            logger.debug(f"No new lines in markers file for {int(time.time() - last_check_time)}s, checking file size: {current_pos} bytes")
+                            
+                            # Check if file has grown but our position is incorrect
+                            if current_pos > last_pos + 100:
+                                logger.warning(f"File has grown significantly but no new lines detected, resetting position")
+                                last_pos = 0
+                                continue
                     
                     # Update last position if we read anything
                     if new_lines:
-                        last_pos = f.tell()
+                        last_pos = current_pos
+                        last_check_time = time.time()
+                        check_count = 0
                         
                         for line in new_lines:
                             line = line.strip()
@@ -211,14 +228,25 @@ def monitor_markers_file():
                             try:
                                 parts = line.split()
                                 if len(parts) >= 2:
-                                    frame_num = int(parts[0])
-                                    frame_time = float(parts[1])
-                                    
-                                    # Only push if this is a new frame
-                                    if frame_num > last_frame:
-                                        push_lsl_sample(frame_num, frame_time)
-                                        last_frame = frame_num
-                                        logger.debug(f"Pushed LSL sample: Frame {frame_num}, Time {frame_time}")
+                                    # Check if the first part looks like a frame number
+                                    try:
+                                        frame_num = int(parts[0])
+                                        
+                                        # Check if the second part looks like a timestamp
+                                        try:
+                                            frame_time = float(parts[1])
+                                            
+                                            # Only push if this is a new frame
+                                            if frame_num > last_frame:
+                                                push_lsl_sample(frame_num, frame_time)
+                                                last_frame = frame_num
+                                                logger.debug(f"Pushed LSL sample: Frame {frame_num}, Time {frame_time}")
+                                        except ValueError:
+                                            # Second part is not a float timestamp
+                                            logger.debug(f"Invalid timestamp in line: {line}")
+                                    except ValueError:
+                                        # First part is not an integer - try other formats
+                                        logger.debug(f"Non-numeric frame number in line: {line}")
                             except ValueError as e:
                                 logger.debug(f"Error parsing line '{line}': {e}")
             except Exception as e:
@@ -234,6 +262,57 @@ def monitor_markers_file():
             time.sleep(0.5)
     
     logger.info("Stopped monitoring markers file")
+
+def monitor_pts_file(pts_file="/dev/shm/tst.pts"):
+    """Directly monitor the PTS file for frame timestamps"""
+    global stop_event, lsl_data
+    
+    logger.info(f"Starting to monitor PTS file: {pts_file}")
+    
+    if not os.path.exists(pts_file):
+        logger.warning(f"PTS file {pts_file} does not exist yet, waiting...")
+        
+    last_pos = 0
+    last_frame = 0
+    
+    while not stop_event.is_set():
+        # Check if file exists yet
+        if not os.path.exists(pts_file):
+            time.sleep(0.1)
+            continue
+            
+        try:
+            with open(pts_file, 'r') as f:
+                f.seek(last_pos)
+                new_lines = f.readlines()
+                
+                if new_lines:
+                    last_pos = f.tell()
+                    
+                    for line in new_lines:
+                        line = line.strip()
+                        if not line:
+                            continue
+                            
+                        # PTS files typically have format like: "42: 1684567890.123456"
+                        if ':' in line:
+                            try:
+                                parts = line.split(':', 1)
+                                frame_num = int(parts[0].strip())
+                                timestamp = float(parts[1].strip())
+                                
+                                if frame_num > last_frame:
+                                    push_lsl_sample(frame_num, timestamp)
+                                    last_frame = frame_num
+                                    logger.debug(f"Pushed LSL sample from PTS: Frame {frame_num}, Time {timestamp}")
+                            except (ValueError, IndexError) as e:
+                                logger.debug(f"Error parsing PTS line '{line}': {e}")
+        except Exception as e:
+            logger.warning(f"Error reading PTS file: {e}")
+            
+        time.sleep(0.01)
+    
+    logger.info("Stopped monitoring PTS file")
 
 def run_gscrop_script(width, height, fps, duration_ms, exposure_us=None, output_path=None, preview=False, no_awb=False):
     """Run the GScrop shell script to capture video"""
@@ -337,6 +416,7 @@ def main():
     parser.add_argument('--debug', action='store_true', help='Enable debug mode with extensive logging')
     parser.add_argument('--test-markers', action='store_true', help='Test markers file creation and monitoring')
     parser.add_argument('--no-awb', action='store_true', help='Disable AWB (Auto White Balance) adjustments')
+    parser.add_argument('--direct-pts', action='store_true', help='Directly use PTS file for frame timing if available')
     args = parser.parse_args()
     
     # Convert duration from seconds to milliseconds
@@ -498,6 +578,13 @@ def main():
         # Wait for camera process to finish or Ctrl+C
         logger.info(f"Recording started with duration: {args.duration} seconds. Press Ctrl+C to stop earlier.")
         
+        # Start PTS monitoring if requested
+        pts_thread = None
+        if args.direct_pts:
+            pts_thread = threading.Thread(target=monitor_pts_file, daemon=True)
+            pts_thread.start()
+            logger.info("Started direct PTS file monitoring")
+        
         # Monitor LSL data collection
         frames_count = 0
         last_report_time = time.time()
@@ -533,6 +620,16 @@ def main():
                                 logger.debug(f"Markers file content ({len(content)} bytes):\n{content[:500]}...")
                         except Exception as e:
                             logger.debug(f"Error reading markers file: {e}")
+                    
+                    # Also check PTS file
+                    pts_file = "/dev/shm/tst.pts"
+                    if os.path.exists(pts_file):
+                        try:
+                            with open(pts_file, 'r') as f:
+                                content = f.read()
+                                logger.debug(f"PTS file content ({len(content)} bytes):\n{content[:500]}...")
+                        except Exception as e:
+                            logger.debug(f"Error reading PTS file: {e}")
                 
                 frames_count = current_frames
                 last_report_time = current_time
