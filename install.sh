@@ -1,15 +1,62 @@
 #!/bin/bash
-# IMX296 Camera Installation Script
+# IMX296 Camera Installation & Run Script
 # Author: Anzal KS <anzal.ks@gmail.com>
 # Date: May 23, 2025
 
+# Check if running in local mode
+if [ "$1" = "local" ]; then
+  echo "===== Running IMX296 Camera Software Locally ====="
+  
+  # Create local directories
+  mkdir -p recordings logs
+  
+  # Install minimal dependencies
+  echo "Checking Python dependencies..."
+  python3 -m pip install pylsl pyyaml python-dateutil psutil ntfy
+  
+  # Print camera information
+  echo "Checking for cameras..."
+  if command -v libcamera-hello >/dev/null 2>&1; then
+      libcamera-hello --list-cameras
+  else
+      echo "libcamera-hello not found"
+  fi
+  
+  # Run test capture first to verify camera works
+  echo "Running test capture to verify camera works..."
+  if python3 bin/test_direct_capture.py -d 3; then
+    echo "Test successful, starting main program..."
+    
+    # Check if running in background
+    if [ "$2" = "--background" ]; then
+      echo "Running in background..."
+      mkdir -p logs
+      nohup python3 -m src.imx296_gs_capture.imx296_capture > logs/imx296_capture.log 2>&1 &
+      echo "Program started in background. PID: $!"
+      echo "Check logs/imx296_capture.log for output."
+      echo "To stop: kill $!"
+    else
+      # Run in foreground
+      echo "Running in foreground (press Ctrl+C to stop)..."
+      python3 -m src.imx296_gs_capture.imx296_capture
+    fi
+  else
+    echo "Test capture failed, not starting main program."
+  fi
+  
+  # Exit early - don't continue with installation
+  exit 0
+fi
+
+# If we get here, we're doing a full system installation
 set -e
 
 echo "Installing IMX296 Camera Software..."
 
 # Check if running as root
 if [ "$EUID" -ne 0 ]; then
-  echo "Please run as root (use sudo)"
+  echo "Please run as root for system installation (use sudo)"
+  echo "Or use './install.sh local' to run locally without installation"
   exit 1
 fi
 
