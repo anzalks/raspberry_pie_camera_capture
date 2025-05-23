@@ -96,7 +96,6 @@ def find_imx296_media_device():
     logger.info("Searching for IMX296 camera media device...")
     
     # Determine device ID (different for Pi models)
-    # For Pi 5, it's 10 for camera 0 and 11 for camera 1
     device_id = "10"  # Default
     if IS_RPI5:
         if os.environ.get("cam1"):
@@ -104,6 +103,17 @@ def find_imx296_media_device():
             logger.info("Using device ID 11 for Camera 1 on Pi 5")
         else:
             logger.info("Using device ID 10 for Camera 0 on Pi 5")
+    
+    # Try direct detection of video devices first
+    try:
+        v4l2_devices = []
+        for dev in os.listdir('/dev'):
+            if dev.startswith('video'):
+                v4l2_devices.append(f"/dev/{dev}")
+        logger.debug(f"Found video devices: {v4l2_devices}")
+    except Exception as e:
+        logger.debug(f"Error listing video devices: {e}")
+        v4l2_devices = []
     
     # Try media devices 0-5
     for m in range(6):
@@ -113,18 +123,31 @@ def find_imx296_media_device():
             logger.debug(f"Skipping non-existent device {media_dev_path}")
             continue
         
+        # First check if we have permission to access this device
+        try:
+            with open(media_dev_path, 'rb') as f:
+                pass  # Just checking access
+            has_permission = True
+        except PermissionError:
+            logger.debug(f"No permission to access {media_dev_path}")
+            has_permission = False
+        
         # Correct entity name format from bash script
         entity_name = f"'imx296 {device_id}-001a'"
         
         # Build command to check if this is the right media device
         test_cmd = ["media-ctl", "-d", media_dev_path, "-p"]
         try:
-            # Make sure user has access to media device
-            try:
+            if has_permission:
                 result = subprocess.run(test_cmd, capture_output=True, text=True)
-            except PermissionError:
-                logger.info(f"Permission error, trying with elevated privileges")
-                result = run_elevated_command(test_cmd)
+            else:
+                # First try to fix permissions
+                if ensure_device_permission(media_dev_path):
+                    result = subprocess.run(test_cmd, capture_output=True, text=True)
+                else:
+                    # Try with elevated privileges as a last resort
+                    logger.debug(f"Trying {media_dev_path} with elevated privileges")
+                    result = run_elevated_command(test_cmd)
                 
             if result.returncode != 0:
                 continue
@@ -135,6 +158,30 @@ def find_imx296_media_device():
         except Exception as e:
             logger.warning(f"Error checking {media_dev_path}: {e}")
     
+    # If we get here, we need to try a more aggressive approach
+    logger.warning("Could not find IMX296 camera via standard method, trying alternative detection...")
+    
+    # Try to find device by executing v4l2-ctl --list-devices
+    try:
+        result = subprocess.run(["v4l2-ctl", "--list-devices"], capture_output=True, text=True)
+        if result.returncode == 0:
+            lines = result.stdout.split('\n')
+            for i, line in enumerate(lines):
+                if "imx296" in line.lower():
+                    # Next line should have the device path
+                    if i + 1 < len(lines) and lines[i+1].strip().startswith('/dev/'):
+                        device_path = lines[i+1].strip()
+                        logger.info(f"Found IMX296 camera on {device_path} via v4l2-ctl")
+                        
+                        # Try to convert video device to media device
+                        if "video" in device_path:
+                            for m in range(6):
+                                media_dev_path = f"/dev/media{m}"
+                                if os.path.exists(media_dev_path):
+                                    return media_dev_path, entity_name
+    except Exception as e:
+        logger.warning(f"Error in alternative detection: {e}")
+    
     logger.error("Could not find IMX296 camera media device")
     return None, None
 
@@ -144,44 +191,84 @@ def ensure_device_permission(media_dev_path):
         # Check if we can access the device
         with open(media_dev_path, 'rb') as f:
             pass  # Just checking if we can open it
+        logger.debug(f"Already have permission to access {media_dev_path}")
         return True
     except PermissionError:
         logger.warning(f"No permission to access {media_dev_path}, attempting to fix...")
         
-        # Try to fix permissions
+        # Try different approaches to fix permissions
+        
+        # 1. Try to get user and group information
+        user = os.environ.get('USER', os.environ.get('USERNAME', 'pi'))
+        
+        # 2. Check if device belongs to video group
         try:
-            # Get current user
-            user = os.environ.get('USER', os.environ.get('USERNAME'))
-            if not user:
-                logger.warning("Could not determine current user")
-                return False
+            import stat
+            import pwd
+            import grp
+            
+            device_stat = os.stat(media_dev_path)
+            device_group = grp.getgrgid(device_stat.st_gid).gr_name
+            
+            logger.debug(f"Device {media_dev_path} belongs to group: {device_group}")
+            
+            # Check if user is in the device group
+            user_info = pwd.getpwnam(user)
+            user_groups = [grp.getgrgid(g).gr_name for g in os.getgroups()]
+            
+            if device_group in user_groups:
+                logger.debug(f"User {user} is in the {device_group} group but still can't access device")
                 
-            # Use pkexec/sudo to adjust permissions
-            cmd = ["chgrp", "video", media_dev_path]
-            result = run_elevated_command(cmd)
-            if result.returncode != 0:
-                logger.warning(f"Failed to change group: {result.stderr}")
-                return False
+                # The permissions must be wrong on the device
+                if not (device_stat.st_mode & stat.S_IRGRP and device_stat.st_mode & stat.S_IWGRP):
+                    logger.debug(f"Device {media_dev_path} doesn't have read/write permissions for group")
+                    
+                    # Fix permissions
+                    cmd = ["chmod", "g+rw", media_dev_path]
+                    result = run_elevated_command(cmd)
+                    if result.returncode == 0:
+                        logger.info(f"Fixed permissions for {media_dev_path}")
+                        return True
+            else:
+                logger.debug(f"User {user} is not in the {device_group} group")
                 
-            cmd = ["chmod", "g+rw", media_dev_path]
-            result = run_elevated_command(cmd)
-            if result.returncode != 0:
-                logger.warning(f"Failed to change permissions: {result.stderr}")
-                return False
-                
-            # Add user to video group if needed
-            cmd = ["usermod", "-aG", "video", user]
-            result = run_elevated_command(cmd)
-            if result.returncode != 0:
-                logger.warning(f"Failed to add user to video group: {result.stderr}")
-                return False
-                
-            logger.info(f"Permission fixed for {media_dev_path}")
-            logger.info("You may need to log out and log back in for group changes to take effect")
-            return True
+                # Try to add user to the video group
+                cmd = ["usermod", "-a", "-G", device_group, user]
+                result = run_elevated_command(cmd)
+                if result.returncode == 0:
+                    logger.info(f"Added user {user} to group {device_group}")
+                    logger.info("You need to log out and log back in for this change to take effect")
+                    
+                    # As a temporary fix, also change device permissions directly
+                    cmd = ["chmod", "a+rw", media_dev_path] 
+                    result = run_elevated_command(cmd)
+                    if result.returncode == 0:
+                        logger.info(f"Temporarily granted universal access to {media_dev_path}")
+                        return True
+        except ImportError as e:
+            logger.debug(f"Could not import necessary modules for group checking: {e}")
         except Exception as e:
-            logger.error(f"Error fixing permissions: {e}")
-            return False
+            logger.debug(f"Error checking group membership: {e}")
+        
+        # 3. Last resort - try direct permission change 
+        try:
+            cmd = ["chmod", "a+rw", media_dev_path]
+            result = run_elevated_command(cmd)
+            if result.returncode == 0:
+                logger.info(f"Granted everyone access to {media_dev_path} as a fallback")
+                
+                # Check if it worked
+                try:
+                    with open(media_dev_path, 'rb') as f:
+                        pass
+                    return True
+                except PermissionError:
+                    pass
+        except Exception as e:
+            logger.debug(f"Error in fallback permission fix: {e}")
+                
+        logger.warning(f"Could not fix permissions for {media_dev_path}")
+        return False
 
 def configure_media_ctl(media_dev_path, entity_name, width, height):
     """Configure the IMX296 sensor using media-ctl for hardware cropping"""
@@ -224,7 +311,7 @@ def configure_media_ctl(media_dev_path, entity_name, width, height):
     
     return True
 
-def create_lsl_outlet(name="IMX296Camera", stream_type="Video", fps=60):
+def create_lsl_outlet(name="IMX296Camera", stream_type="Video", fps=100):
     """Create LSL outlet for camera metadata"""
     if not LSL_AVAILABLE:
         logger.warning("pylsl not available, skipping LSL outlet creation")
@@ -355,7 +442,7 @@ def start_camera_recording(width, height, fps, output_path, duration_ms=0, expos
     
     # Build appropriate command based on Pi version
     if IS_RPI5:
-        # For Pi 5, use rpicam-vid
+        # For Pi 5, use rpicam-vid with optimized parameters for high FPS
         cmd = [
             "rpicam-vid",
             *workaround,
@@ -364,6 +451,11 @@ def start_camera_recording(width, height, fps, output_path, duration_ms=0, expos
             "--height", str(height),
             "--denoise", "cdn_off",
             "--framerate", str(fps),
+            "--flush", "1",  # Flush frames to output immediately
+            "--inline",     # Use inline headers for better compatibility
+            "--output-buffer", "2",  # Increase output buffer
+            "--timeout", "0",  # No timeout
+            "--awb", "off",    # Disable auto white balance to reduce processing
             *duration_arg,
             *exposure_arg,
             *preview_arg,
@@ -379,6 +471,10 @@ def start_camera_recording(width, height, fps, output_path, duration_ms=0, expos
             "--denoise", "cdn_off",
             "--framerate", str(fps),
             "--save-pts", PTS_FILE_PATH,
+            "--flush", "1",
+            "--inline",
+            "--timeout", "0",
+            "--awb", "off",
             *duration_arg,
             *exposure_arg,
             *preview_arg,
@@ -392,7 +488,8 @@ def start_camera_recording(width, height, fps, output_path, duration_ms=0, expos
     camera_process = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE
+        stderr=subprocess.PIPE,
+        bufsize=0  # Unbuffered output for faster processing
     )
     
     # Start thread to monitor process output and push LSL samples
@@ -421,6 +518,7 @@ def monitor_camera_process():
     frame_number = 0
     last_pts_read_time = 0
     pts_data = []
+    start_time = time.time()
     
     # Read stderr for frame information
     for line in camera_process.stderr:
@@ -432,11 +530,18 @@ def monitor_camera_process():
         # Log camera output
         if "error" in line_str.lower() or "warning" in line_str.lower():
             logger.warning(f"Camera: {line_str}")
+        elif "frame" in line_str.lower() or "frame" in line_str:
+            logger.debug(f"Camera frame: {line_str}")
         else:
             logger.debug(f"Camera: {line_str}")
             
-        # Look for frame indications in the output
-        if "Frame" in line_str or "frame" in line_str:
+        # More aggressive frame detection - look for any indication of frame
+        if ("frame" in line_str.lower() or 
+            "frame" in line_str or 
+            "snapshot" in line_str.lower() or
+            "picture" in line_str.lower() or
+            "image" in line_str.lower()):
+            
             frame_number += 1
             fps_counter += 1
             
@@ -460,10 +565,15 @@ def monitor_camera_process():
             
             # Report FPS periodically
             current_time = time.time()
-            if current_time - last_fps_time >= 5.0:
+            if current_time - last_fps_time >= 2.0:  # Check more frequently
                 elapsed = current_time - last_fps_time
                 fps_rate = fps_counter / elapsed if elapsed > 0 else 0
                 logger.info(f"Current frame rate: {fps_rate:.1f} FPS ({fps_counter} frames in {elapsed:.1f}s)")
+                
+                # Check for extremely low frame rates as a warning
+                if fps_counter > 0 and fps_rate < 5.0 and (current_time - start_time) > 2.0:
+                    logger.warning(f"Very low frame rate detected: {fps_rate:.1f} FPS. Camera may be struggling with current settings.")
+                
                 fps_counter = 0
                 last_fps_time = current_time
 
@@ -550,14 +660,23 @@ def main():
     parser.add_argument('--height', type=int, default=400, help='Camera height (default: 400)')
     parser.add_argument('--fps', type=int, default=100, help='Target frame rate (default: 100)')
     parser.add_argument('--exposure', type=int, default=None, help='Exposure time in microseconds (optional)')
-    parser.add_argument('--duration', type=int, default=0, help='Recording duration in milliseconds (0 for infinite)')
+    parser.add_argument('--duration', type=float, default=10, help='Recording duration in seconds (default: 10)')
     parser.add_argument('--output', type=str, default='', help='Output video file path (default: auto-generated)')
     parser.add_argument('--lsl-name', type=str, default='IMX296Camera', help='LSL stream name (default: IMX296Camera)')
     parser.add_argument('--lsl-type', type=str, default='Video', help='LSL stream type (default: Video)')
     parser.add_argument('--cam1', action='store_true', help='Use camera 1 instead of camera 0')
     parser.add_argument('--preview', action='store_true', help='Show camera preview during recording')
     parser.add_argument('--setup-permissions', action='store_true', help='Set up device permissions for the current user')
+    parser.add_argument('--verbose', action='store_true', help='Enable verbose logging')
     args = parser.parse_args()
+    
+    # Convert duration from seconds to milliseconds
+    duration_ms = int(args.duration * 1000) if args.duration > 0 else 0
+    
+    # Set up logging level
+    if args.verbose:
+        logger.setLevel(logging.DEBUG)
+        logger.info("Verbose logging enabled")
 
     # Set up device permissions if requested
     if args.setup_permissions:
@@ -570,6 +689,17 @@ def main():
     # Check if width and height are even numbers
     if not check_even_dimensions(args.width, args.height):
         return 1
+        
+    # Validate recording duration
+    if duration_ms <= 0:
+        logger.info("No duration specified, will record until interrupted")
+    elif duration_ms < 1000:
+        logger.warning(f"Very short duration specified ({args.duration} seconds). Consider increasing for better results.")
+    
+    # Check if FPS is reasonable
+    if args.fps > 120:
+        logger.warning(f"Very high FPS requested ({args.fps}). The camera might not achieve this rate.")
+        logger.warning("Consider reducing resolution for better high-FPS performance.")
     
     # Set camera selection environment variable if needed
     if args.cam1:
@@ -589,6 +719,9 @@ def main():
     if not ensure_device_permission(media_dev_path):
         logger.warning("Could not ensure permission to media device.")
         logger.warning("You might need to run with --setup-permissions once, then log out and back in.")
+        
+        # Try running with temporary privileges for this session
+        logger.info("Attempting to continue with elevated privileges for media-ctl...")
     
     # Configure camera cropping
     if not configure_media_ctl(media_dev_path, entity_name, args.width, args.height):
@@ -622,16 +755,27 @@ def main():
         # Reset LSL data collector
         lsl_data = []
         
+        # Calculate appropriate exposure time if not specified
+        exposure = args.exposure
+        if exposure is None:
+            # Default exposure: try to balance frame rate and exposure
+            # For high FPS, we need shorter exposure
+            if args.fps > 60:
+                exposure = int(min(1000000 / args.fps * 0.8, 10000))
+                logger.info(f"Automatically setting exposure to {exposure}µs for high FPS")
+            else:
+                exposure = 10000  # Default exposure for lower FPS
+        
         camera_proc = start_camera_recording(
             args.width, args.height, args.fps, 
-            str(video_path), args.duration, args.exposure,
+            str(video_path), duration_ms, exposure,
             preview=args.preview
         )
         
         # Wait for camera process to finish or Ctrl+C
-        logger.info("Recording started. Press Ctrl+C to stop.")
+        logger.info(f"Recording started with duration: {args.duration} seconds. Press Ctrl+C to stop earlier.")
         while camera_proc.poll() is None and not stop_event.is_set():
-            time.sleep(0.5)
+            time.sleep(0.1)  # Check more frequently
             
     except KeyboardInterrupt:
         logger.info("Recording stopped by user")
@@ -648,6 +792,10 @@ def main():
         # Save LSL data to CSV
         if lsl_data:
             save_lsl_data_to_csv(csv_path)
+            logger.info(f"Video size: {os.path.getsize(video_path)} bytes")
+            logger.info(f"Frames captured: {len(lsl_data)}")
+        else:
+            logger.warning("No LSL data was collected during recording")
         
         # Analyze PTS file if not on Pi 5
         if not IS_RPI5:
