@@ -2,6 +2,9 @@
 # shellcheck disable=SC2154
 # (silence shellcheck wrt $cam1 environment variable)
 
+# Enable debug output
+set -x
+
 if [[ $# -lt 4 ]];  then  echo "Format: [narrow=1] [cam1=1] $0 width height framerate ms [us] [output_path]"; exit;  fi
 if [[ "$(( $1 % 2 ))" -eq 1 ]];  then echo "width has to be even"; exit;  fi
 if [[ "$(( $2 % 2 ))" -eq 1 ]];  then echo "height has to be even"; exit;  fi
@@ -22,11 +25,21 @@ fi
 # Create markers file for LSL synchronization
 MARKERS_FILE="/dev/shm/camera_markers.txt"
 echo "Starting recording" > "$MARKERS_FILE"
+echo "Markers file created at $MARKERS_FILE" >&2
 
 # Check for Bookworm OS
 workaround=""; 
 if [[ "" != "$(grep '=bookworm' /etc/os-release)" ]]; then 
     workaround="--no-raw"
+fi
+
+# Set AWB mode based on environment variable
+AWB_PARAM=""
+if [[ "$no_awb" == "1" ]]; then
+    echo "AWB disabled per request" >&2
+else
+    AWB_PARAM="--awb auto"
+    echo "Using automatic white balance" >&2
 fi
 
 # Detect Pi version and set device ID
@@ -40,10 +53,21 @@ if [[ "" != "$(grep "Revision.*: ...17.$" /proc/cpuinfo)" ]]; then
 fi
 
 # Find and configure the media device
+MEDIA_DEVICE=""
 for((m=0; m<=5; ++m))
 do
-    media-ctl -d /dev/media$m --set-v4l2 "'imx296 $d-001a':0 [fmt:SBGGR10_1X10/${1}x${2} crop:($(( (1440 - $1) / 2 )),$(( (1088 - $2) / 2 )))/${1}x$2]" -v; [ $? -eq 0 ] && break
+    echo "Trying media device /dev/media$m" >&2
+    if media-ctl -d /dev/media$m --set-v4l2 "'imx296 $d-001a':0 [fmt:SBGGR10_1X10/${1}x${2} crop:($(( (1440 - $1) / 2 )),$(( (1088 - $2) / 2 )))/${1}x$2]" -v 2>/dev/null; then
+        MEDIA_DEVICE="/dev/media$m"
+        echo "Successfully configured media device: $MEDIA_DEVICE" >&2
+        break
+    fi
 done
+
+if [[ -z "$MEDIA_DEVICE" ]]; then
+    echo "WARNING: Could not configure any media device" >&2
+    # Continue anyway to attempt recording
+fi
 
 # Check if camera is detected
 libcamera-hello --list-cameras ; echo
@@ -66,12 +90,14 @@ then
         OUTPUT_FILE="/dev/shm/tst${cam1:+1}.mp4"
     fi
     
-    # Start rpicam-vid
-    rpicam-vid "$workaround" ${cam1:+--camera 1} \
-        --width "$1" --height "$2" \
-        --denoise cdn_off --framerate "$3" \
-        -t "$4" "$SHTR" "$5" \
-        -o "$OUTPUT_FILE" -n 2>&1 | tee "$FIFO" &
+    echo "Starting rpicam-vid with output to $OUTPUT_FILE" >&2
+    
+    # Start rpicam-vid with configurable AWB
+    RPICAM_CMD="rpicam-vid $workaround ${cam1:+--camera 1} --width $1 --height $2 --denoise cdn_off --framerate $3 $AWB_PARAM -t $4 $SHTR $5 -o $OUTPUT_FILE -n"
+    echo "Command: $RPICAM_CMD" >&2
+    
+    # Execute command and capture output
+    eval "$RPICAM_CMD" 2>&1 | tee "$FIFO" &
     
     PID=$!
     
@@ -79,11 +105,12 @@ then
     exec 3<"$FIFO"
     frame_num=0
     while read -r line <&3; do
-        echo "$line" >&2
+        echo "Output: $line" >&2
         if [[ "$line" == *"frame"* || "$line" == *"Frame"* ]]; then
             frame_num=$((frame_num + 1))
             timestamp=$(date +%s.%N)
             echo "$frame_num $timestamp" >> "$MARKERS_FILE"
+            echo "Recorded frame $frame_num at $timestamp" >&2
         fi
     done &
     
@@ -102,19 +129,22 @@ else
         OUTPUT_FILE="/dev/shm/tst.h264"
     fi
     
-    # Start libcamera-vid
-    libcamera-vid "$workaround" \
-        --width "$1" --height "$2" \
-        --denoise cdn_off --framerate "$3" \
-        --save-pts /dev/shm/tst.pts -t "$4" "$SHTR" "$5" \
-        -o "$OUTPUT_FILE" -n 2>&1 | while read -r line; do
-            echo "$line" >&2
-            if [[ "$line" == *"frame"* || "$line" == *"Frame"* ]]; then
-                frame_num=$((frame_num + 1))
-                timestamp=$(date +%s.%N)
-                echo "$frame_num $timestamp" >> "$MARKERS_FILE"
-            fi
-        done
+    echo "Starting libcamera-vid with output to $OUTPUT_FILE" >&2
+    
+    # Start libcamera-vid with configurable AWB
+    LIBCAM_CMD="libcamera-vid $workaround --width $1 --height $2 --denoise cdn_off --framerate $3 $AWB_PARAM --save-pts /dev/shm/tst.pts -t $4 $SHTR $5 -o $OUTPUT_FILE -n"
+    echo "Command: $LIBCAM_CMD" >&2
+    
+    # Execute the command and process output for frame markers
+    eval "$LIBCAM_CMD" 2>&1 | while read -r line; do
+        echo "Output: $line" >&2
+        if [[ "$line" == *"frame"* || "$line" == *"Frame"* ]]; then
+            frame_num=$((frame_num + 1))
+            timestamp=$(date +%s.%N)
+            echo "$frame_num $timestamp" >> "$MARKERS_FILE"
+            echo "Recorded frame $frame_num at $timestamp" >&2
+        fi
+    done
     
     # Run PTS analysis
     if command -v ptsanalyze > /dev/null; then
@@ -128,4 +158,7 @@ else
 fi
 
 echo "Recording complete. Output saved to: $OUTPUT_FILE" >&2
-echo "Frame markers saved to: $MARKERS_FILE" >&2 
+echo "Frame markers saved to: $MARKERS_FILE" >&2
+
+# Disable debug output
+set +x 

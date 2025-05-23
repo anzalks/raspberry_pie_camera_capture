@@ -141,6 +141,8 @@ def monitor_markers_file():
     # Wait a bit to let the GScrop script start
     time.sleep(0.5)
     
+    logger.info(f"Looking for markers file at {MARKERS_FILE}")
+    
     if not os.path.exists(MARKERS_FILE):
         logger.warning(f"Markers file {MARKERS_FILE} does not exist, waiting for it to be created...")
         
@@ -150,56 +152,79 @@ def monitor_markers_file():
             time.sleep(0.1)
             if time.time() - start_time > 5.0:  # 5 second timeout
                 logger.error(f"Timed out waiting for markers file: {MARKERS_FILE}")
-                return
+                # Create an empty file to allow processing to continue
+                try:
+                    with open(MARKERS_FILE, 'w') as f:
+                        f.write("Starting recording\n")
+                    logger.info(f"Created empty markers file at {MARKERS_FILE}")
+                except Exception as e:
+                    logger.error(f"Failed to create empty markers file: {e}")
+                    return
     
     if stop_event.is_set():
         return
     
-    logger.debug(f"Monitoring markers file: {MARKERS_FILE}")
+    logger.info(f"Found markers file: {MARKERS_FILE}")
+    
+    # Check if file is readable
+    try:
+        with open(MARKERS_FILE, 'r') as f:
+            first_line = f.readline().strip()
+            logger.debug(f"First line of markers file: {first_line}")
+    except Exception as e:
+        logger.error(f"Error reading markers file: {e}")
+        return
     
     # Keep track of the last read position
     last_pos = 0
     last_frame = 0
     
+    logger.info("Starting to monitor markers file for frame data")
+    
     while not stop_event.is_set():
         try:
             # Check if file exists
             if not os.path.exists(MARKERS_FILE):
-                logger.debug("Markers file disappeared, waiting for it to reappear...")
+                logger.warning("Markers file disappeared, waiting for it to reappear...")
                 time.sleep(0.5)
                 continue
                 
-            # Open the file and read new lines
-            with open(MARKERS_FILE, 'r') as f:
-                # Go to last read position
-                f.seek(last_pos)
-                
-                # Read new content
-                new_lines = f.readlines()
-                
-                # Update last position if we read anything
-                if new_lines:
-                    last_pos = f.tell()
+            # Try to read new content with error handling
+            try:
+                with open(MARKERS_FILE, 'r') as f:
+                    # Go to last read position
+                    f.seek(last_pos)
                     
-                    for line in new_lines:
-                        line = line.strip()
-                        if not line or line.startswith("Starting"):
-                            continue
-                            
-                        # Parse frame number and timestamp
-                        try:
-                            parts = line.split()
-                            if len(parts) >= 2:
-                                frame_num = int(parts[0])
-                                frame_time = float(parts[1])
+                    # Read new content
+                    new_lines = f.readlines()
+                    
+                    # Update last position if we read anything
+                    if new_lines:
+                        last_pos = f.tell()
+                        
+                        for line in new_lines:
+                            line = line.strip()
+                            if not line or line.startswith("Starting"):
+                                continue
                                 
-                                # Only push if this is a new frame
-                                if frame_num > last_frame:
-                                    push_lsl_sample(frame_num, frame_time)
-                                    last_frame = frame_num
-                                    logger.debug(f"Pushed LSL sample: Frame {frame_num}, Time {frame_time}")
-                        except ValueError as e:
-                            logger.debug(f"Error parsing line '{line}': {e}")
+                            # Parse frame number and timestamp
+                            try:
+                                parts = line.split()
+                                if len(parts) >= 2:
+                                    frame_num = int(parts[0])
+                                    frame_time = float(parts[1])
+                                    
+                                    # Only push if this is a new frame
+                                    if frame_num > last_frame:
+                                        push_lsl_sample(frame_num, frame_time)
+                                        last_frame = frame_num
+                                        logger.debug(f"Pushed LSL sample: Frame {frame_num}, Time {frame_time}")
+                            except ValueError as e:
+                                logger.debug(f"Error parsing line '{line}': {e}")
+            except Exception as e:
+                logger.warning(f"Error reading markers file: {e}")
+                time.sleep(0.1)
+                continue
             
             # Short sleep before checking for new lines
             time.sleep(0.01)
@@ -207,8 +232,10 @@ def monitor_markers_file():
         except Exception as e:
             logger.warning(f"Error monitoring markers file: {e}")
             time.sleep(0.5)
+    
+    logger.info("Stopped monitoring markers file")
 
-def run_gscrop_script(width, height, fps, duration_ms, exposure_us=None, output_path=None, preview=False):
+def run_gscrop_script(width, height, fps, duration_ms, exposure_us=None, output_path=None, preview=False, no_awb=False):
     """Run the GScrop shell script to capture video"""
     global camera_process, stop_event
     
@@ -233,6 +260,10 @@ def run_gscrop_script(width, height, fps, duration_ms, exposure_us=None, output_
     # Add narrow mode if requested
     if preview:
         env["narrow"] = "1"
+        
+    # Set no AWB flag if requested
+    if no_awb:
+        env["no_awb"] = "1"
     
     logger.info(f"Starting GScrop with command: {' '.join(cmd)}")
     
@@ -260,6 +291,10 @@ def run_gscrop_script(width, height, fps, duration_ms, exposure_us=None, output_
 
 def monitor_process_output(pipe, name):
     """Monitor a process output pipe and log the results"""
+    if pipe is None:
+        logger.warning(f"No {name} pipe to monitor")
+        return
+        
     for line in iter(pipe.readline, b''):
         if stop_event.is_set():
             break
@@ -275,10 +310,12 @@ def monitor_process_output(pipe, name):
             logger.warning(f"GScrop {name}: {line_str}")
         else:
             logger.debug(f"GScrop {name}: {line_str}")
+            
+    logger.debug(f"End of {name} pipe monitoring")
 
 def main():
     """Main function"""
-    global lsl_outlet, stop_event, lsl_data
+    global lsl_outlet, stop_event, lsl_data, MARKERS_FILE
 
     # Setup signal handlers
     signal.signal(signal.SIGINT, signal_handler)
@@ -297,15 +334,76 @@ def main():
     parser.add_argument('--cam1', action='store_true', help='Use camera 1 instead of camera 0')
     parser.add_argument('--preview', action='store_true', help='Show camera preview during recording')
     parser.add_argument('--verbose', action='store_true', help='Enable verbose logging')
+    parser.add_argument('--debug', action='store_true', help='Enable debug mode with extensive logging')
+    parser.add_argument('--test-markers', action='store_true', help='Test markers file creation and monitoring')
+    parser.add_argument('--no-awb', action='store_true', help='Disable AWB (Auto White Balance) adjustments')
     args = parser.parse_args()
     
     # Convert duration from seconds to milliseconds
     duration_ms = int(args.duration * 1000) if args.duration > 0 else 0
     
     # Set up logging level
-    if args.verbose:
+    if args.debug:
         logger.setLevel(logging.DEBUG)
+        logger.info("Debug logging enabled")
+    elif args.verbose:
+        logger.setLevel(logging.INFO)
         logger.info("Verbose logging enabled")
+    
+    # Check if running on Windows or Linux
+    is_windows = sys.platform.startswith('win')
+    if is_windows:
+        logger.warning("Running on Windows - some features may not work properly")
+    
+    # Check file system permissions
+    if not is_windows:
+        try:
+            # Check if /dev/shm exists and is writable
+            if not os.path.exists('/dev/shm'):
+                logger.error("/dev/shm directory not found - may be missing or not mounted")
+            elif not os.access('/dev/shm', os.W_OK):
+                logger.error("/dev/shm directory is not writable - check permissions")
+            else:
+                logger.debug("/dev/shm directory exists and is writable")
+                
+            # Try to create and remove a test file
+            test_file = '/dev/shm/test_file'
+            with open(test_file, 'w') as f:
+                f.write('test')
+            os.unlink(test_file)
+            logger.debug("Successfully created and removed test file in /dev/shm")
+        except Exception as e:
+            logger.warning(f"File system permission check failed: {e}")
+    
+    # Test markers file if requested
+    if args.test_markers:
+        logger.info("Testing markers file creation and monitoring")
+        try:
+            with open(MARKERS_FILE, 'w') as f:
+                f.write("Starting recording\n")
+                f.write("1 1684567890.123456\n")
+                f.write("2 1684567890.234567\n")
+            logger.info(f"Created test markers file at {MARKERS_FILE}")
+            
+            # Start monitoring in a thread
+            monitor_thread = threading.Thread(target=monitor_markers_file, daemon=True)
+            monitor_thread.start()
+            
+            # Append more data to the file
+            time.sleep(1)
+            with open(MARKERS_FILE, 'a') as f:
+                f.write("3 1684567890.345678\n")
+            
+            # Wait for monitoring to process
+            time.sleep(1)
+            stop_event.set()
+            monitor_thread.join(timeout=2)
+            
+            logger.info(f"Test complete, collected {len(lsl_data)} LSL data points")
+            return 0
+        except Exception as e:
+            logger.error(f"Test failed: {e}")
+            return 1
     
     # Log all arguments
     logger.debug(f"Command line arguments: {vars(args)}")
@@ -340,6 +438,7 @@ def main():
         logger.warning("GScrop script is not executable, trying to make it executable")
         try:
             os.chmod("./GScrop", 0o755)
+            logger.info("Made GScrop executable")
         except Exception as e:
             logger.error(f"Could not make GScrop executable: {e}")
             return 1
@@ -388,7 +487,8 @@ def main():
         camera_proc = run_gscrop_script(
             args.width, args.height, args.fps,
             duration_ms, exposure, video_path,
-            preview=args.preview
+            preview=args.preview,
+            no_awb=args.no_awb
         )
         
         if not camera_proc:
@@ -401,24 +501,44 @@ def main():
         # Monitor LSL data collection
         frames_count = 0
         last_report_time = time.time()
+        start_time = time.time()
         
         while camera_proc.poll() is None and not stop_event.is_set():
+            # Check if we've been running too long
+            current_time = time.time()
+            if duration_ms > 0 and (current_time - start_time) * 1000 > duration_ms + 2000:
+                logger.warning("Recording taking longer than expected, checking process...")
+                if camera_proc.poll() is None:
+                    logger.warning("Process still running, trying to terminate...")
+                    camera_proc.terminate()
+                    break
+            
             # Sleep briefly
             time.sleep(0.1)
             
             # Periodically report frame count
-            current_time = time.time()
             if current_time - last_report_time >= 2.0:
                 current_frames = len(lsl_data)
                 new_frames = current_frames - frames_count
                 elapsed = current_time - last_report_time
                 fps_rate = new_frames / elapsed if elapsed > 0 else 0
                 logger.info(f"Current frame rate: {fps_rate:.1f} FPS ({new_frames} frames in {elapsed:.1f}s)")
+                
+                if args.debug and new_frames == 0 and current_frames == 0:
+                    logger.debug("No frames detected, checking markers file...")
+                    if os.path.exists(MARKERS_FILE):
+                        try:
+                            with open(MARKERS_FILE, 'r') as f:
+                                content = f.read()
+                                logger.debug(f"Markers file content ({len(content)} bytes):\n{content[:500]}...")
+                        except Exception as e:
+                            logger.debug(f"Error reading markers file: {e}")
+                
                 frames_count = current_frames
                 last_report_time = current_time
         
         # Check exit code
-        exit_code = camera_proc.returncode if camera_proc.returncode is not None else 0
+        exit_code = camera_proc.returncode if camera_proc.poll() is not None else 0
         if exit_code == 0:
             logger.info("GScrop script completed successfully")
             recording_successful = True
@@ -463,6 +583,20 @@ def main():
                     logger.warning(f"No video file was created at {video_path}.[mp4/h264]")
         else:
             logger.warning("No LSL data was collected during recording")
+            
+            # Check if markers file exists and has content
+            if os.path.exists(MARKERS_FILE):
+                try:
+                    with open(MARKERS_FILE, 'r') as f:
+                        content = f.read().strip()
+                        if content:
+                            logger.info(f"Markers file exists with {len(content.splitlines())} lines but no LSL data was processed")
+                        else:
+                            logger.warning("Markers file exists but is empty")
+                except Exception as e:
+                    logger.error(f"Error reading markers file: {e}")
+            else:
+                logger.error("Markers file was not created")
     
     if recording_successful:
         logger.info("Recording completed successfully")
