@@ -423,7 +423,9 @@ def start_camera_recording(width, height, fps, output_path, duration_ms=0, expos
     # Determine duration argument
     duration_arg = []
     if duration_ms > 0:
+        # rpicam-vid and libcamera-vid both use milliseconds for the -t parameter
         duration_arg = ["-t", str(duration_ms)]
+        logger.debug(f"Setting recording duration to {duration_ms} milliseconds")
     
     # Determine exposure argument
     exposure_arg = []
@@ -519,63 +521,128 @@ def monitor_camera_process():
     last_pts_read_time = 0
     pts_data = []
     start_time = time.time()
+    last_update_time = start_time
+    camera_started = False
     
-    # Read stderr for frame information
-    for line in camera_process.stderr:
+    # Check function for real-time output inspection
+    def check_for_frame_indicators(line):
+        # Many different patterns we might see in output depending on camera version
+        frame_patterns = [
+            "frame", "Frame",
+            "snapshot", "Snapshot",
+            "image", "Image",
+            "picture", "Picture",
+            "camera_buffer", "buffer",
+            "encoding"
+        ]
+        
+        for pattern in frame_patterns:
+            if pattern in line:
+                return True
+        return False
+    
+    logger.debug(f"Started monitoring camera process output")
+    
+    # Read both stdout and stderr for frame information (combine streams)
+    for pipe in [camera_process.stdout, camera_process.stderr]:
+        if pipe:
+            threading.Thread(target=read_pipe, args=(pipe,), daemon=True).start()
+    
+    # Keep the monitoring thread alive as long as the camera process is running
+    while camera_process.poll() is None and not stop_event.is_set():
+        # Even if we're not seeing explicit frame indicators, we can use
+        # time-based updates for low-rate cameras
+        current_time = time.time()
+        time_since_start = current_time - start_time
+        
+        if not camera_started and time_since_start > 2.0:
+            logger.debug("Camera process has been running for 2 seconds, assuming it's started")
+            camera_started = True
+        
+        # For slow cameras, try to update based on time as a fallback
+        if camera_started and current_time - last_update_time > 0.5:
+            frame_number += 1
+            fps_counter += 1
+            push_lsl_sample(frame_number)
+            last_update_time = current_time
+            
+            # Report status periodically
+            if current_time - last_fps_time >= 2.0:
+                elapsed = current_time - last_fps_time
+                fps_rate = fps_counter / elapsed if elapsed > 0 else 0
+                logger.info(f"Current frame rate: {fps_rate:.1f} FPS ({fps_counter} frames in {elapsed:.1f}s)")
+                fps_counter = 0
+                last_fps_time = current_time
+        
+        time.sleep(0.01)  # Short sleep to prevent CPU hogging
+
+def read_pipe(pipe):
+    """Read from a pipe (stdout or stderr) and process lines"""
+    global fps_counter, last_fps_time, lsl_data
+    
+    frame_number = 0
+    last_line_time = time.time()
+    
+    for line in iter(pipe.readline, b''):
         if stop_event.is_set():
             break
             
         line_str = line.decode().strip()
+        if not line_str:
+            continue
         
         # Log camera output
         if "error" in line_str.lower() or "warning" in line_str.lower():
             logger.warning(f"Camera: {line_str}")
-        elif "frame" in line_str.lower() or "frame" in line_str:
+        elif "frame" in line_str.lower():
             logger.debug(f"Camera frame: {line_str}")
         else:
             logger.debug(f"Camera: {line_str}")
             
-        # More aggressive frame detection - look for any indication of frame
-        if ("frame" in line_str.lower() or 
-            "frame" in line_str or 
-            "snapshot" in line_str.lower() or
-            "picture" in line_str.lower() or
-            "image" in line_str.lower()):
-            
+        # Detect frames using multiple patterns
+        is_frame = False
+        
+        # Frame-specific patterns
+        frame_patterns = [
+            "frame", "Frame", 
+            "snapshot", "Snapshot",
+            "image", "Image", 
+            "picture", "Picture",
+            "camera_buffer", "buffer"
+        ]
+        
+        for pattern in frame_patterns:
+            if pattern in line_str:
+                is_frame = True
+                break
+        
+        # Process frame data
+        if is_frame:
             frame_number += 1
             fps_counter += 1
             
-            # For non-Pi5, read PTS file periodically to get timestamps
-            if not IS_RPI5 and time.time() - last_pts_read_time > 1.0:
-                pts_data = read_timestamps_from_pts()
-                last_pts_read_time = time.time()
-                
-            # Find frame timestamp if available
-            frame_timestamp = None
-            for pts_frame, pts_time in pts_data:
-                if pts_frame == frame_number:
-                    frame_timestamp = pts_time
-                    break
-                    
-            # Push frame data to LSL
-            if frame_timestamp:
-                push_lsl_sample(frame_number, frame_timestamp)
-            else:
-                push_lsl_sample(frame_number)
+            # Extract timestamp if available in the output
+            timestamp = None
+            time_patterns = [
+                r"time(?:stamp)?\s*(?::|\s)\s*(\d+\.\d+)",  # time: 123.456
+                r"pts\s*(?::|\s)\s*(\d+\.\d+)",            # pts: 123.456
+                r"timestamp\s*=\s*(\d+\.\d+)"              # timestamp=123.456
+            ]
             
-            # Report FPS periodically
-            current_time = time.time()
-            if current_time - last_fps_time >= 2.0:  # Check more frequently
-                elapsed = current_time - last_fps_time
-                fps_rate = fps_counter / elapsed if elapsed > 0 else 0
-                logger.info(f"Current frame rate: {fps_rate:.1f} FPS ({fps_counter} frames in {elapsed:.1f}s)")
-                
-                # Check for extremely low frame rates as a warning
-                if fps_counter > 0 and fps_rate < 5.0 and (current_time - start_time) > 2.0:
-                    logger.warning(f"Very low frame rate detected: {fps_rate:.1f} FPS. Camera may be struggling with current settings.")
-                
-                fps_counter = 0
-                last_fps_time = current_time
+            for pattern in time_patterns:
+                match = re.search(pattern, line_str)
+                if match:
+                    try:
+                        timestamp = float(match.group(1))
+                        break
+                    except ValueError:
+                        pass
+            
+            # Push frame data to LSL
+            push_lsl_sample(frame_number, timestamp)
+            
+            # Update last line time
+            last_line_time = time.time()
 
 def analyze_pts_file():
     """Analyze the PTS file using ptsanalyze tool if available"""
@@ -668,6 +735,7 @@ def main():
     parser.add_argument('--preview', action='store_true', help='Show camera preview during recording')
     parser.add_argument('--setup-permissions', action='store_true', help='Set up device permissions for the current user')
     parser.add_argument('--verbose', action='store_true', help='Enable verbose logging')
+    parser.add_argument('--check-camera', action='store_true', help='Check camera capabilities and exit')
     args = parser.parse_args()
     
     # Convert duration from seconds to milliseconds
@@ -677,6 +745,10 @@ def main():
     if args.verbose:
         logger.setLevel(logging.DEBUG)
         logger.info("Verbose logging enabled")
+    
+    # Log all arguments
+    logger.debug(f"Command line arguments: {vars(args)}")
+    logger.debug(f"Duration in milliseconds: {duration_ms}")
 
     # Set up device permissions if requested
     if args.setup_permissions:
@@ -689,7 +761,7 @@ def main():
     # Check if width and height are even numbers
     if not check_even_dimensions(args.width, args.height):
         return 1
-        
+         
     # Validate recording duration
     if duration_ms <= 0:
         logger.info("No duration specified, will record until interrupted")
@@ -708,6 +780,57 @@ def main():
     
     # Detect Raspberry Pi version
     IS_RPI5 = is_raspberry_pi5()
+    logger.info(f"Detected platform: {'Raspberry Pi 5' if IS_RPI5 else 'Older Raspberry Pi'}")
+    
+    # Check for camera and software
+    try:
+        if IS_RPI5:
+            cmd = ["which", "rpicam-vid"]
+        else:
+            cmd = ["which", "libcamera-vid"]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            camera_bin = result.stdout.strip()
+            logger.info(f"Found camera software: {camera_bin}")
+        else:
+            logger.warning(f"Camera software not found! Please install the Raspberry Pi camera software.")
+            logger.warning("For Pi 5: sudo apt install rpicam-apps")
+            logger.warning("For older Pi: sudo apt install libcamera-apps")
+            return 1
+    except Exception as e:
+        logger.warning(f"Error checking for camera software: {e}")
+    
+    # Check if camera is detected
+    try:
+        if IS_RPI5:
+            cmd = ["rpicam-hello", "--list-cameras"]
+        else:
+            cmd = ["libcamera-hello", "--list-cameras"]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            if "No cameras available" in result.stdout:
+                logger.error("No cameras detected by the system!")
+                return 1
+            else:
+                logger.info(f"Camera detected: {result.stdout.strip()}")
+        else:
+            logger.warning(f"Could not check for cameras: {result.stderr}")
+    except Exception as e:
+        logger.warning(f"Error checking for cameras: {e}")
+    
+    # Check camera mode if requested
+    if args.check_camera:
+        logger.info("Camera check requested, running camera hello app...")
+        try:
+            if IS_RPI5:
+                cmd = ["rpicam-hello", "--list-cameras"]
+            else:
+                cmd = ["libcamera-hello", "--list-cameras"]
+            subprocess.run(cmd)
+            return 0
+        except Exception as e:
+            logger.error(f"Error checking camera: {e}")
+            return 1
     
     # Find camera media device
     media_dev_path, entity_name = find_imx296_media_device()
@@ -734,6 +857,7 @@ def main():
     
     # Create dated output directory
     output_dir = create_output_directory()
+    logger.info(f"Using output directory: {output_dir}")
     
     # Generate output filenames if not specified
     if not args.output:
@@ -792,8 +916,17 @@ def main():
         # Save LSL data to CSV
         if lsl_data:
             save_lsl_data_to_csv(csv_path)
-            logger.info(f"Video size: {os.path.getsize(video_path)} bytes")
+            if os.path.exists(str(video_path)):
+                video_size = os.path.getsize(str(video_path))
+                logger.info(f"Video size: {video_size} bytes")
+                if video_size < 1000:
+                    logger.warning("Video file is very small! Recording may have failed.")
+            else:
+                logger.error(f"Video file was not created: {video_path}")
+            
             logger.info(f"Frames captured: {len(lsl_data)}")
+            if len(lsl_data) < 5 and args.duration > 1:
+                logger.warning(f"Only {len(lsl_data)} frames were captured. Camera may not be working properly.")
         else:
             logger.warning("No LSL data was collected during recording")
         
