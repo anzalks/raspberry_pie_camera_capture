@@ -6,7 +6,7 @@ This repository contains the code for setting up and running an IMX296 global sh
 
 - Captures from IMX296 global shutter camera at 400x400 resolution
 - Supports 100fps native capture in raw SBGGR10_1X10 format
-- Records video using MJPEG codec in MKV format
+- Records video using H264 codec in MKV format (previously used MJPEG)
 - Streams data to LSL (Lab Streaming Layer) with numeric values
 - Web dashboard for monitoring camera status
 
@@ -38,15 +38,15 @@ camera:
   width: 400
   height: 400
   fps: 100
-  format: "SBGGR10_1X10"
+  format: "SBGGR10_1X10"  # Native format for IMX296
   libcamera_path: "/usr/bin/libcamera-vid"
   ffmpeg_path: "/usr/bin/ffmpeg"
 
 recording:
   enabled: true
-  output_dir: "/home/dawg/recordings"
-  codec: "mjpeg"
-  format: "mkv"
+  output_dir: "/home/dawg/recordings"  # Will be created if it doesn't exist
+  codec: "h264"  # Using H264 for better compatibility
+  format: "mkv"   # Use MKV for better recovery from crashes
   compression_level: 5
   
 lsl:
@@ -67,9 +67,11 @@ web:
 ### Common Issues & Fixes
 
 1. **Empty recording files (4KB only)**
+   - Fix: Changed codec from MJPEG to H264 which works better with the IMX296 camera
    - Fix: Added `-vsync 0` to ffmpeg command
    - Fix: Added file creation with proper permissions
    - Fix: Ensured output directory exists with proper permissions
+   - Solution: Run `sudo bin/fix_codec_h264.sh` to update codec configuration
 
 2. **LSL Stream Not Found**
    - Fix: Ensured all LSL values are numeric (no strings)
@@ -80,12 +82,20 @@ web:
    - Fix: Auto-creates missing directories with proper permissions
    - Fix: Falls back to /tmp if unable to create specified directory
 
+4. **Camera Codec Compatibility Issues**
+   - Problem: MJPEG codec can fail with message "Failed to start streaming: Invalid argument"
+   - Fix: Switch to H264 codec which has better compatibility with IMX296
+   - Test: Use `sudo bin/test_recordings_fixed.sh` to verify H264 recording works
+   - Solution: Run `sudo bin/fix_codec_h264.sh` to update all codec references
+
 ## Tools & Scripts
 
 The `bin/` directory contains various helper scripts:
 
 - `fix_camera_issues.sh`: Main script to fix common camera issues
-- Diagnostic tools for testing camera and LSL functionality
+- `fix_codec_h264.sh`: Updates codec configuration to use H264 instead of MJPEG
+- `test_recordings_fixed.sh`: Tests H264 recording functionality
+- `test_lsl_direct.py`: Tests LSL functionality with numeric values
 
 ## Checking Status
 
