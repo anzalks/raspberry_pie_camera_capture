@@ -58,12 +58,10 @@ def load_config(config_file="config/config.yaml"):
     """Load configuration from YAML file."""
     logger = logging.getLogger('imx296_capture') if logging.getLogger().hasHandlers() else logging
     
-    # Try multiple potential config locations
+    # Try the local config file first, then fallback to other locations
     config_locations = [
-        config_file,                                      # Passed in path (default: config/config.yaml)
-        "/etc/imx296-camera/config.yaml",                # System-wide config
-        os.path.expanduser("~/Downloads/insha_rpie/raspberry_pie_camera_capture/config/config.yaml"),  # User download location
-        os.path.join(os.getcwd(), "config/config.yaml"),  # Current directory
+        os.path.join(os.getcwd(), "config/config.yaml"),         # Current directory (highest priority)
+        config_file,                                             # Passed in path
         os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "config/config.yaml")  # Relative to module
     ]
     
@@ -83,24 +81,14 @@ def load_config(config_file="config/config.yaml"):
                 if 'codec' not in config['recording']:
                     config['recording']['codec'] = 'mjpeg'
             
-            # Create a copy of config at system location if loaded from elsewhere and we have permission
-            if loc != "/etc/imx296-camera/config.yaml":
-                try:
-                    os.makedirs("/etc/imx296-camera", exist_ok=True)
-                    with open("/etc/imx296-camera/config.yaml", 'w') as f:
-                        yaml.dump(config, f)
-                    logger.info("Created a copy of config at /etc/imx296-camera/config.yaml")
-                except:
-                    logger.warning("Could not create a copy of config at system location (requires sudo)")
-            
             return config
         except Exception as e:
             logger.warning(f"Error loading config from {loc}: {e}")
     
     # If we get here, all locations failed - create default config
-    logger.error("Failed to load config from any location, using default values")
+    logger.warning("Failed to load config from any location, using default values")
     
-    # Create a basic default config
+    # Create a basic default config with parameters known to work
     default_config = {
         'system': {
             'libcamera_vid_path': "/usr/bin/libcamera-vid",
@@ -130,7 +118,7 @@ def load_config(config_file="config/config.yaml"):
             'id': "cam1"
         },
         'recording': {
-            'output_dir': "/home/dawg/recordings",
+            'output_dir': "recordings",  # Local directory instead of system path
             'video_format': "mkv",
             'codec': "mjpeg",
             'quality': 90
@@ -141,7 +129,7 @@ def load_config(config_file="config/config.yaml"):
             'poll_interval_sec': 2
         },
         'logging': {
-            'level': "INFO",
+            'level': "DEBUG",
             'console': True,
             'file': "logs/imx296_capture.log",
             'max_size_mb': 10,
@@ -149,15 +137,14 @@ def load_config(config_file="config/config.yaml"):
         }
     }
     
-    # Try to save the default config in multiple locations
-    for loc in ["/etc/imx296-camera/config.yaml", "config/config.yaml"]:
-        try:
-            os.makedirs(os.path.dirname(loc), exist_ok=True)
-            with open(loc, 'w') as f:
-                yaml.dump(default_config, f)
-            logger.info(f"Created default config at: {loc}")
-        except Exception as e:
-            logger.warning(f"Could not create default config at {loc}: {e}")
+    # Try to save the default config locally
+    try:
+        os.makedirs("config", exist_ok=True)
+        with open("config/config.yaml", 'w') as f:
+            yaml.dump(default_config, f)
+        logger.info(f"Created default config at: config/config.yaml")
+    except Exception as e:
+        logger.warning(f"Could not create default config at config/config.yaml: {e}")
     
     return default_config
 
@@ -613,152 +600,29 @@ def camera_thread(config):
         logger.error(f"Output: {e.output if hasattr(e, 'output') else 'No output'}")
         logger.error("Will try to continue anyway, in case the camera is available but command output is unexpected.")
     
-    # Test with simple capture with adjusted parameters
-    logger.info("Testing simple capture with libcamera-vid...")
-    test_cmd = [
-        libcamera_vid_path,
-        "--width", str(width),
-        "--height", str(height),
-        "--framerate", str(fps),
-        "--timeout", "1000",  # 1 second timeout
-        "--codec", codec,     # Use codec from config
-        "--output", "/tmp/test_capture.mkv",  # Use MKV format for better compatibility
-        "--nopreview",  # Add this to prevent display issues
-        "--inline"      # Add inline for better format handling
-    ]
-    
-    # Try increasing timeout before running capture
-    time.sleep(2)
-    
-    try:
-        logger.info(f"Running test capture: {' '.join(test_cmd)}")
-        output = subprocess.check_output(test_cmd, universal_newlines=True, stderr=subprocess.STDOUT)
-        logger.info(f"libcamera-vid test capture output:\n{output}")
-        # Clean up the test file
-        try:
-            if os.path.exists("/tmp/test_capture.mkv"):
-                os.remove("/tmp/test_capture.mkv")
-        except:
-            pass
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Error testing simple capture: {e}")
-        logger.error(f"Output: {e.output if hasattr(e, 'output') else 'No output'}")
-        
-        # Try a more basic capture approach with other parameters
-        try:
-            logger.warning("Trying simpler capture command with raw format...")
-            basic_cmd = [
-                libcamera_vid_path,
-                "--timeout", "1000",         # 1 second timeout
-                "--codec", codec,            # Use codec from config
-                "--output", "/tmp/test_capture.mkv",  # Use MKV container
-                "--nopreview",
-                "--inline"                   # Use inline for better format handling
-            ]
-            output = subprocess.check_output(basic_cmd, universal_newlines=True, stderr=subprocess.STDOUT)
-            logger.info(f"Raw format test output:\n{output}")
-            
-            # If we get here, basic capture worked, so we can try the main capture
-            logger.info("Basic camera test succeeded, proceeding with main capture")
-        except subprocess.CalledProcessError as e2:
-            # Also try with direct V4L2 access
-            try:
-                logger.warning("Direct V4L2 frame grab attempt...")
-                for i in range(10):
-                    dev_path = f"/dev/video{i}"
-                    if os.path.exists(dev_path):
-                        v4l2_cmd = ["v4l2-ctl", "-d", dev_path, "--set-fmt-video=width=400,height=400", "--stream-mmap", "--stream-count=1"]
-                        subprocess.run(v4l2_cmd, timeout=3, capture_output=True)
-                logger.info("V4L2 direct access test completed - proceeding with main command")
-            except Exception as v4l2_e:
-                logger.error(f"V4L2 direct test also failed: {v4l2_e}")
-                # Continue anyway as a final attempt
-    
-    # Build libcamera-vid command
-    cmd = [
+    # Use the exact same command that works in test_direct_capture.py
+    # This is the key fix - use parameters known to work
+    logger.info("Using known working command parameters from test_direct_capture.py")
+    simplified_cmd = [
         libcamera_vid_path,
         "--width", str(width),
         "--height", str(height),
         "--framerate", str(fps),
         "--shutter", str(exposure_time_us),
-        "--denoise", "cdn_off",
-        "--save-pts", pts_file_path,
-        "--codec", codec,  # Use codec from config
-        "--inline",
-        "--flush",
-        "--no-raw",  # Disable raw format for better compatibility
-        "-o", "-"  # Output to stdout
+        "--codec", codec,    # Use codec from config
+        "--inline",          # Essential for proper output format
+        "--nopreview",       # Avoid display issues
+        "--no-raw",          # Disable raw format for better compatibility
+        "-o", "-"            # Output to stdout
     ]
     
-    # Add timeout to commands to ensure they don't hang
-    cmd.insert(1, "--timeout")
-    cmd.insert(2, "0")  # 0 means run indefinitely
-    
-    # Check if global-shutter flag is supported
-    try:
-        help_cmd = [libcamera_vid_path, "--help"]
-        help_output = subprocess.check_output(help_cmd, universal_newlines=True, stderr=subprocess.STDOUT)
-        if "--global-shutter" in help_output:
-            logger.info("--global-shutter flag is supported, adding to command")
-            cmd.insert(1, "--global-shutter")  # Add after the command path
-        else:
-            logger.warning("--global-shutter flag not found in help output, skipping")
-            logger.info("Available options from help:\n" + help_output)
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Error checking libcamera-vid help: {e}")
-    
-    logger.info(f"Starting libcamera-vid with command: {' '.join(cmd)}")
+    # Log the command we're using
+    logger.info(f"Starting libcamera-vid with command: {' '.join(simplified_cmd)}")
     logger.info(f"Using RAM buffer of {buffer_duration_sec} seconds (max {max_frames} frames)")
     logger.info(f"Codec: {codec}")
     
     try:
-        # Calculate exposure time based on framerate standards
-        logger.info(f"Calculating exposure time based on framerate: {fps} fps")
-        
-        # For IMX296, exposure should be limited to frame period
-        # Maximum exposure time = 1000000/fps microseconds 
-        # But set to 80% of max to be safe
-        exposure_time = min(exposure_time_us, int(0.8 * 1000000 / fps))
-        logger.info(f"Using calculated exposure time of {exposure_time} µs")
-        
-        # Simplify command for better stability - add adjusted exposure
-        simplified_cmd = [
-            libcamera_vid_path,
-            "--width", str(width),
-            "--height", str(height),
-            "--framerate", str(fps),
-            "--shutter", str(exposure_time),  # Use calculated exposure
-            "--timeout", "0",
-            "--nopreview",  # Add nopreview to avoid display issues
-            "--codec", codec,  # Use codec from config 
-            "--inline",  # Important for proper output
-            "--no-raw",  # Disable raw format for better compatibility
-            "-o", "-"  # Output to stdout
-        ]
-
-        # Try also with v4l2-ctl to reset the camera before starting
-        try:
-            # Reset any existing v4l2 devices that might be causing the issue
-            reset_cmd = ["v4l2-ctl", "--all"]
-            logger.info(f"Resetting v4l2 devices before starting: {' '.join(reset_cmd)}")
-            subprocess.run(reset_cmd, timeout=5, capture_output=True)
-            
-            # Try an alternative reset method
-            for i in range(10):
-                dev_path = f"/dev/video{i}"
-                if os.path.exists(dev_path):
-                    try:
-                        reset_dev_cmd = ["v4l2-ctl", "-d", dev_path, "-c", "timeout_value=3000"]
-                        subprocess.run(reset_dev_cmd, timeout=2, capture_output=True)
-                    except:
-                        pass
-        except Exception as e:
-            logger.warning(f"Error resetting v4l2 devices: {e}")
-            # Continue anyway
-        
-        # Try the simplified command first
-        logger.info(f"Starting libcamera-vid with simplified command: {' '.join(simplified_cmd)}")
-        
+        # Start the capture process
         libcamera_vid_process = subprocess.Popen(
             simplified_cmd,
             stdout=subprocess.PIPE,
@@ -769,7 +633,7 @@ def camera_thread(config):
         # Start stderr reader thread to capture log messages
         stderr_thread = threading.Thread(
             target=log_stderr_output,
-            args=(libcamera_vid_process.stderr, "libcamera-vid-simple"),
+            args=(libcamera_vid_process.stderr, "libcamera-vid"),
             daemon=True
         )
         stderr_thread.start()
@@ -777,10 +641,11 @@ def camera_thread(config):
         # Check if process started successfully
         time.sleep(1)
         if libcamera_vid_process.poll() is not None:
-            logger.error(f"libcamera-vid simplified command failed with code {libcamera_vid_process.returncode}")
-            # Fall back to more basic command
+            logger.error(f"libcamera-vid command failed with code {libcamera_vid_process.returncode}")
+            # Try one more time with ultra minimal parameters
             basic_cmd = [
                 libcamera_vid_path,
+                "--codec", codec,
                 "-o", "-"  # Output to stdout
             ]
             logger.info(f"Trying most basic command: {' '.join(basic_cmd)}")

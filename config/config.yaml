@@ -35,10 +35,10 @@ lsl:
 
 # Recording settings
 recording:
-  output_dir: "/home/dawg/recordings"  # Use standard home directory
-  video_format: "mkv"  # Container format (more robust than MP4)
-  codec: "mjpeg"  # Use MJPEG codec for better compatibility
-  quality: 90  # JPEG quality 0-100
+  output_dir: "recordings"  # Using local directory instead of system path
+  video_format: "mkv"      # Container format (more robust than MP4)
+  codec: "mjpeg"          # Use MJPEG codec for better compatibility
+  quality: 90             # JPEG quality 0-100
 
 # ntfy.sh notifications for remote control
 ntfy:
