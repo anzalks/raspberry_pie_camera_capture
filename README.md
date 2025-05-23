@@ -1,134 +1,132 @@
-# Raspberry Pi Camera Capture
+# Raspberry Pi IMX296 High-FPS Camera Recorder
 
-## IMX296 Global Shutter Camera Configuration
+This Python script enables high-speed camera recording with an IMX296 global shutter camera on Raspberry Pi, featuring RAM buffering, remote control via ntfy.sh notifications, and LSL metadata streaming.
 
-This repository contains scripts and configuration to work with the IMX296 global shutter camera on Raspberry Pi.
+## Features
 
-### Issue and Solution
+- **High-FPS Recording**: Captures 400x400 pixel video at 100 FPS from an IMX296 global shutter camera
+- **Hardware Cropping**: Uses media-ctl to configure the sensor's V4L2 subdevice before libcamera interaction
+- **RAM Buffer**: Stores the most recent 10-20 seconds of video in RAM
+- **Remote Control**: Uses ntfy.sh notifications to start and stop recording
+- **LSL Integration**: Streams frame metadata via Lab Streaming Layer
+- **MKV Output**: Records to MKV via ffmpeg
+- **Detailed Status**: Provides comprehensive status output in terminal
 
-The IMX296 camera requires proper ROI (Region of Interest) configuration via the media control interface before streaming. All attempts to directly use libcamera-vid or similar tools with various resolutions will fail with the error:
+## Prerequisites
 
-```
-ERROR V4L2 v4l2_videodevice.cpp:2049 /dev/video4[16:cap]: Failed to start streaming: Invalid argument
-```
-
-This is because the camera's native resolution is 400x400 with the SBGGR10_1X10 pixel format, which must be configured properly in the media pipeline.
-
-### Setup Instructions
-
-1. **Install Dependencies**
+Install the required system packages:
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y v4l-utils ffmpeg python3-pip python3-venv python3-opencv libcamera-apps
-pip3 install pylsl numpy opencv-python flask
+# Update package list
+sudo apt update
+
+# Install system dependencies
+sudo apt install -y python3-pip python3-venv libcamera-apps v4l-utils ffmpeg tmux
+
+# Create and activate a virtual environment
+python3 -m venv venv
+source venv/bin/activate
+
+# Install Python dependencies
+pip install requests pylsl psutil
 ```
 
-2. **Quick Install (All Components)**
+## Configuration
+
+The script can be configured using a JSON configuration file. Create a file named `config.json` with the following structure:
+
+```json
+{
+  "TARGET_WIDTH": 400,
+  "TARGET_HEIGHT": 400,
+  "TARGET_FPS": 100,
+  "EXPOSURE_TIME_US": 9000,
+  "RAM_BUFFER_DURATION_SECONDS": 15,
+  "NTFY_SERVER": "https://ntfy.sh",
+  "NTFY_TOPIC": "rpi_camera_trigger",
+  "RECORDING_PATH": "recordings",
+  "LSL_STREAM_NAME": "IMX296_Metadata",
+  "LSL_STREAM_TYPE": "CameraEvents"
+}
+```
+
+## Usage
+
+### Running the Script
 
 ```bash
-git clone https://github.com/anzalks/raspberry_pie_camera_capture.git
-cd raspberry_pie_camera_capture
-sudo ./install.sh
+# Run with default settings
+python high_fps_camera_recorder.py
+
+# Run with custom configuration
+python high_fps_camera_recorder.py --config config.json
 ```
 
-3. **Manual Installation**
+### Remote Control Commands
 
-If you prefer to install components individually:
+Send notifications to the ntfy.sh topic to control the recording:
 
 ```bash
-# Test camera configuration first
-sudo bin/fix_imx296_roi.sh
+# Start recording
+curl -d "start recording" ntfy.sh/rpi_camera_trigger
 
-# Configure camera service
-sudo bin/configure_imx296_service.sh
+# Stop recording
+curl -d "stop recording" ntfy.sh/rpi_camera_trigger
 
-# Create dashboard
-sudo bin/create_dashboard.sh
-
-# Install services
-sudo cp config/imx296_camera.service /etc/systemd/system/
-sudo cp config/imx296_dashboard.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable imx296_camera.service imx296_dashboard.service
-sudo systemctl start imx296_camera.service imx296_dashboard.service
+# Shutdown script
+curl -d "shutdown_script" ntfy.sh/rpi_camera_trigger
 ```
 
-4. **Verify Operation**
+### Running as a Service
+
+Create a systemd service file at `/etc/systemd/system/camera-recorder.service`:
+
+```
+[Unit]
+Description=IMX296 High-FPS Camera Recorder
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/path/to/script/directory
+ExecStartPre=/usr/bin/tmux new-session -d -s camera_recorder
+ExecStart=/usr/bin/tmux send-keys -t camera_recorder "cd /path/to/script/directory && source venv/bin/activate && python high_fps_camera_recorder.py --config config.json" C-m
+ExecStop=/usr/bin/tmux send-keys -t camera_recorder C-c
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start the service:
 
 ```bash
-# Check service status
-sudo systemctl status imx296_camera.service
-sudo systemctl status imx296_dashboard.service
-
-# View service logs
-sudo journalctl -u imx296_camera.service -f
-
-# Test direct recording (without service)
-sudo bin/test_imx296_recording.sh
+sudo systemctl enable camera-recorder.service
+sudo systemctl start camera-recorder.service
 ```
 
-5. **Access the Dashboard**
+View the tmux session:
 
-Open a web browser and navigate to:
-```
-http://[raspberry-pi-ip]:8080
-```
-
-The dashboard provides real-time monitoring of:
-- Camera connection status
-- Media pipeline configuration
-- Recording status and file size
-- LSL stream availability
-- Frame rate and frame count
-
-### Camera Configuration Details
-
-- Native resolution: 400x400
-- Pixel format: SBGGR10_1X10 (10-bit Bayer pattern)
-- Pipeline setup:
-  - Configure IMX296 sensor format
-  - Configure CSI-2 receiver format
-  - Configure ISP format (if applicable)
-
-### Components
-
-- **Camera Stream Module**: Handles camera capture and LSL streaming
-- **Web Dashboard**: Provides real-time monitoring of camera status
-- **Diagnostic Scripts**: Test and configure the camera
-- **Systemd Services**: Ensure camera and dashboard run automatically at startup
-
-### Troubleshooting
-
-If you continue to experience issues:
-
-1. Check if the camera is properly connected and detected:
 ```bash
-v4l2-ctl --list-devices
+tmux attach -t camera_recorder
 ```
 
-2. View camera capabilities:
-```bash
-v4l2-ctl --device=/dev/videoX --all
-```
+## LSL Metadata Stream
 
-3. Check media entities:
-```bash
-media-ctl --device=/dev/media0 --print-topology
-```
+The script creates an LSL outlet with the following channels:
 
-4. Try direct capture with minimal options:
-```bash
-# After running the ROI configuration script
-sudo bin/imx296_direct_test.sh
-```
+1. `CaptureTimeUnix`: Frame capture timestamp in Unix epoch time (seconds)
+2. `ntfy_notification_active`: Recording status (1.0 for active, 0.0 for inactive)
+3. `session_frame_no`: Sequential frame number within the current recording session
 
-5. Use the dashboard to monitor camera status and configure the pipeline:
-```bash
-sudo bin/start_dashboard.sh
-```
+## Troubleshooting
 
-## Additional Information
+- **Camera not found**: Verify the IMX296 camera is properly connected and recognized by the system
+- **media-ctl errors**: Ensure you have the correct permissions (the script uses sudo for media-ctl)
+- **Memory issues**: Adjust RAM_BUFFER_DURATION_SECONDS if you experience memory pressure
 
-- Author: Anzal KS <anzal.ks@gmail.com>
-- Repository: https://github.com/anzalks/raspberry_pie_camera_capture 
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details. 
