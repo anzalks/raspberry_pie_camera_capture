@@ -401,6 +401,70 @@ def parse_pts_file(pts_file_path):
         logger.error(f"Error parsing PTS file: {e}")
         return []
 
+def detect_camera_capabilities():
+    """Detect camera capabilities and supported options"""
+    capabilities = {
+        'rpicam_vid': {
+            'flush': False,
+            'inline': False,
+            'output_buffer': False,
+            'timeout': False,
+            'executable': None
+        },
+        'libcamera_vid': {
+            'flush': False,
+            'inline': False,
+            'timeout': False,
+            'executable': None
+        }
+    }
+    
+    # Check for rpicam-vid
+    try:
+        result = subprocess.run(["which", "rpicam-vid"], capture_output=True, text=True)
+        if result.returncode == 0:
+            capabilities['rpicam_vid']['executable'] = result.stdout.strip()
+            
+            # Check supported options
+            result = subprocess.run(["rpicam-vid", "--help"], capture_output=True, text=True)
+            help_text = result.stdout
+            
+            if "--flush" in help_text:
+                capabilities['rpicam_vid']['flush'] = True
+            if "--inline" in help_text:
+                capabilities['rpicam_vid']['inline'] = True
+            if "--output-buffer" in help_text:
+                capabilities['rpicam_vid']['output_buffer'] = True
+            if "--timeout" in help_text:
+                capabilities['rpicam_vid']['timeout'] = True
+                
+            logger.debug(f"Detected rpicam-vid capabilities: {capabilities['rpicam_vid']}")
+    except Exception as e:
+        logger.debug(f"Error detecting rpicam-vid capabilities: {e}")
+    
+    # Check for libcamera-vid
+    try:
+        result = subprocess.run(["which", "libcamera-vid"], capture_output=True, text=True)
+        if result.returncode == 0:
+            capabilities['libcamera_vid']['executable'] = result.stdout.strip()
+            
+            # Check supported options
+            result = subprocess.run(["libcamera-vid", "--help"], capture_output=True, text=True)
+            help_text = result.stdout
+            
+            if "--flush" in help_text:
+                capabilities['libcamera_vid']['flush'] = True
+            if "--inline" in help_text:
+                capabilities['libcamera_vid']['inline'] = True
+            if "--timeout" in help_text:
+                capabilities['libcamera_vid']['timeout'] = True
+                
+            logger.debug(f"Detected libcamera-vid capabilities: {capabilities['libcamera_vid']}")
+    except Exception as e:
+        logger.debug(f"Error detecting libcamera-vid capabilities: {e}")
+    
+    return capabilities
+
 def start_camera_recording(width, height, fps, output_path, duration_ms=0, exposure_us=None, preview=False):
     """Start camera recording using appropriate command based on Pi version"""
     global camera_process, IS_RPI5, PTS_FILE_PATH
@@ -420,17 +484,16 @@ def start_camera_recording(width, height, fps, output_path, duration_ms=0, expos
     # Make sure output directory exists
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     
-    # Determine duration argument
+    # Determine duration argument - ensure it's an integer number of milliseconds
     duration_arg = []
     if duration_ms > 0:
-        # rpicam-vid and libcamera-vid both use milliseconds for the -t parameter
-        duration_arg = ["-t", str(duration_ms)]
+        duration_arg = ["-t", str(int(duration_ms))]
         logger.debug(f"Setting recording duration to {duration_ms} milliseconds")
     
     # Determine exposure argument
     exposure_arg = []
     if exposure_us is not None:
-        exposure_arg = ["--shutter", str(exposure_us)]
+        exposure_arg = ["--shutter", str(int(exposure_us))]
     
     # Determine camera selection
     camera_arg = []
@@ -442,9 +505,12 @@ def start_camera_recording(width, height, fps, output_path, duration_ms=0, expos
     if preview:
         preview_arg = ["--preview"] if not IS_RPI5 else ["--display"]
     
+    # Get camera capabilities
+    capabilities = detect_camera_capabilities()
+    
     # Build appropriate command based on Pi version
     if IS_RPI5:
-        # For Pi 5, use rpicam-vid with optimized parameters for high FPS
+        # For Pi 5, use rpicam-vid with compatible options
         cmd = [
             "rpicam-vid",
             *workaround,
@@ -453,16 +519,22 @@ def start_camera_recording(width, height, fps, output_path, duration_ms=0, expos
             "--height", str(height),
             "--denoise", "cdn_off",
             "--framerate", str(fps),
-            "--flush", "1",  # Flush frames to output immediately
-            "--inline",     # Use inline headers for better compatibility
-            "--output-buffer", "2",  # Increase output buffer
-            "--timeout", "0",  # No timeout
             "--awb", "off",    # Disable auto white balance to reduce processing
             *duration_arg,
             *exposure_arg,
             *preview_arg,
             "-o", output_path
         ]
+        
+        # Add optional capabilities if supported
+        if capabilities['rpicam_vid']['flush']:
+            cmd.extend(["--flush", "1"])
+        if capabilities['rpicam_vid']['inline']:
+            cmd.append("--inline")
+        if capabilities['rpicam_vid']['timeout']:
+            cmd.extend(["--timeout", "0"])
+        if capabilities['rpicam_vid']['output_buffer']:
+            cmd.extend(["--output-buffer", "2"])
     else:
         # For older Pi models, use libcamera-vid with PTS file
         cmd = [
@@ -473,9 +545,6 @@ def start_camera_recording(width, height, fps, output_path, duration_ms=0, expos
             "--denoise", "cdn_off",
             "--framerate", str(fps),
             "--save-pts", PTS_FILE_PATH,
-            "--flush", "1",
-            "--inline",
-            "--timeout", "0",
             "--awb", "off",
             *duration_arg,
             *exposure_arg,
@@ -483,7 +552,16 @@ def start_camera_recording(width, height, fps, output_path, duration_ms=0, expos
             "--codec", "h264",
             "-o", output_path
         ]
+        
+        # Add optional capabilities if supported
+        if capabilities['libcamera_vid']['flush']:
+            cmd.extend(["--flush", "1"])
+        if capabilities['libcamera_vid']['inline']:
+            cmd.append("--inline")
+        if capabilities['libcamera_vid']['timeout']:
+            cmd.extend(["--timeout", "0"])
     
+    # Log the final command
     logger.info(f"Starting camera recording with command: {' '.join(cmd)}")
     
     # Start camera process
@@ -523,24 +601,9 @@ def monitor_camera_process():
     start_time = time.time()
     last_update_time = start_time
     camera_started = False
+    recording_started = False
     
-    # Check function for real-time output inspection
-    def check_for_frame_indicators(line):
-        # Many different patterns we might see in output depending on camera version
-        frame_patterns = [
-            "frame", "Frame",
-            "snapshot", "Snapshot",
-            "image", "Image",
-            "picture", "Picture",
-            "camera_buffer", "buffer",
-            "encoding"
-        ]
-        
-        for pattern in frame_patterns:
-            if pattern in line:
-                return True
-        return False
-    
+    # Start monitoring right away
     logger.debug(f"Started monitoring camera process output")
     
     # Read both stdout and stderr for frame information (combine streams)
@@ -548,19 +611,27 @@ def monitor_camera_process():
         if pipe:
             threading.Thread(target=read_pipe, args=(pipe,), daemon=True).start()
     
-    # Keep the monitoring thread alive as long as the camera process is running
+    # Keep monitoring until camera process exits
     while camera_process.poll() is None and not stop_event.is_set():
-        # Even if we're not seeing explicit frame indicators, we can use
-        # time-based updates for low-rate cameras
+        # Check if camera has been running long enough to generate frames
         current_time = time.time()
         time_since_start = current_time - start_time
         
-        if not camera_started and time_since_start > 2.0:
-            logger.debug("Camera process has been running for 2 seconds, assuming it's started")
+        # After 1 second, consider camera started
+        if not camera_started and time_since_start > 1.0:
+            logger.debug("Camera process has been running for 1 second, assuming it's started")
             camera_started = True
+            
+            # Add a first frame marker in case we don't get explicit frame indicators
+            if not recording_started:
+                recording_started = True
+                frame_number += 1
+                fps_counter += 1
+                push_lsl_sample(frame_number)
+                logger.debug(f"Added initial frame marker at startup")
         
-        # For slow cameras, try to update based on time as a fallback
-        if camera_started and current_time - last_update_time > 0.5:
+        # For very slow cameras or when frame detection fails, add periodic updates
+        if camera_started and time_since_start > 2.0 and current_time - last_update_time > 0.2:
             frame_number += 1
             fps_counter += 1
             push_lsl_sample(frame_number)
@@ -575,6 +646,19 @@ def monitor_camera_process():
                 last_fps_time = current_time
         
         time.sleep(0.01)  # Short sleep to prevent CPU hogging
+
+    # Process has exited, check exit status
+    exit_code = camera_process.poll()
+    if exit_code is not None and exit_code != 0:
+        logger.error(f"Camera process exited with error code {exit_code}")
+        
+        # Try to get any remaining output
+        try:
+            stdout, stderr = camera_process.communicate(timeout=1.0)
+            if stderr:
+                logger.error(f"Camera error output: {stderr.decode().strip()}")
+        except Exception:
+            pass
 
 def read_pipe(pipe):
     """Read from a pipe (stdout or stderr) and process lines"""
@@ -713,6 +797,57 @@ def setup_device_permissions():
         logger.error(f"Error setting up device permissions: {e}")
         return False
 
+# Add a fallback function for simple camera recording
+def start_simple_camera_recording(width, height, fps, output_path, duration_ms=0, exposure_us=None, preview=False):
+    """Start camera recording using minimal command line options for maximum compatibility"""
+    global camera_process, IS_RPI5
+    
+    # Make sure output directory exists
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    
+    # Set up basic arguments
+    duration_arg = ["-t", str(int(duration_ms))] if duration_ms > 0 else []
+    exposure_arg = ["--shutter", str(int(exposure_us))] if exposure_us is not None else []
+    preview_arg = ["--preview"] if preview else []
+    
+    # Use the most basic commands possible
+    if IS_RPI5:
+        cmd = [
+            "rpicam-vid",
+            "--width", str(width),
+            "--height", str(height),
+            "--framerate", str(fps),
+            *duration_arg,
+            *exposure_arg,
+            *preview_arg,
+            "-o", output_path
+        ]
+    else:
+        cmd = [
+            "libcamera-vid",
+            "--width", str(width),
+            "--height", str(height),
+            "--framerate", str(fps),
+            *duration_arg,
+            *exposure_arg,
+            *preview_arg,
+            "-o", output_path
+        ]
+    
+    logger.info(f"Starting simple camera recording with command: {' '.join(cmd)}")
+    
+    # Start camera process
+    camera_process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
+    
+    # Start thread to monitor process output
+    threading.Thread(target=monitor_camera_process, daemon=True).start()
+    
+    return camera_process
+
 def main():
     """Main function"""
     global lsl_outlet, stop_event, IS_RPI5, lsl_data
@@ -736,6 +871,7 @@ def main():
     parser.add_argument('--setup-permissions', action='store_true', help='Set up device permissions for the current user')
     parser.add_argument('--verbose', action='store_true', help='Enable verbose logging')
     parser.add_argument('--check-camera', action='store_true', help='Check camera capabilities and exit')
+    parser.add_argument('--simple-mode', action='store_true', help='Use simple mode with minimal options')
     args = parser.parse_args()
     
     # Convert duration from seconds to milliseconds
@@ -832,24 +968,19 @@ def main():
             logger.error(f"Error checking camera: {e}")
             return 1
     
-    # Find camera media device
-    media_dev_path, entity_name = find_imx296_media_device()
-    if not media_dev_path or not entity_name:
-        logger.error("Camera not found. Exiting.")
-        return 1
+    # Find camera media device - Skip this step if using simple mode
+    if not args.simple_mode:
+        media_dev_path, entity_name = find_imx296_media_device()
+        if not media_dev_path or not entity_name:
+            logger.error("Camera not found. Try using --simple-mode to bypass media device configuration.")
+            return 1
     
-    # Ensure we have access to the media device
-    if not ensure_device_permission(media_dev_path):
-        logger.warning("Could not ensure permission to media device.")
-        logger.warning("You might need to run with --setup-permissions once, then log out and back in.")
-        
-        # Try running with temporary privileges for this session
-        logger.info("Attempting to continue with elevated privileges for media-ctl...")
-    
-    # Configure camera cropping
-    if not configure_media_ctl(media_dev_path, entity_name, args.width, args.height):
-        logger.error("Failed to configure camera. Exiting.")
-        return 1
+        # Configure camera cropping
+        if not configure_media_ctl(media_dev_path, entity_name, args.width, args.height):
+            logger.error("Failed to configure camera. Try using --simple-mode to bypass media device configuration.")
+            return 1
+    else:
+        logger.info("Simple mode enabled - skipping media device configuration")
     
     # Create LSL outlet
     if LSL_AVAILABLE:
@@ -875,6 +1006,8 @@ def main():
     
     # Start camera recording
     logger.info(f"Starting recording to {video_path}")
+    
+    recording_successful = False
     try:
         # Reset LSL data collector
         lsl_data = []
@@ -890,19 +1023,58 @@ def main():
             else:
                 exposure = 10000  # Default exposure for lower FPS
         
-        camera_proc = start_camera_recording(
-            args.width, args.height, args.fps, 
-            str(video_path), duration_ms, exposure,
-            preview=args.preview
-        )
+        # Try recording with chosen method
+        if args.simple_mode:
+            camera_proc = start_simple_camera_recording(
+                args.width, args.height, args.fps, 
+                str(video_path), duration_ms, exposure,
+                preview=args.preview
+            )
+        else:
+            camera_proc = start_camera_recording(
+                args.width, args.height, args.fps, 
+                str(video_path), duration_ms, exposure,
+                preview=args.preview
+            )
         
         # Wait for camera process to finish or Ctrl+C
         logger.info(f"Recording started with duration: {args.duration} seconds. Press Ctrl+C to stop earlier.")
+        
+        # Allow recording to run for the specified duration
+        recording_start_time = time.time()
         while camera_proc.poll() is None and not stop_event.is_set():
+            # Check if we've reached our duration limit
+            if duration_ms > 0 and (time.time() - recording_start_time) * 1000 > duration_ms + 1000:
+                logger.info("Recording duration reached, stopping...")
+                break
+                
             time.sleep(0.1)  # Check more frequently
+        
+        # If the process is still running after reaching duration, terminate it
+        if camera_proc.poll() is None:
+            logger.info("Terminating camera process...")
+            camera_proc.terminate()
+            try:
+                camera_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                logger.warning("Camera process did not terminate gracefully, forcing kill")
+                camera_proc.kill()
+        
+        # Check if video was recorded
+        if os.path.exists(str(video_path)):
+            file_size = os.path.getsize(str(video_path))
+            if file_size > 1000:
+                logger.info(f"Successfully recorded video: {file_size} bytes")
+                recording_successful = True
+            else:
+                logger.warning(f"Video file is very small: {file_size} bytes")
+        else:
+            logger.error("Video file was not created")
             
     except KeyboardInterrupt:
         logger.info("Recording stopped by user")
+    except Exception as e:
+        logger.error(f"Error during recording: {e}")
     finally:
         # Cleanup
         if camera_process and camera_process.poll() is None:
@@ -927,15 +1099,27 @@ def main():
             logger.info(f"Frames captured: {len(lsl_data)}")
             if len(lsl_data) < 5 and args.duration > 1:
                 logger.warning(f"Only {len(lsl_data)} frames were captured. Camera may not be working properly.")
+                
+                # Suggest simple mode if regular mode fails
+                if not args.simple_mode and not recording_successful:
+                    logger.info("Try running with --simple-mode to use minimal camera options")
         else:
             logger.warning("No LSL data was collected during recording")
+            
+            # Suggest simple mode if regular mode fails
+            if not args.simple_mode and not recording_successful:
+                logger.info("Try running with --simple-mode to use minimal camera options")
         
         # Analyze PTS file if not on Pi 5
         if not IS_RPI5:
             analyze_pts_file()
     
-    logger.info("Recording complete")
-    return 0
+    if recording_successful:
+        logger.info("Recording completed successfully")
+    else:
+        logger.warning("Recording may not have completed successfully")
+        
+    return 0 if recording_successful else 1
 
 if __name__ == "__main__":
     sys.exit(main()) 
