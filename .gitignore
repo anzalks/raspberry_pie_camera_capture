@@ -1,0 +1,99 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+venv/
+.venv/
+ENV/
+.env
+
+# Shell scripts
+*.sh~
+*.swp
+.bash_history
+
+# Media files
+# Images
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.tiff
+*.webp
+*.raw
+*.heic
+*.svg
+*.ico
+
+# Videos
+*.mp4
+*.h264
+*.mkv
+*.avi
+*.mov
+*.wmv
+*.flv
+*.webm
+*.m4v
+*.mpg
+*.mpeg
+*.pts
+
+# Audio
+*.mp3
+*.wav
+*.aac
+*.ogg
+*.flac
+*.m4a
+
+# Data files
+*.csv
+*.tsv
+*.xlsx
+*.xls
+
+# Project specific
+recordings/
+/dev/shm/
+*_data/
+*_recordings/
+liblsl/
+
+# Logs
+*.log
+logs/
+log/
+
+# IDE specific files
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# OS specific files
+.DS_Store
+Thumbs.db
+.directory
+*.tmp
+*.bak
+*~ 
