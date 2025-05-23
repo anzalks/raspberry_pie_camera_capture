@@ -115,6 +115,51 @@ if timeout 15 bash -c "libcamera-vid --codec mjpeg --width 400 --height 400 --fr
   fi
 else
   echo "✗ Direct piping to ffmpeg failed"
+  
+  # Try an ultra simple test with minimal options
+  echo "  Trying simplified capture with minimal options..."
+  SIMPLE_TEST_FILE="/tmp/simple_test_$(date +%s).mkv"
+  if timeout 10 bash -c "libcamera-vid --codec mjpeg -o - --timeout 3000 2>/dev/null | ffmpeg -y -f mjpeg -i - -c:v copy -an '$SIMPLE_TEST_FILE' 2>/dev/null"; then
+    echo "✓ Simplified piping to ffmpeg succeeded"
+    
+    if [ -f "$SIMPLE_TEST_FILE" ]; then
+      FILE_SIZE=$(stat -c%s "$SIMPLE_TEST_FILE" 2>/dev/null || stat -f%z "$SIMPLE_TEST_FILE")
+      echo "  Simple test file size: $FILE_SIZE bytes"
+      
+      if [ "$FILE_SIZE" -gt 5000 ]; then
+        echo "✓ Simple test produced valid video!"
+        echo "  This proves the basic capture pipeline works with default settings."
+        echo "  The problem is likely with specific camera parameters."
+      fi
+    fi
+  else
+    echo "✗ Even simplified piping failed. This indicates a fundamental issue."
+    echo "  Capturing straight to file without ffmpeg..."
+    
+    # Try direct capture without ffmpeg
+    DIRECT_FILE="/tmp/direct_test_$(date +%s).mjpeg"
+    if timeout 5 libcamera-vid --codec mjpeg --output "$DIRECT_FILE" --timeout 3000; then
+      if [ -f "$DIRECT_FILE" ]; then
+        FILE_SIZE=$(stat -c%s "$DIRECT_FILE" 2>/dev/null || stat -f%z "$DIRECT_FILE")
+        echo "  Direct file size: $FILE_SIZE bytes"
+        
+        if [ "$FILE_SIZE" -gt 5000 ]; then
+          echo "✓ Direct camera capture works, but ffmpeg piping fails."
+          echo "  Issue is likely in the pipe connection between camera and ffmpeg."
+          
+          # Try to fix with an explicit format for the files
+          echo "  Testing with explicit output format..."
+          FORMAT_TEST_FILE="/tmp/format_test_$(date +%s).h264"
+          if timeout 5 libcamera-vid --codec h264 --output "$FORMAT_TEST_FILE" --timeout 3000; then
+            echo "  H264 direct test completed"
+          fi
+        fi
+      fi
+    else
+      echo "✗ Even direct camera capture without ffmpeg failed."
+      echo "  This suggests a hardware or driver issue with the camera."
+    fi
+  fi
 fi
 
 highlight "6. Checking LSL installation..."
@@ -166,6 +211,64 @@ if systemctl is-active --quiet imx296-camera.service; then
   # Check service logs
   echo "  Last 5 log lines:"
   journalctl -u imx296-camera.service -n 5 --no-pager
+  
+  # Extract the actual ffmpeg command from service logs
+  echo "  Extracting ffmpeg command from service logs..."
+  FFMPEG_CMD=$(journalctl -u imx296-camera.service | grep "Starting ffmpeg with command:" | tail -n 1 | sed 's/.*Starting ffmpeg with command: //')
+  
+  if [ -n "$FFMPEG_CMD" ]; then
+    echo "  Found ffmpeg command: $FFMPEG_CMD"
+    
+    # Check for input format flag
+    if echo "$FFMPEG_CMD" | grep -q -- "-f mjpeg"; then
+      echo "✓ Service is using mjpeg input format correctly"
+    elif echo "$FFMPEG_CMD" | grep -q -- "-f h264"; then
+      echo "✓ Service is using h264 input format"
+    else
+      echo "⚠ Service ffmpeg command doesn't specify input format with -f flag"
+    fi
+    
+    # Try to reproduce the command with a test
+    echo "  Testing service's ffmpeg command directly..."
+    TEST_CMD="libcamera-vid --codec mjpeg --width 400 --height 400 -o - --timeout 3000 | $FFMPEG_CMD"
+    echo "  $TEST_CMD"
+    
+    # Run the test in background and capture PID
+    TEMP_OUTPUT=$(mktemp)
+    echo "  Running test in background for 3 seconds..."
+    bash -c "$TEST_CMD" > "$TEMP_OUTPUT" 2>&1 &
+    TEST_PID=$!
+    
+    # Wait 3 seconds then kill the test
+    sleep 3
+    kill -TERM $TEST_PID 2>/dev/null || true
+    wait $TEST_PID 2>/dev/null || true
+    
+    # Check for any output file created
+    CREATED_FILE=$(echo "$FFMPEG_CMD" | grep -o "[^ ]*\.mkv" | head -n 1)
+    if [ -n "$CREATED_FILE" ] && [ -f "$CREATED_FILE" ]; then
+      FILE_SIZE=$(stat -c%s "$CREATED_FILE" 2>/dev/null || stat -f%z "$CREATED_FILE" 2>/dev/null)
+      echo "  Test produced file: $CREATED_FILE ($FILE_SIZE bytes)"
+      
+      if [ "$FILE_SIZE" -gt 5000 ]; then
+        echo "✓ Service command test produced valid file!"
+        echo "  This suggests the service configuration is correct but there may be"
+        echo "  an issue with how libcamera-vid is launched or how its output is processed."
+      else
+        echo "⚠ Service command test produced an empty file"
+        echo "  This might indicate an issue with the codec or format settings"
+      fi
+    else
+      echo "⚠ Could not find output file from test command"
+      echo "  Check the test output for errors:"
+      cat "$TEMP_OUTPUT"
+    fi
+    
+    # Clean up temp file
+    rm -f "$TEMP_OUTPUT"
+  else
+    echo "⚠ Could not find ffmpeg command in service logs"
+  fi
 else
   echo "✗ Service is not running"
   echo "  Service status:"

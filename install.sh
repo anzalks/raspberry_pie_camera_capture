@@ -33,11 +33,91 @@ echo "Installing Python dependencies..."
 python3 -m pip install --upgrade pip
 python3 -m pip install pylsl pyyaml python-dateutil psutil ntfy pyzmq pydantic 
 
+# Try to reinstall pylsl specifically (this fixes LSL issues)
+echo "Ensuring pylsl is properly installed..."
+python3 -m pip install --force-reinstall pylsl
+
+# Verify pylsl installation
+if python3 -c "import pylsl; print(f'PyLSL version: {pylsl.__version__}')" 2>/dev/null; then
+  echo "✓ PyLSL installation verified"
+else
+  echo "⚠ PyLSL installation failed - will try once more"
+  python3 -m pip install --no-cache-dir pylsl==1.16.2
+fi
+
 # Create config directory if it doesn't exist
+echo "Setting up configuration..."
 mkdir -p /etc/imx296-camera
 
 # Copy config file to system location
-cp config/config.yaml /etc/imx296-camera/
+echo "Copying config file to system location: /etc/imx296-camera/config.yaml"
+cp -v config/config.yaml /etc/imx296-camera/
+
+# Verify the config file was copied
+if [ -f "/etc/imx296-camera/config.yaml" ]; then
+  echo "✓ Config file successfully copied"
+  cat /etc/imx296-camera/config.yaml | head -n 5  # Show first 5 lines to verify
+else
+  echo "⚠ Failed to copy config file! Creating it directly..."
+  # Create a minimal config file directly
+  cat > /etc/imx296-camera/config.yaml << 'EOF'
+# IMX296 Global Shutter Camera Configuration
+# Author: Anzal KS <anzal.ks@gmail.com>
+# Date: May 23, 2025
+
+# System paths and tools
+system:
+  libcamera_vid_path: "/usr/bin/libcamera-vid"
+  libcamera_hello_path: "/usr/bin/libcamera-hello"
+  media_ctl_path: "/usr/bin/media-ctl"
+  ffmpeg_path: "/usr/bin/ffmpeg"
+
+# Camera settings
+camera:
+  width: 400
+  height: 400
+  fps: 30
+  exposure_time_us: 5000
+  pts_file_path: "/tmp/imx296_pts.txt"
+  media_ctl:
+    device_pattern: "/dev/media%d"
+    entity_pattern: "imx296"
+    bayer_format: "SBGGR10_1X10"
+
+# Buffer settings
+buffer:
+  duration_seconds: 5
+  max_frames: 300
+
+# LSL stream configuration
+lsl:
+  name: "IMX296Camera"
+  type: "VideoEvents"
+  id: "cam1"
+
+# Recording settings
+recording:
+  output_dir: "/home/dawg/recordings"
+  video_format: "mkv"
+  codec: "mjpeg"
+  quality: 90
+
+# ntfy.sh notifications
+ntfy:
+  server: "https://ntfy.sh"
+  topic: "raspie-camera-dawg-123"
+  poll_interval_sec: 2
+
+# Logging configuration
+logging:
+  level: "DEBUG"
+  console: true
+  file: "logs/imx296_capture.log"
+  max_size_mb: 10
+  backup_count: 5
+EOF
+  echo "✓ Created config file directly"
+fi
 
 # Copy Python package
 echo "Installing Python package..."
@@ -157,9 +237,54 @@ else
   python3 -m pip install --force-reinstall pylsl
 fi
 
+# Additional diagnostics and fixes
+echo ""
+echo "Running additional diagnostics..."
+
+# Check if test_direct_capture.py works
+if [ -f "/usr/local/bin/test_direct_capture.py" ]; then
+  echo "Testing camera with direct capture script..."
+  /usr/local/bin/test_direct_capture.py -d 3 || true
+  
+  # Check output file size
+  TEST_FILE=$(ls -t /tmp/test_capture_*.mkv 2>/dev/null | head -n 1)
+  if [ -n "$TEST_FILE" ]; then
+    FILE_SIZE=$(stat -c%s "$TEST_FILE" 2>/dev/null || stat -f%z "$TEST_FILE" 2>/dev/null)
+    echo "Test file: $TEST_FILE - Size: $FILE_SIZE bytes"
+    
+    if [ "$FILE_SIZE" -gt 5000 ]; then
+      echo "✓ Direct capture works correctly!"
+    else
+      echo "⚠ Direct capture creates empty files. Check camera connection."
+    fi
+  else
+    echo "⚠ No test file created. Direct capture may have failed."
+  fi
+fi
+
+# Fix permissions again on service restart
+systemctl restart imx296-camera.service
+sleep 3
+
+# Check service status and configuration
+if systemctl is-active --quiet imx296-camera.service; then
+  echo "✓ Service is running"
+  
+  # Check what config file the service is using
+  CONFIG_PATH=$(journalctl -u imx296-camera.service -n 50 | grep -o "Trying to load config from: [^ ]*" | tail -n 1 | awk '{print $NF}')
+  if [ -n "$CONFIG_PATH" ]; then
+    echo "Service is using config from: $CONFIG_PATH"
+  else
+    echo "⚠ Could not determine which config file the service is using"
+  fi
+else
+  echo "⚠ Service is not running. Check logs with: journalctl -u imx296-camera.service"
+fi
+
 echo ""
 echo "Installation complete!"
 echo "Check service status: systemctl status imx296-camera.service"
 echo "View logs: journalctl -u imx296-camera.service"
 echo "Manual testing: /usr/local/bin/test_direct_capture.py"
+echo "Configuration: /etc/imx296-camera/config.yaml"
 echo "" 

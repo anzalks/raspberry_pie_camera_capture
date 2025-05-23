@@ -56,21 +56,110 @@ lsl_has_string_support = False
 
 def load_config(config_file="config/config.yaml"):
     """Load configuration from YAML file."""
-    try:
-        with open(config_file, 'r') as f:
-            config = yaml.safe_load(f)
-        
-        # Set defaults for video format if not specified
-        if 'recording' in config:
-            if 'video_format' not in config['recording']:
-                config['recording']['video_format'] = 'mkv'
-            if 'codec' not in config['recording']:
-                config['recording']['codec'] = 'mjpeg'
-        
-        return config
-    except Exception as e:
-        print(f"Error loading config file {config_file}: {e}")
-        sys.exit(1)
+    logger = logging.getLogger('imx296_capture') if logging.getLogger().hasHandlers() else logging
+    
+    # Try multiple potential config locations
+    config_locations = [
+        config_file,                                      # Passed in path (default: config/config.yaml)
+        "/etc/imx296-camera/config.yaml",                # System-wide config
+        os.path.expanduser("~/Downloads/insha_rpie/raspberry_pie_camera_capture/config/config.yaml"),  # User download location
+        os.path.join(os.getcwd(), "config/config.yaml"),  # Current directory
+        os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "config/config.yaml")  # Relative to module
+    ]
+    
+    # Try each location
+    for loc in config_locations:
+        try:
+            logger.info(f"Trying to load config from: {loc}")
+            with open(loc, 'r') as f:
+                config = yaml.safe_load(f)
+            
+            logger.info(f"Successfully loaded config from: {loc}")
+            
+            # Set defaults for video format if not specified
+            if 'recording' in config:
+                if 'video_format' not in config['recording']:
+                    config['recording']['video_format'] = 'mkv'
+                if 'codec' not in config['recording']:
+                    config['recording']['codec'] = 'mjpeg'
+            
+            # Create a copy of config at system location if loaded from elsewhere and we have permission
+            if loc != "/etc/imx296-camera/config.yaml":
+                try:
+                    os.makedirs("/etc/imx296-camera", exist_ok=True)
+                    with open("/etc/imx296-camera/config.yaml", 'w') as f:
+                        yaml.dump(config, f)
+                    logger.info("Created a copy of config at /etc/imx296-camera/config.yaml")
+                except:
+                    logger.warning("Could not create a copy of config at system location (requires sudo)")
+            
+            return config
+        except Exception as e:
+            logger.warning(f"Error loading config from {loc}: {e}")
+    
+    # If we get here, all locations failed - create default config
+    logger.error("Failed to load config from any location, using default values")
+    
+    # Create a basic default config
+    default_config = {
+        'system': {
+            'libcamera_vid_path': "/usr/bin/libcamera-vid",
+            'libcamera_hello_path': "/usr/bin/libcamera-hello",
+            'media_ctl_path': "/usr/bin/media-ctl",
+            'ffmpeg_path': "/usr/bin/ffmpeg"
+        },
+        'camera': {
+            'width': 400,
+            'height': 400,
+            'fps': 30,
+            'exposure_time_us': 5000,
+            'pts_file_path': "/tmp/imx296_pts.txt",
+            'media_ctl': {
+                'device_pattern': "/dev/media%d",
+                'entity_pattern': "imx296",
+                'bayer_format': "SBGGR10_1X10"
+            }
+        },
+        'buffer': {
+            'duration_seconds': 5,
+            'max_frames': 300
+        },
+        'lsl': {
+            'name': "IMX296Camera",
+            'type': "VideoEvents",
+            'id': "cam1"
+        },
+        'recording': {
+            'output_dir': "/home/dawg/recordings",
+            'video_format': "mkv",
+            'codec': "mjpeg",
+            'quality': 90
+        },
+        'ntfy': {
+            'server': "https://ntfy.sh",
+            'topic': "raspie-camera-dawg-123",
+            'poll_interval_sec': 2
+        },
+        'logging': {
+            'level': "INFO",
+            'console': True,
+            'file': "logs/imx296_capture.log",
+            'max_size_mb': 10,
+            'backup_count': 5
+        }
+    }
+    
+    # Try to save the default config in multiple locations
+    for loc in ["/etc/imx296-camera/config.yaml", "config/config.yaml"]:
+        try:
+            os.makedirs(os.path.dirname(loc), exist_ok=True)
+            with open(loc, 'w') as f:
+                yaml.dump(default_config, f)
+            logger.info(f"Created default config at: {loc}")
+        except Exception as e:
+            logger.warning(f"Could not create default config at {loc}: {e}")
+    
+    return default_config
 
 def setup_logging(config):
     """Configure logging based on configuration."""
