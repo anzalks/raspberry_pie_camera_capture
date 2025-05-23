@@ -1,119 +1,134 @@
-# IMX296 Global Shutter Camera for Raspberry Pi
+# Raspberry Pi Camera Capture
 
-This repository contains the code for setting up and running an IMX296 global shutter camera on a Raspberry Pi.
+## IMX296 Global Shutter Camera Configuration
 
-## Features
+This repository contains scripts and configuration to work with the IMX296 global shutter camera on Raspberry Pi.
 
-- Captures from IMX296 global shutter camera at 400x400 resolution
-- Supports 100fps native capture in raw SBGGR10_1X10 format
-- Records video using H264 codec in MKV format (previously used MJPEG)
-- Streams data to LSL (Lab Streaming Layer) with numeric values
-- Web dashboard for monitoring camera status
+### Issue and Solution
 
-## Installation
+The IMX296 camera requires proper ROI (Region of Interest) configuration via the media control interface before streaming. All attempts to directly use libcamera-vid or similar tools with various resolutions will fail with the error:
 
-Run the installation script on your Raspberry Pi:
+```
+ERROR V4L2 v4l2_videodevice.cpp:2049 /dev/video4[16:cap]: Failed to start streaming: Invalid argument
+```
+
+This is because the camera's native resolution is 400x400 with the SBGGR10_1X10 pixel format, which must be configured properly in the media pipeline.
+
+### Setup Instructions
+
+1. **Install Dependencies**
+
+```bash
+sudo apt-get update
+sudo apt-get install -y v4l-utils ffmpeg python3-pip python3-venv python3-opencv libcamera-apps
+pip3 install pylsl numpy opencv-python flask
+```
+
+2. **Quick Install (All Components)**
 
 ```bash
 git clone https://github.com/anzalks/raspberry_pie_camera_capture.git
 cd raspberry_pie_camera_capture
-chmod +x install.sh
 sudo ./install.sh
 ```
 
-The script will:
-1. Check for required dependencies
-2. Install Python packages
-3. Create necessary directories
-4. Apply fixes for common issues
-5. Set up a systemd service
+3. **Manual Installation**
 
-## Configuration
-
-Edit the `config.yaml` file to adjust settings:
-
-```yaml
-# IMX296 Camera Configuration
-camera:
-  width: 400
-  height: 400
-  fps: 100
-  format: "SBGGR10_1X10"  # Native format for IMX296
-  libcamera_path: "/usr/bin/libcamera-vid"
-  ffmpeg_path: "/usr/bin/ffmpeg"
-
-recording:
-  enabled: true
-  output_dir: "/home/dawg/recordings"  # Will be created if it doesn't exist
-  codec: "h264"  # Using H264 for better compatibility
-  format: "mkv"   # Use MKV for better recovery from crashes
-  compression_level: 5
-  
-lsl:
-  enabled: true
-  stream_name: "IMX296Camera"
-  stream_type: "VideoEvents"
-  stream_id: "imx296_01"
-  
-web:
-  enabled: true
-  host: "0.0.0.0"
-  port: 8080
-  update_interval_ms: 500
-```
-
-## Troubleshooting
-
-### Common Issues & Fixes
-
-1. **Empty recording files (4KB only)**
-   - Fix: Changed codec from MJPEG to H264 which works better with the IMX296 camera
-   - Fix: Added `-vsync 0` to ffmpeg command
-   - Fix: Added file creation with proper permissions
-   - Fix: Ensured output directory exists with proper permissions
-   - Solution: Run `sudo bin/fix_codec_h264.sh` to update codec configuration
-
-2. **LSL Stream Not Found**
-   - Fix: Ensured all LSL values are numeric (no strings)
-   - Fix: Set `lsl_has_string_support = False`
-   - Fix: Added explicit float conversion for all numeric values
-
-3. **Missing Recordings Directory**
-   - Fix: Auto-creates missing directories with proper permissions
-   - Fix: Falls back to /tmp if unable to create specified directory
-
-4. **Camera Codec Compatibility Issues**
-   - Problem: MJPEG codec can fail with message "Failed to start streaming: Invalid argument"
-   - Fix: Switch to H264 codec which has better compatibility with IMX296
-   - Test: Use `sudo bin/test_recordings_fixed.sh` to verify H264 recording works
-   - Solution: Run `sudo bin/fix_codec_h264.sh` to update all codec references
-
-## Tools & Scripts
-
-The `bin/` directory contains various helper scripts:
-
-- `fix_camera_issues.sh`: Main script to fix common camera issues
-- `fix_codec_h264.sh`: Updates codec configuration to use H264 instead of MJPEG
-- `test_recordings_fixed.sh`: Tests H264 recording functionality
-- `test_lsl_direct.py`: Tests LSL functionality with numeric values
-
-## Checking Status
-
-Check the status of the camera service:
+If you prefer to install components individually:
 
 ```bash
-sudo systemctl status imx296-camera
+# Test camera configuration first
+sudo bin/fix_imx296_roi.sh
+
+# Configure camera service
+sudo bin/configure_imx296_service.sh
+
+# Create dashboard
+sudo bin/create_dashboard.sh
+
+# Install services
+sudo cp config/imx296_camera.service /etc/systemd/system/
+sudo cp config/imx296_dashboard.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable imx296_camera.service imx296_dashboard.service
+sudo systemctl start imx296_camera.service imx296_dashboard.service
 ```
 
-View logs:
+4. **Verify Operation**
 
 ```bash
-sudo journalctl -u imx296-camera -f
+# Check service status
+sudo systemctl status imx296_camera.service
+sudo systemctl status imx296_dashboard.service
+
+# View service logs
+sudo journalctl -u imx296_camera.service -f
+
+# Test direct recording (without service)
+sudo bin/test_imx296_recording.sh
 ```
 
-The web dashboard is available at: http://[raspberry-pi-ip]:8080
+5. **Access the Dashboard**
 
-## Author
+Open a web browser and navigate to:
+```
+http://[raspberry-pi-ip]:8080
+```
 
-Anzal KS <anzal.ks@gmail.com>
-https://github.com/anzalks/ 
+The dashboard provides real-time monitoring of:
+- Camera connection status
+- Media pipeline configuration
+- Recording status and file size
+- LSL stream availability
+- Frame rate and frame count
+
+### Camera Configuration Details
+
+- Native resolution: 400x400
+- Pixel format: SBGGR10_1X10 (10-bit Bayer pattern)
+- Pipeline setup:
+  - Configure IMX296 sensor format
+  - Configure CSI-2 receiver format
+  - Configure ISP format (if applicable)
+
+### Components
+
+- **Camera Stream Module**: Handles camera capture and LSL streaming
+- **Web Dashboard**: Provides real-time monitoring of camera status
+- **Diagnostic Scripts**: Test and configure the camera
+- **Systemd Services**: Ensure camera and dashboard run automatically at startup
+
+### Troubleshooting
+
+If you continue to experience issues:
+
+1. Check if the camera is properly connected and detected:
+```bash
+v4l2-ctl --list-devices
+```
+
+2. View camera capabilities:
+```bash
+v4l2-ctl --device=/dev/videoX --all
+```
+
+3. Check media entities:
+```bash
+media-ctl --device=/dev/media0 --print-topology
+```
+
+4. Try direct capture with minimal options:
+```bash
+# After running the ROI configuration script
+sudo bin/imx296_direct_test.sh
+```
+
+5. Use the dashboard to monitor camera status and configure the pipeline:
+```bash
+sudo bin/start_dashboard.sh
+```
+
+## Additional Information
+
+- Author: Anzal KS <anzal.ks@gmail.com>
+- Repository: https://github.com/anzalks/raspberry_pie_camera_capture 
