@@ -18,6 +18,7 @@ import datetime
 import signal
 import shutil
 from pathlib import Path
+from queue import Queue, Empty
 
 # Optional import of pylsl - we'll check this later
 try:
@@ -41,6 +42,9 @@ camera_process = None
 lsl_outlet = None
 lsl_data = []  # Store LSL data
 MARKERS_FILE = "/dev/shm/camera_markers.txt"
+
+# Queue for frame data processing
+frame_queue = Queue(maxsize=10000)  # Large capacity queue
 
 def signal_handler(sig, frame):
     """Handle Ctrl+C gracefully"""
@@ -71,8 +75,9 @@ def create_lsl_outlet(name="IMX296Camera", stream_type="Video", fps=100):
         channels = info.desc().append_child("channels")
         channels.append_child("channel").append_child_value("label", "FrameNumber")
         
-        # Create and return the outlet
-        outlet = pylsl.StreamOutlet(info, chunk_size=1, max_buffered=fps*2)
+        # Create and return the outlet with larger chunk size for better throughput
+        # This allows sending multiple samples at once for higher performance
+        outlet = pylsl.StreamOutlet(info, chunk_size=64, max_buffered=fps*8)
         logger.info(f"LSL outlet '{name}' created")
         return outlet
     except Exception as e:
@@ -95,6 +100,45 @@ def push_lsl_sample(frame_number, timestamp=None):
             lsl_outlet.push_sample([float(frame_number)], timestamp)
         except Exception as e:
             logger.error(f"Error pushing LSL sample: {e}")
+
+def lsl_worker_thread():
+    """Thread to process frames from the queue and send to LSL"""
+    global frame_queue, stop_event
+    
+    logger.info("LSL worker thread started")
+    frames_processed = 0
+    last_report_time = time.time()
+    
+    while not stop_event.is_set():
+        try:
+            # Get frame data from the queue with short timeout
+            try:
+                frame_data = frame_queue.get(timeout=0.1)
+                frame_num, frame_time = frame_data
+                
+                # Push the frame data to LSL
+                push_lsl_sample(frame_num, frame_time)
+                
+                frames_processed += 1
+                
+                # Periodic reporting
+                if frames_processed % 100 == 0:
+                    current_time = time.time()
+                    if current_time - last_report_time >= 5.0:
+                        logger.debug(f"LSL worker processed {frames_processed} frames so far")
+                        last_report_time = current_time
+                
+                # Mark task as done
+                frame_queue.task_done()
+                
+            except Empty:
+                # No data in queue, just continue
+                pass
+                
+        except Exception as e:
+            logger.warning(f"Error in LSL worker thread: {e}")
+    
+    logger.info(f"LSL worker thread finished after processing {frames_processed} frames")
 
 def create_output_directory():
     """Create a dated directory structure for recordings"""
@@ -121,7 +165,7 @@ def check_even_dimensions(width, height):
 
 def monitor_markers_file():
     """Monitor the markers file created by GScrop script to get frame information"""
-    global stop_event, lsl_data, MARKERS_FILE
+    global stop_event, lsl_data, MARKERS_FILE, frame_queue
     
     # Wait a bit to let the GScrop script start
     time.sleep(0.5)
@@ -166,6 +210,10 @@ def monitor_markers_file():
     check_count = 0
     last_check_time = time.time()
     processed_frames = 0
+    
+    # Start the LSL worker thread
+    lsl_thread = threading.Thread(target=lsl_worker_thread, daemon=True)
+    lsl_thread.start()
     
     logger.info("Starting to monitor markers file for frame data")
     
@@ -229,13 +277,16 @@ def monitor_markers_file():
                                         try:
                                             frame_time = float(parts[1])
                                             
-                                            # Only push if this is a new frame
-                                            if frame_num > last_frame or frame_time > time.time() - 60:
-                                                push_lsl_sample(frame_num, frame_time)
+                                            # Only process if this is a new frame and not a duplicate
+                                            if frame_num > last_frame:
+                                                # Add frame to queue instead of processing directly
+                                                frame_queue.put((frame_num, frame_time))
                                                 last_frame = frame_num
                                                 processed_frames += 1
-                                                if processed_frames % 50 == 0:
-                                                    logger.debug(f"Processed {processed_frames} frames, latest: Frame {frame_num}, Time {frame_time}")
+                                                
+                                                if processed_frames % 1000 == 0:
+                                                    logger.debug(f"Added {processed_frames} frames to processing queue")
+                                                
                                         except ValueError:
                                             # Second part is not a float timestamp
                                             logger.debug(f"Invalid timestamp in line: {line}")
@@ -244,23 +295,32 @@ def monitor_markers_file():
                                         logger.debug(f"Non-numeric frame number in line: {line}")
                             except ValueError as e:
                                 logger.debug(f"Error parsing line '{line}': {e}")
+                    
             except Exception as e:
                 logger.warning(f"Error reading markers file: {e}")
                 time.sleep(0.1)
                 continue
             
-            # Short sleep before checking for new lines
-            time.sleep(0.01)
+            # Minimal sleep to reduce CPU usage but maintain high responsiveness
+            time.sleep(0.001)
             
         except Exception as e:
             logger.warning(f"Error monitoring markers file: {e}")
             time.sleep(0.5)
     
     logger.info(f"Stopped monitoring markers file after processing {processed_frames} frames")
+    
+    # Wait for the queue to be fully processed
+    logger.info("Waiting for LSL queue to be fully processed...")
+    try:
+        # Wait with timeout in case of very large queues
+        frame_queue.join(timeout=5.0)
+    except Exception:
+        logger.warning(f"LSL queue still has approximately {frame_queue.qsize()} items remaining")
 
 def monitor_pts_file(pts_file="/dev/shm/tst.pts"):
     """Directly monitor the PTS file for frame timestamps"""
-    global stop_event, lsl_data
+    global stop_event, frame_queue
     
     logger.info(f"Starting to monitor PTS file: {pts_file}")
     
@@ -269,6 +329,7 @@ def monitor_pts_file(pts_file="/dev/shm/tst.pts"):
         
     last_pos = 0
     last_frame = 0
+    processed_frames = 0
     
     while not stop_event.is_set():
         # Check if file exists yet
@@ -297,17 +358,23 @@ def monitor_pts_file(pts_file="/dev/shm/tst.pts"):
                                 timestamp = float(parts[1].strip())
                                 
                                 if frame_num > last_frame:
-                                    push_lsl_sample(frame_num, timestamp)
+                                    # Add to processing queue instead of direct processing
+                                    frame_queue.put((frame_num, timestamp))
                                     last_frame = frame_num
-                                    logger.debug(f"Pushed LSL sample from PTS: Frame {frame_num}, Time {timestamp}")
+                                    processed_frames += 1
+                                    
+                                    if processed_frames % 1000 == 0:
+                                        logger.debug(f"Added {processed_frames} frames from PTS to processing queue")
+                                        
                             except (ValueError, IndexError) as e:
                                 logger.debug(f"Error parsing PTS line '{line}': {e}")
         except Exception as e:
             logger.warning(f"Error reading PTS file: {e}")
             
-        time.sleep(0.01)
+        # Reduced sleep time for better responsiveness
+        time.sleep(0.001)
     
-    logger.info("Stopped monitoring PTS file")
+    logger.info(f"Stopped monitoring PTS file after processing {processed_frames} frames")
 
 def run_gscrop_script(width, height, fps, duration_ms, exposure_us=None, output_path=None, preview=False, no_awb=False):
     """Run the GScrop shell script to capture video"""
@@ -444,7 +511,7 @@ def validate_camera_config(width, height, fps):
 
 def main():
     """Main function"""
-    global lsl_outlet, stop_event, lsl_data, MARKERS_FILE
+    global lsl_outlet, stop_event, lsl_data, MARKERS_FILE, frame_queue
 
     # Setup signal handlers
     signal.signal(signal.SIGINT, signal_handler)
@@ -468,7 +535,12 @@ def main():
     parser.add_argument('--no-awb', action='store_true', help='Disable AWB (Auto White Balance) adjustments')
     parser.add_argument('--direct-pts', action='store_true', help='Directly use PTS file for frame timing if available')
     parser.add_argument('--force', action='store_true', help='Force camera configuration even if it might not work')
+    parser.add_argument('--queue-size', type=int, default=10000, help='Size of the frame processing queue (default: 10000)')
     args = parser.parse_args()
+    
+    # Update queue size if specified
+    if args.queue_size > 0:
+        frame_queue = Queue(maxsize=args.queue_size)
     
     # Convert duration from seconds to milliseconds
     duration_ms = int(args.duration * 1000) if args.duration > 0 else 0
@@ -566,8 +638,7 @@ def main():
     
     # Check if FPS is reasonable
     if args.fps > 120:
-        logger.warning(f"High FPS requested ({args.fps}). The camera might not achieve this rate.")
-        logger.warning("Consider reducing resolution for better high-FPS performance.")
+        logger.info(f"High FPS requested ({args.fps}). Using multithreaded processing for best performance.")
     
     # Set camera selection environment variable if needed
     if args.cam1:
@@ -641,7 +712,7 @@ def main():
             logger.error("Failed to start GScrop script")
             return 1
             
-        # Start markers file monitoring thread - EXPLICITLY ON NEW THREAD
+        # Start markers file monitoring thread
         logger.info("Starting markers file monitoring on separate thread")
         markers_thread = threading.Thread(target=monitor_markers_file, daemon=True)
         markers_thread.start()
@@ -662,9 +733,6 @@ def main():
         last_report_time = time.time()
         start_time = time.time()
         
-        # Give the threads more time to establish and start collecting data
-        time.sleep(1.0)
-        
         # Wait for recording to complete
         while camera_proc.poll() is None and not stop_event.is_set():
             current_time = time.time()
@@ -684,34 +752,11 @@ def main():
                 expected_frames = int(total_elapsed * args.fps)
                 
                 logger.info(f"Current frame rate: {fps_rate:.1f} FPS ({new_frames} frames in {elapsed:.1f}s)")
+                logger.info(f"Queue size: {frame_queue.qsize()}/{frame_queue.maxsize}")
                 
                 if expected_frames > 0 and current_frames > 0:
                     capture_ratio = current_frames / expected_frames
                     logger.info(f"Capture ratio: {capture_ratio:.2f} ({current_frames}/{expected_frames} frames)")
-                    
-                    # Alert if we're capturing too few frames
-                    if capture_ratio < 0.5 and current_time - start_time > 3:
-                        logger.warning(f"Low capture ratio detected: {capture_ratio:.2f}. Check system performance.")
-                
-                if args.debug and new_frames == 0 and current_frames == 0:
-                    logger.debug("No frames detected, checking markers file...")
-                    if os.path.exists(MARKERS_FILE):
-                        try:
-                            with open(MARKERS_FILE, 'r') as f:
-                                content = f.read()
-                                logger.debug(f"Markers file content ({len(content)} bytes):\n{content[:500]}...")
-                        except Exception as e:
-                            logger.debug(f"Error reading markers file: {e}")
-                    
-                    # Also check PTS file
-                    pts_file = "/dev/shm/tst.pts"
-                    if os.path.exists(pts_file):
-                        try:
-                            with open(pts_file, 'r') as f:
-                                content = f.read()
-                                logger.debug(f"PTS file content ({len(content)} bytes):\n{content[:500]}...")
-                        except Exception as e:
-                            logger.debug(f"Error reading PTS file: {e}")
                 
                 frames_count = current_frames
                 last_report_time = current_time

@@ -19,6 +19,11 @@ cleanup_and_exit() {
         echo "Recording failed with error code $exit_code" >> "$MARKERS_FILE"
     fi
     
+    # Kill any background processes that might be running
+    for pid in "${BACKGROUND_PIDS[@]}"; do
+        kill "$pid" &>/dev/null || true
+    done
+    
     exit $exit_code
 }
 
@@ -32,6 +37,9 @@ WIDTH="$1"
 HEIGHT="$2"
 FRAMERATE="$3"
 DURATION_MS="$4"
+
+# Track background processes
+declare -a BACKGROUND_PIDS=()
 
 # Validate camera settings
 if (( WIDTH > 1440 )) || (( HEIGHT > 1080 )); then
@@ -71,6 +79,10 @@ echo "Starting recording" > "$MARKERS_FILE"
 echo "CONFIG: ${WIDTH}x${HEIGHT}@${FRAMERATE}fps" >> "$MARKERS_FILE"
 echo "Markers file created at $MARKERS_FILE" >&2
 chmod 666 "$MARKERS_FILE" 2>/dev/null || true
+
+# Always write every frame, regardless of FPS
+echo "Full frame recording mode: Writing every frame to markers file" >&2
+echo "WRITE_MODE: FULL" >> "$MARKERS_FILE"
 
 # Check for Bookworm OS
 workaround=""; 
@@ -137,18 +149,24 @@ chmod 666 "$FIFO" 2>/dev/null || true
 START_TIME=$(date +%s.%N)
 echo "Recording start time: $START_TIME" >> "$MARKERS_FILE"
 
+# Create a separate file for threaded write operations
+MARKERS_TEMP_FILE="/dev/shm/camera_markers_temp.txt"
+echo "Initializing temporary markers file" > "$MARKERS_TEMP_FILE"
+chmod 666 "$MARKERS_TEMP_FILE" 2>/dev/null || true
+
 # Function to process output and detect frames
 process_output() {
     local line="$1"
     local frame_num="$2"
+    # Echo to stderr for debugging
     echo "$line" >&2
     
     # Check for errors
     if [[ "$line" == *"ERROR"* || "$line" == *"error"* || "$line" == *"failed"* ]]; then
-        echo "ERROR: $line" >> "$MARKERS_FILE"
+        echo "ERROR: $line" >> "$MARKERS_TEMP_FILE"
     fi
 
-    # Check for various frame indicators - be more thorough
+    # Check for various frame indicators
     if [[ "$line" == *"frame"* || "$line" == *"Frame"* ]]; then
         # Try to extract frame number if present
         local detected_frame
@@ -158,14 +176,44 @@ process_output() {
             # If no frame number in output, increment our counter
             detected_frame=$((frame_num + 1))
         fi
-
+        
+        # Always write every frame with timestamp
         local timestamp=$(date +%s.%N)
-        echo "$detected_frame $timestamp" >> "$MARKERS_FILE"
-        echo "Recorded frame $detected_frame at $timestamp" >&2
+        echo "$detected_frame $timestamp" >> "$MARKERS_TEMP_FILE"
+        
         return $detected_frame
     fi
     return $frame_num
 }
+
+# Function for thread to periodically merge marker files
+merge_marker_files() {
+    local source_file="$1"
+    local target_file="$2"
+    local interval="$3"
+    
+    echo "Starting marker file merging thread (PID: $$)" >&2
+    
+    while true; do
+        # Check if source file exists and has data
+        if [[ -f "$source_file" && -s "$source_file" ]]; then
+            # Append new content to main markers file
+            cat "$source_file" >> "$target_file"
+            # Clear temp file but keep it for writing
+            echo "" > "$source_file"
+        fi
+        sleep "$interval"
+    done
+}
+
+# Start a background thread for merging marker files (every 0.1s)
+merge_marker_files "$MARKERS_TEMP_FILE" "$MARKERS_FILE" 0.1 &
+MERGE_PID=$!
+BACKGROUND_PIDS+=("$MERGE_PID")
+echo "Started marker merging thread (PID: $MERGE_PID)" >&2
+
+# Always use optimal buffer settings regardless of FPS
+EXTRA_PARAMS="--buffer-count=6"
 
 # Start recording based on Pi version
 if [[ "" != "$(grep "Revision.*: ...17.$" /proc/cpuinfo)" ]]
@@ -186,7 +234,7 @@ then
         --width $WIDTH --height $HEIGHT \
         --denoise cdn_off --framerate $FRAMERATE \
         $AWB_PARAM --timeout $DURATION_MS \
-        --quality 75 \
+        --quality 75 $EXTRA_PARAMS \
         $SHTR $5 -o $OUTPUT_FILE -n"
     
     echo "Command: $RPICAM_CMD" >&2
@@ -201,7 +249,7 @@ then
         
         # Check for errors in output
         if [[ "$line" == *"ERROR"* || "$line" == *"failed"* || "$line" == *"Failed"* ]]; then
-            echo "ERROR: $line" >> "$MARKERS_FILE"
+            echo "ERROR: $line" >> "$MARKERS_TEMP_FILE"
             echo "Camera error detected!" >&2
         fi
     done
@@ -231,7 +279,7 @@ else
         --width $WIDTH --height $HEIGHT \
         --denoise cdn_off --framerate $FRAMERATE \
         $AWB_PARAM --save-pts /dev/shm/tst.pts \
-        -t $DURATION_MS --quality 75 \
+        -t $DURATION_MS --quality 75 $EXTRA_PARAMS \
         $SHTR $5 -o $OUTPUT_FILE -n"
         
     echo "Command: $LIBCAM_CMD" >&2
@@ -246,7 +294,7 @@ else
         
         # Check for errors in output
         if [[ "$line" == *"ERROR"* || "$line" == *"failed"* || "$line" == *"Failed"* ]]; then
-            echo "ERROR: $line" >> "$MARKERS_FILE"
+            echo "ERROR: $line" >> "$MARKERS_TEMP_FILE"
             echo "Camera error detected!" >&2
         fi
     done
@@ -266,15 +314,36 @@ else
         
         # Copy PTS data to markers file for LSL sync
         if [[ -f "/dev/shm/tst.pts" ]]; then
-            # Append PTS data in a format the monitor can understand
-            echo "Adding PTS data to markers file" >&2
-            cat /dev/shm/tst.pts | while read -r pts_line; do
-                if [[ -n "$pts_line" && "$pts_line" =~ ^([0-9]+)[^0-9]+([0-9.]+) ]]; then
-                    echo "${BASH_REMATCH[1]} ${BASH_REMATCH[2]}" >> "$MARKERS_FILE"
-                fi
-            done
+            # Process PTS file in a background thread
+            {
+                echo "Starting PTS processing thread" >&2
+                echo "Processing PTS file to markers file" >> "$MARKERS_FILE"
+                cat /dev/shm/tst.pts | while read -r pts_line; do
+                    if [[ -n "$pts_line" && "$pts_line" =~ ^([0-9]+)[^0-9]+([0-9.]+) ]]; then
+                        # Write every frame with accurate timestamp
+                        echo "${BASH_REMATCH[1]} ${BASH_REMATCH[2]}" >> "$MARKERS_FILE"
+                    fi
+                done
+                echo "PTS processing complete" >> "$MARKERS_FILE"
+            } &
+            PTS_PID=$!
+            BACKGROUND_PIDS+=("$PTS_PID")
+            echo "Started PTS processing thread (PID: $PTS_PID)" >&2
+            wait $PTS_PID
         fi
     fi
+fi
+
+# Kill the marker merging thread
+if [[ -n "$MERGE_PID" ]]; then
+    kill $MERGE_PID &>/dev/null || true
+    echo "Stopped marker merging thread" >&2
+    
+    # Final merge of any remaining data
+    if [[ -f "$MARKERS_TEMP_FILE" && -s "$MARKERS_TEMP_FILE" ]]; then
+        cat "$MARKERS_TEMP_FILE" >> "$MARKERS_FILE"
+    fi
+    rm -f "$MARKERS_TEMP_FILE"
 fi
 
 # Record end time and calculate actual duration
@@ -282,6 +351,7 @@ END_TIME=$(date +%s.%N)
 ELAPSED_MS=$(echo "($END_TIME - $START_TIME) * 1000" | bc)
 echo "Recording end time: $END_TIME" >> "$MARKERS_FILE"
 echo "Recording elapsed time: $ELAPSED_MS ms" >> "$MARKERS_FILE"
+echo "Actual frame rate: $(echo "($frame_num / $ELAPSED_MS) * 1000" | bc)" >> "$MARKERS_FILE"
 
 # Verify output file was created
 if [[ -n "$OUTPUT_FILE" && ! -f "$OUTPUT_FILE" ]]; then
@@ -299,12 +369,17 @@ if [[ -f "$OUTPUT_FILE" ]]; then
         echo "WARNING: Output file is very small. Recording may have failed." >&2
         echo "WARNING: Output file is very small. Recording may have failed." >> "$MARKERS_FILE"
     fi
+    
+    # Make file readable to prevent corruption
+    chmod 444 "$OUTPUT_FILE" 2>/dev/null || true
 fi
 
 echo "Recording complete. Output saved to: $OUTPUT_FILE" >&2
 echo "Frame markers saved to: $MARKERS_FILE" >&2
 echo "Total frames detected: $(grep -v "Starting\|Recording\|CONFIG\|COMMAND\|ERROR\|MEDIA_DEVICE" "$MARKERS_FILE" | wc -l)" >&2
 echo "Actual duration: ${ELAPSED_MS}ms (requested: ${DURATION_MS}ms)" >&2
+echo "All frames: $frame_num, Frame rate: $(echo "($frame_num / $ELAPSED_MS) * 1000" | bc) fps" >&2
 
 # Disable debug output
+set +x 
 set +x 
