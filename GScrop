@@ -1,0 +1,141 @@
+#!/bin/bash
+# shellcheck disable=SC2154
+# (silence shellcheck wrt $cam1 environment variable)
+
+# Enhanced version of the camera cropping script with frame marker output for LSL
+if [[ $# -lt 4 ]];  then  echo "Format: [narrow=1] [cam1=1] $0 width height framerate ms [us] [output_path]"; exit;  fi
+if [[ "$(( $1 % 2 ))" -eq 1 ]];  then echo "width has to be even"; exit 1;  fi
+if [[ "$(( $2 % 2 ))" -eq 1 ]];  then echo "height has to be even"; exit 1;  fi
+
+# Capture parameters
+WIDTH="$1"
+HEIGHT="$2"
+FPS="$3"
+DURATION="$4"
+SHUTTER=""
+if [[ $# -gt 4 ]]; then SHUTTER="--shutter $5"; fi
+
+# Default output path (can be overridden by param 6)
+OUTPUT_PATH="/dev/shm/camera${cam1:+1}"
+if [[ $# -gt 5 ]]; then OUTPUT_PATH="$6"; fi
+
+# Create markers file for LSL synchronization
+MARKERS_FILE="/dev/shm/camera_markers.txt"
+echo "Starting recording" > "$MARKERS_FILE"
+
+# Check for Bookworm OS
+workaround=""
+if [[ "" != "$(grep '=bookworm' /etc/os-release)" ]]; then 
+    workaround="--no-raw"
+    echo "Detected Bookworm OS, using workaround: $workaround" >&2
+fi
+
+# Detect Pi version and set device ID
+d=10  # Default device ID
+IS_PI5=0
+if [[ "" != "$(grep "Revision.*: ...17.$" /proc/cpuinfo)" ]]; then
+    IS_PI5=1
+    if [[ "$cam1" == "" ]]; then 
+        d=10
+    else 
+        d=11
+    fi
+    echo "Detected Raspberry Pi 5, using device ID: $d" >&2
+fi
+
+# Setup the camera cropping using media-ctl
+MEDIA_DEVICE=""
+for((m=0; m<=5; ++m))
+do
+    if media-ctl -d /dev/media$m --set-v4l2 "'imx296 $d-001a':0 [fmt:SBGGR10_1X10/${WIDTH}x${HEIGHT} crop:($(( (1440 - $WIDTH) / 2 )),$(( (1088 - $HEIGHT) / 2 )))/${WIDTH}x$HEIGHT]" -v 2>/dev/null; then
+        MEDIA_DEVICE="/dev/media$m"
+        echo "Successfully configured media device: $MEDIA_DEVICE" >&2
+        break
+    fi
+done
+
+if [[ -z "$MEDIA_DEVICE" ]]; then
+    echo "ERROR: Could not configure any media device" >&2
+    exit 1
+fi
+
+# Check if camera is detected
+libcamera-hello --list-cameras >&2
+echo "Camera configuration complete" >&2
+
+# Setup file paths
+PTS_FILE="/dev/shm/camera.pts"
+rm -f "$PTS_FILE"
+
+# Create output directory if needed
+mkdir -p "$(dirname "$OUTPUT_PATH")"
+
+# Start camera recording based on Pi version
+if [[ $IS_PI5 -eq 1 ]]; then
+    echo "Starting rpicam-vid recording..." >&2
+    
+    # Use a FIFO to read frame markers in real time
+    FIFO="/dev/shm/camera_fifo"
+    rm -f "$FIFO"
+    mkfifo "$FIFO"
+    
+    # Start rpicam-vid with output to FIFO to detect frames
+    rpicam-vid $workaround ${cam1:+--camera 1} \
+        --width "$WIDTH" --height "$HEIGHT" \
+        --denoise cdn_off --framerate "$FPS" \
+        -t "$DURATION" $SHUTTER \
+        --awb off \
+        -o "$OUTPUT_PATH.mp4" 2>&1 | tee "$FIFO" >&2 &
+    
+    # Read from FIFO to detect frames and timestamp them
+    exec 3<"$FIFO"
+    frame_num=0
+    while read -r line <&3; do
+        if [[ "$line" == *"frame"* || "$line" == *"Frame"* ]]; then
+            frame_num=$((frame_num + 1))
+            timestamp=$(date +%s.%N)
+            echo "$frame_num $timestamp" >> "$MARKERS_FILE"
+        fi
+    done &
+    
+    # Wait for rpicam-vid to complete
+    wait
+    
+    # Run timestamp analysis
+    if [[ -x ~/venv/bin/python && -f ~/rpicam-apps/utils/timestamp.py ]]; then
+        ~/venv/bin/python ~/rpicam-apps/utils/timestamp.py --plot ${narrow:+--narrow} "$OUTPUT_PATH.mp4" >&2
+    fi
+else
+    echo "Starting libcamera-vid recording..." >&2
+    
+    # Start libcamera-vid with PTS file
+    libcamera-vid $workaround \
+        --width "$WIDTH" --height "$HEIGHT" \
+        --denoise cdn_off --framerate "$FPS" \
+        --save-pts "$PTS_FILE" \
+        -t "$DURATION" $SHUTTER \
+        --awb off \
+        --codec h264 \
+        -o "$OUTPUT_PATH.h264" 2>&1 | while read -r line; do
+            echo "$line" >&2
+            if [[ "$line" == *"frame"* || "$line" == *"Frame"* ]]; then
+                frame_num=$((frame_num + 1))
+                timestamp=$(date +%s.%N)
+                echo "$frame_num $timestamp" >> "$MARKERS_FILE"
+            fi
+        done
+    
+    # Run PTS analysis
+    if command -v ptsanalyze > /dev/null; then
+        echo "Running pts analysis..." >&2
+        rm -f tstamps.csv && ptsanalyze "$PTS_FILE" >&2
+        
+        # Copy PTS data to markers file for LSL sync
+        if [[ -f "$PTS_FILE" ]]; then
+            cat "$PTS_FILE" > "$MARKERS_FILE"
+        fi
+    fi
+fi
+
+echo "Recording complete. Output saved to: $OUTPUT_PATH" >&2
+echo "Frame markers saved to: $MARKERS_FILE" >&2 

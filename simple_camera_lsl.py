@@ -2,8 +2,8 @@
 """
 Simplified IMX296 Camera Recorder with LSL
 ------------------------------------------
-This script configures an IMX296 global shutter camera on Raspberry Pi,
-streams metadata via LSL, and saves video to a local file.
+This script uses GScrop shell script to configure and record from an IMX296 global shutter camera
+on Raspberry Pi, streams metadata via LSL, and saves video to a local file.
 """
 
 import os
@@ -40,11 +40,8 @@ logger = logging.getLogger("IMX296Camera")
 stop_event = threading.Event()
 camera_process = None
 lsl_outlet = None
-fps_counter = 0
-last_fps_time = time.time()
-IS_RPI5 = False  # Will be set based on detection
-PTS_FILE_PATH = "/dev/shm/camera.pts"
 lsl_data = []  # Store LSL data for CSV export
+MARKERS_FILE = "/dev/shm/camera_markers.txt"
 
 def signal_handler(sig, frame):
     """Handle Ctrl+C gracefully"""
@@ -52,264 +49,6 @@ def signal_handler(sig, frame):
     stop_event.set()
     if camera_process and camera_process.poll() is None:
         camera_process.terminate()
-
-def is_raspberry_pi5():
-    """Check if running on Raspberry Pi 5"""
-    try:
-        with open('/proc/cpuinfo', 'r') as f:
-            cpuinfo = f.read()
-            if re.search(r'Revision.*: ...17.', cpuinfo):
-                logger.info("Detected Raspberry Pi 5")
-                return True
-    except Exception as e:
-        logger.warning(f"Could not check Raspberry Pi version: {e}")
-    
-    logger.info("Not detected as Raspberry Pi 5, assuming older model")
-    return False
-
-def is_on_bookworm():
-    """Check if running on Bookworm OS"""
-    try:
-        with open('/etc/os-release', 'r') as f:
-            if '=bookworm' in f.read():
-                logger.info("Detected Bookworm OS")
-                return True
-    except Exception as e:
-        logger.warning(f"Could not check OS version: {e}")
-    
-    return False
-
-def run_elevated_command(cmd):
-    """Run a command with elevated privileges using pkexec or sudo"""
-    # First try pkexec, which will prompt for password if needed
-    if shutil.which('pkexec'):
-        elevated_cmd = ['pkexec'] + cmd
-    else:
-        # Fallback to sudo if pkexec is not available
-        elevated_cmd = ['sudo'] + cmd
-    
-    logger.debug(f"Running elevated command: {' '.join(elevated_cmd)}")
-    return subprocess.run(elevated_cmd, capture_output=True, text=True)
-
-def find_imx296_media_device():
-    """Find the media device for the IMX296 camera using thorough search"""
-    logger.info("Searching for IMX296 camera media device...")
-    
-    # Determine device ID (different for Pi models)
-    device_id = "10"  # Default
-    if IS_RPI5:
-        if os.environ.get("cam1"):
-            device_id = "11"
-            logger.info("Using device ID 11 for Camera 1 on Pi 5")
-        else:
-            logger.info("Using device ID 10 for Camera 0 on Pi 5")
-    
-    # Try direct detection of video devices first
-    try:
-        v4l2_devices = []
-        for dev in os.listdir('/dev'):
-            if dev.startswith('video'):
-                v4l2_devices.append(f"/dev/{dev}")
-        logger.debug(f"Found video devices: {v4l2_devices}")
-    except Exception as e:
-        logger.debug(f"Error listing video devices: {e}")
-        v4l2_devices = []
-    
-    # Try media devices 0-5
-    for m in range(6):
-        media_dev_path = f"/dev/media{m}"
-        
-        if not os.path.exists(media_dev_path):
-            logger.debug(f"Skipping non-existent device {media_dev_path}")
-            continue
-        
-        # First check if we have permission to access this device
-        try:
-            with open(media_dev_path, 'rb') as f:
-                pass  # Just checking access
-            has_permission = True
-        except PermissionError:
-            logger.debug(f"No permission to access {media_dev_path}")
-            has_permission = False
-        
-        # Correct entity name format from bash script
-        entity_name = f"'imx296 {device_id}-001a'"
-        
-        # Build command to check if this is the right media device
-        test_cmd = ["media-ctl", "-d", media_dev_path, "-p"]
-        try:
-            if has_permission:
-                result = subprocess.run(test_cmd, capture_output=True, text=True)
-            else:
-                # First try to fix permissions
-                if ensure_device_permission(media_dev_path):
-                    result = subprocess.run(test_cmd, capture_output=True, text=True)
-                else:
-                    # Try with elevated privileges as a last resort
-                    logger.debug(f"Trying {media_dev_path} with elevated privileges")
-                    result = run_elevated_command(test_cmd)
-                
-            if result.returncode != 0:
-                continue
-                
-            if entity_name.strip("'") in result.stdout:
-                logger.info(f"Found IMX296 camera on {media_dev_path}, entity: {entity_name}")
-                return media_dev_path, entity_name
-        except Exception as e:
-            logger.warning(f"Error checking {media_dev_path}: {e}")
-    
-    # If we get here, we need to try a more aggressive approach
-    logger.warning("Could not find IMX296 camera via standard method, trying alternative detection...")
-    
-    # Try to find device by executing v4l2-ctl --list-devices
-    try:
-        result = subprocess.run(["v4l2-ctl", "--list-devices"], capture_output=True, text=True)
-        if result.returncode == 0:
-            lines = result.stdout.split('\n')
-            for i, line in enumerate(lines):
-                if "imx296" in line.lower():
-                    # Next line should have the device path
-                    if i + 1 < len(lines) and lines[i+1].strip().startswith('/dev/'):
-                        device_path = lines[i+1].strip()
-                        logger.info(f"Found IMX296 camera on {device_path} via v4l2-ctl")
-                        
-                        # Try to convert video device to media device
-                        if "video" in device_path:
-                            for m in range(6):
-                                media_dev_path = f"/dev/media{m}"
-                                if os.path.exists(media_dev_path):
-                                    return media_dev_path, entity_name
-    except Exception as e:
-        logger.warning(f"Error in alternative detection: {e}")
-    
-    logger.error("Could not find IMX296 camera media device")
-    return None, None
-
-def ensure_device_permission(media_dev_path):
-    """Ensure the current user has read/write access to the media device"""
-    try:
-        # Check if we can access the device
-        with open(media_dev_path, 'rb') as f:
-            pass  # Just checking if we can open it
-        logger.debug(f"Already have permission to access {media_dev_path}")
-        return True
-    except PermissionError:
-        logger.warning(f"No permission to access {media_dev_path}, attempting to fix...")
-        
-        # Try different approaches to fix permissions
-        
-        # 1. Try to get user and group information
-        user = os.environ.get('USER', os.environ.get('USERNAME', 'pi'))
-        
-        # 2. Check if device belongs to video group
-        try:
-            import stat
-            import pwd
-            import grp
-            
-            device_stat = os.stat(media_dev_path)
-            device_group = grp.getgrgid(device_stat.st_gid).gr_name
-            
-            logger.debug(f"Device {media_dev_path} belongs to group: {device_group}")
-            
-            # Check if user is in the device group
-            user_info = pwd.getpwnam(user)
-            user_groups = [grp.getgrgid(g).gr_name for g in os.getgroups()]
-            
-            if device_group in user_groups:
-                logger.debug(f"User {user} is in the {device_group} group but still can't access device")
-                
-                # The permissions must be wrong on the device
-                if not (device_stat.st_mode & stat.S_IRGRP and device_stat.st_mode & stat.S_IWGRP):
-                    logger.debug(f"Device {media_dev_path} doesn't have read/write permissions for group")
-                    
-                    # Fix permissions
-                    cmd = ["chmod", "g+rw", media_dev_path]
-                    result = run_elevated_command(cmd)
-                    if result.returncode == 0:
-                        logger.info(f"Fixed permissions for {media_dev_path}")
-                        return True
-            else:
-                logger.debug(f"User {user} is not in the {device_group} group")
-                
-                # Try to add user to the video group
-                cmd = ["usermod", "-a", "-G", device_group, user]
-                result = run_elevated_command(cmd)
-                if result.returncode == 0:
-                    logger.info(f"Added user {user} to group {device_group}")
-                    logger.info("You need to log out and log back in for this change to take effect")
-                    
-                    # As a temporary fix, also change device permissions directly
-                    cmd = ["chmod", "a+rw", media_dev_path] 
-                    result = run_elevated_command(cmd)
-                    if result.returncode == 0:
-                        logger.info(f"Temporarily granted universal access to {media_dev_path}")
-                        return True
-        except ImportError as e:
-            logger.debug(f"Could not import necessary modules for group checking: {e}")
-        except Exception as e:
-            logger.debug(f"Error checking group membership: {e}")
-        
-        # 3. Last resort - try direct permission change 
-        try:
-            cmd = ["chmod", "a+rw", media_dev_path]
-            result = run_elevated_command(cmd)
-            if result.returncode == 0:
-                logger.info(f"Granted everyone access to {media_dev_path} as a fallback")
-                
-                # Check if it worked
-                try:
-                    with open(media_dev_path, 'rb') as f:
-                        pass
-                    return True
-                except PermissionError:
-                    pass
-        except Exception as e:
-            logger.debug(f"Error in fallback permission fix: {e}")
-                
-        logger.warning(f"Could not fix permissions for {media_dev_path}")
-        return False
-
-def configure_media_ctl(media_dev_path, entity_name, width, height):
-    """Configure the IMX296 sensor using media-ctl for hardware cropping"""
-    logger.info(f"Configuring IMX296 sensor with media-ctl for {width}x{height}...")
-    
-    # Standard sensor dimensions
-    full_width = 1440  # From the bash script
-    full_height = 1088
-    
-    # Calculate crop coordinates to center the crop on the sensor
-    x_offset = (full_width - width) // 2
-    y_offset = (full_height - height) // 2
-    
-    # Format string for media-ctl command - exact format from the bash script
-    format_str = f"fmt:SBGGR10_1X10/{width}x{height} crop:({x_offset},{y_offset})/{width}x{height}"
-    
-    # Execute media-ctl command with the exact format from the bash script
-    # Use pkexec or sudo for elevation
-    cmd = ["media-ctl", "-d", media_dev_path, "--set-v4l2", f"{entity_name}:0 [{format_str}]", "-v"]
-    logger.info(f"Running media-ctl command with elevation...")
-    
-    result = run_elevated_command(cmd)
-    if result.returncode != 0:
-        logger.error(f"Failed to configure media-ctl: {result.stderr}")
-        return False
-        
-    logger.info(f"Successfully configured IMX296 sensor crop: {format_str}")
-    
-    # Verify configuration using libcamera-hello
-    try:
-        logger.info("Verifying camera configuration with libcamera-hello...")
-        verify_cmd = ["libcamera-hello", "--list-cameras"]
-        verify_result = subprocess.run(verify_cmd, capture_output=True, text=True)
-        if verify_result.returncode == 0:
-            logger.info(f"Camera configuration verification complete")
-        else:
-            logger.warning(f"Camera verification failed: {verify_result.stderr}")
-    except Exception as e:
-        logger.warning(f"Could not verify with libcamera-hello: {e}")
-    
-    return True
 
 def create_lsl_outlet(name="IMX296Camera", stream_type="Video", fps=100):
     """Create LSL outlet for camera metadata"""
@@ -385,375 +124,6 @@ def create_output_directory():
     
     return date_dir
 
-def parse_pts_file(pts_file_path):
-    """Parse the PTS file to get frame timestamps"""
-    timestamps = []
-    try:
-        with open(pts_file_path, 'r') as f:
-            for line in f:
-                parts = line.strip().split(' ')
-                if len(parts) >= 2:
-                    frame_num = int(parts[0])
-                    frame_time = float(parts[1])
-                    timestamps.append((frame_num, frame_time))
-        return timestamps
-    except Exception as e:
-        logger.error(f"Error parsing PTS file: {e}")
-        return []
-
-def detect_camera_capabilities():
-    """Detect camera capabilities and supported options"""
-    capabilities = {
-        'rpicam_vid': {
-            'flush': False,
-            'inline': False,
-            'output_buffer': False,
-            'timeout': False,
-            'executable': None
-        },
-        'libcamera_vid': {
-            'flush': False,
-            'inline': False,
-            'timeout': False,
-            'executable': None
-        }
-    }
-    
-    # Check for rpicam-vid
-    try:
-        result = subprocess.run(["which", "rpicam-vid"], capture_output=True, text=True)
-        if result.returncode == 0:
-            capabilities['rpicam_vid']['executable'] = result.stdout.strip()
-            
-            # Check supported options
-            result = subprocess.run(["rpicam-vid", "--help"], capture_output=True, text=True)
-            help_text = result.stdout
-            
-            if "--flush" in help_text:
-                capabilities['rpicam_vid']['flush'] = True
-            if "--inline" in help_text:
-                capabilities['rpicam_vid']['inline'] = True
-            if "--output-buffer" in help_text:
-                capabilities['rpicam_vid']['output_buffer'] = True
-            if "--timeout" in help_text:
-                capabilities['rpicam_vid']['timeout'] = True
-                
-            logger.debug(f"Detected rpicam-vid capabilities: {capabilities['rpicam_vid']}")
-    except Exception as e:
-        logger.debug(f"Error detecting rpicam-vid capabilities: {e}")
-    
-    # Check for libcamera-vid
-    try:
-        result = subprocess.run(["which", "libcamera-vid"], capture_output=True, text=True)
-        if result.returncode == 0:
-            capabilities['libcamera_vid']['executable'] = result.stdout.strip()
-            
-            # Check supported options
-            result = subprocess.run(["libcamera-vid", "--help"], capture_output=True, text=True)
-            help_text = result.stdout
-            
-            if "--flush" in help_text:
-                capabilities['libcamera_vid']['flush'] = True
-            if "--inline" in help_text:
-                capabilities['libcamera_vid']['inline'] = True
-            if "--timeout" in help_text:
-                capabilities['libcamera_vid']['timeout'] = True
-                
-            logger.debug(f"Detected libcamera-vid capabilities: {capabilities['libcamera_vid']}")
-    except Exception as e:
-        logger.debug(f"Error detecting libcamera-vid capabilities: {e}")
-    
-    return capabilities
-
-def start_camera_recording(width, height, fps, output_path, duration_ms=0, exposure_us=None, preview=False):
-    """Start camera recording using appropriate command based on Pi version"""
-    global camera_process, IS_RPI5, PTS_FILE_PATH
-    
-    # Clear any existing PTS file
-    if os.path.exists(PTS_FILE_PATH):
-        try:
-            os.unlink(PTS_FILE_PATH)
-        except Exception as e:
-            logger.warning(f"Failed to remove existing PTS file: {e}")
-    
-    # Check for bookworm and add workaround if needed
-    workaround = []
-    if is_on_bookworm():
-        workaround = ["--no-raw"]
-    
-    # Make sure output directory exists
-    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-    
-    # Determine duration argument - ensure it's an integer number of milliseconds
-    duration_arg = []
-    if duration_ms > 0:
-        duration_arg = ["-t", str(int(duration_ms))]
-        logger.debug(f"Setting recording duration to {duration_ms} milliseconds")
-    
-    # Determine exposure argument
-    exposure_arg = []
-    if exposure_us is not None:
-        exposure_arg = ["--shutter", str(int(exposure_us))]
-    
-    # Determine camera selection
-    camera_arg = []
-    if os.environ.get("cam1"):
-        camera_arg = ["--camera", "1"]
-    
-    # Determine preview option
-    preview_arg = []
-    if preview:
-        preview_arg = ["--preview"] if not IS_RPI5 else ["--display"]
-    
-    # Get camera capabilities
-    capabilities = detect_camera_capabilities()
-    
-    # Build appropriate command based on Pi version
-    if IS_RPI5:
-        # For Pi 5, use rpicam-vid with compatible options
-        cmd = [
-            "rpicam-vid",
-            *workaround,
-            *camera_arg,
-            "--width", str(width),
-            "--height", str(height),
-            "--denoise", "cdn_off",
-            "--framerate", str(fps),
-            "--awb", "off",    # Disable auto white balance to reduce processing
-            *duration_arg,
-            *exposure_arg,
-            *preview_arg,
-            "-o", output_path
-        ]
-        
-        # Add optional capabilities if supported
-        if capabilities['rpicam_vid']['flush']:
-            cmd.extend(["--flush", "1"])
-        if capabilities['rpicam_vid']['inline']:
-            cmd.append("--inline")
-        if capabilities['rpicam_vid']['timeout']:
-            cmd.extend(["--timeout", "0"])
-        if capabilities['rpicam_vid']['output_buffer']:
-            cmd.extend(["--output-buffer", "2"])
-    else:
-        # For older Pi models, use libcamera-vid with PTS file
-        cmd = [
-            "libcamera-vid",
-            *workaround,
-            "--width", str(width),
-            "--height", str(height),
-            "--denoise", "cdn_off",
-            "--framerate", str(fps),
-            "--save-pts", PTS_FILE_PATH,
-            "--awb", "off",
-            *duration_arg,
-            *exposure_arg,
-            *preview_arg,
-            "--codec", "h264",
-            "-o", output_path
-        ]
-        
-        # Add optional capabilities if supported
-        if capabilities['libcamera_vid']['flush']:
-            cmd.extend(["--flush", "1"])
-        if capabilities['libcamera_vid']['inline']:
-            cmd.append("--inline")
-        if capabilities['libcamera_vid']['timeout']:
-            cmd.extend(["--timeout", "0"])
-    
-    # Log the final command
-    logger.info(f"Starting camera recording with command: {' '.join(cmd)}")
-    
-    # Start camera process
-    camera_process = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        bufsize=0  # Unbuffered output for faster processing
-    )
-    
-    # Start thread to monitor process output and push LSL samples
-    threading.Thread(target=monitor_camera_process, daemon=True).start()
-    
-    return camera_process
-
-def read_timestamps_from_pts():
-    """Read frame timestamps from PTS file"""
-    if not os.path.exists(PTS_FILE_PATH):
-        return []
-    
-    try:
-        return parse_pts_file(PTS_FILE_PATH)
-    except Exception as e:
-        logger.error(f"Error reading PTS file: {e}")
-        return []
-
-def monitor_camera_process():
-    """Monitor camera process output and push LSL samples"""
-    global camera_process, fps_counter, last_fps_time, stop_event, IS_RPI5
-    
-    if not camera_process:
-        return
-    
-    frame_number = 0
-    last_pts_read_time = 0
-    pts_data = []
-    start_time = time.time()
-    last_update_time = start_time
-    camera_started = False
-    recording_started = False
-    
-    # Start monitoring right away
-    logger.debug(f"Started monitoring camera process output")
-    
-    # Read both stdout and stderr for frame information (combine streams)
-    for pipe in [camera_process.stdout, camera_process.stderr]:
-        if pipe:
-            threading.Thread(target=read_pipe, args=(pipe,), daemon=True).start()
-    
-    # Keep monitoring until camera process exits
-    while camera_process.poll() is None and not stop_event.is_set():
-        # Check if camera has been running long enough to generate frames
-        current_time = time.time()
-        time_since_start = current_time - start_time
-        
-        # After 1 second, consider camera started
-        if not camera_started and time_since_start > 1.0:
-            logger.debug("Camera process has been running for 1 second, assuming it's started")
-            camera_started = True
-            
-            # Add a first frame marker in case we don't get explicit frame indicators
-            if not recording_started:
-                recording_started = True
-                frame_number += 1
-                fps_counter += 1
-                push_lsl_sample(frame_number)
-                logger.debug(f"Added initial frame marker at startup")
-        
-        # For very slow cameras or when frame detection fails, add periodic updates
-        if camera_started and time_since_start > 2.0 and current_time - last_update_time > 0.2:
-            frame_number += 1
-            fps_counter += 1
-            push_lsl_sample(frame_number)
-            last_update_time = current_time
-            
-            # Report status periodically
-            if current_time - last_fps_time >= 2.0:
-                elapsed = current_time - last_fps_time
-                fps_rate = fps_counter / elapsed if elapsed > 0 else 0
-                logger.info(f"Current frame rate: {fps_rate:.1f} FPS ({fps_counter} frames in {elapsed:.1f}s)")
-                fps_counter = 0
-                last_fps_time = current_time
-        
-        time.sleep(0.01)  # Short sleep to prevent CPU hogging
-
-    # Process has exited, check exit status
-    exit_code = camera_process.poll()
-    if exit_code is not None and exit_code != 0:
-        logger.error(f"Camera process exited with error code {exit_code}")
-        
-        # Try to get any remaining output
-        try:
-            stdout, stderr = camera_process.communicate(timeout=1.0)
-            if stderr:
-                logger.error(f"Camera error output: {stderr.decode().strip()}")
-        except Exception:
-            pass
-
-def read_pipe(pipe):
-    """Read from a pipe (stdout or stderr) and process lines"""
-    global fps_counter, last_fps_time, lsl_data
-    
-    frame_number = 0
-    last_line_time = time.time()
-    
-    for line in iter(pipe.readline, b''):
-        if stop_event.is_set():
-            break
-            
-        line_str = line.decode().strip()
-        if not line_str:
-            continue
-        
-        # Log camera output
-        if "error" in line_str.lower() or "warning" in line_str.lower():
-            logger.warning(f"Camera: {line_str}")
-        elif "frame" in line_str.lower():
-            logger.debug(f"Camera frame: {line_str}")
-        else:
-            logger.debug(f"Camera: {line_str}")
-            
-        # Detect frames using multiple patterns
-        is_frame = False
-        
-        # Frame-specific patterns
-        frame_patterns = [
-            "frame", "Frame", 
-            "snapshot", "Snapshot",
-            "image", "Image", 
-            "picture", "Picture",
-            "camera_buffer", "buffer"
-        ]
-        
-        for pattern in frame_patterns:
-            if pattern in line_str:
-                is_frame = True
-                break
-        
-        # Process frame data
-        if is_frame:
-            frame_number += 1
-            fps_counter += 1
-            
-            # Extract timestamp if available in the output
-            timestamp = None
-            time_patterns = [
-                r"time(?:stamp)?\s*(?::|\s)\s*(\d+\.\d+)",  # time: 123.456
-                r"pts\s*(?::|\s)\s*(\d+\.\d+)",            # pts: 123.456
-                r"timestamp\s*=\s*(\d+\.\d+)"              # timestamp=123.456
-            ]
-            
-            for pattern in time_patterns:
-                match = re.search(pattern, line_str)
-                if match:
-                    try:
-                        timestamp = float(match.group(1))
-                        break
-                    except ValueError:
-                        pass
-            
-            # Push frame data to LSL
-            push_lsl_sample(frame_number, timestamp)
-            
-            # Update last line time
-            last_line_time = time.time()
-
-def analyze_pts_file():
-    """Analyze the PTS file using ptsanalyze tool if available"""
-    if IS_RPI5 or not os.path.exists(PTS_FILE_PATH):
-        return
-        
-    # Check if ptsanalyze tool exists
-    ptsanalyze_path = shutil.which("ptsanalyze")
-    if not ptsanalyze_path:
-        logger.warning("ptsanalyze tool not found, skipping PTS analysis")
-        return
-        
-    try:
-        # Remove existing tstamps.csv if it exists
-        if os.path.exists("tstamps.csv"):
-            os.unlink("tstamps.csv")
-            
-        # Run ptsanalyze
-        cmd = [ptsanalyze_path, PTS_FILE_PATH]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode == 0:
-            logger.info("PTS file analysis complete")
-        else:
-            logger.warning(f"PTS analysis failed: {result.stderr}")
-    except Exception as e:
-        logger.error(f"Error analyzing PTS file: {e}")
-
 def check_even_dimensions(width, height):
     """Check if width and height are even numbers"""
     if width % 2 != 0:
@@ -764,100 +134,145 @@ def check_even_dimensions(width, height):
         return False
     return True
 
-def setup_device_permissions():
-    """Set up device permissions for the current user"""
-    # Try to add current user to the video group
-    try:
-        # Get current user
-        user = os.environ.get('USER', os.environ.get('USERNAME'))
-        if not user:
-            logger.warning("Could not determine current user")
-            return False
+def monitor_markers_file():
+    """Monitor the markers file created by GScrop script to get frame information"""
+    global stop_event, lsl_data
+    
+    if not os.path.exists(MARKERS_FILE):
+        logger.warning(f"Markers file {MARKERS_FILE} does not exist, waiting for it to be created...")
+    
+    # Wait until the file exists and has content
+    while not stop_event.is_set():
+        if os.path.exists(MARKERS_FILE):
+            break
+        time.sleep(0.1)
+    
+    if stop_event.is_set():
+        return
+    
+    logger.debug(f"Monitoring markers file: {MARKERS_FILE}")
+    
+    # Keep track of the last read position
+    last_pos = 0
+    
+    # Initial delay to let the script start creating markers
+    time.sleep(0.5)
+    
+    while not stop_event.is_set():
+        try:
+            # Check if file exists
+            if not os.path.exists(MARKERS_FILE):
+                logger.debug("Markers file disappeared, waiting for it to reappear...")
+                time.sleep(0.5)
+                continue
+                
+            # Open the file and read new lines
+            with open(MARKERS_FILE, 'r') as f:
+                f.seek(last_pos)
+                new_lines = f.readlines()
+                if new_lines:
+                    last_pos = f.tell()
+                    
+                    for line in new_lines:
+                        line = line.strip()
+                        if not line or line.startswith("Starting"):
+                            continue
+                            
+                        # Parse frame number and timestamp
+                        try:
+                            parts = line.split()
+                            if len(parts) >= 2:
+                                frame_num = int(parts[0])
+                                frame_time = float(parts[1])
+                                push_lsl_sample(frame_num, frame_time)
+                                logger.debug(f"Pushed LSL sample: Frame {frame_num}, Time {frame_time}")
+                        except ValueError as e:
+                            logger.debug(f"Error parsing line '{line}': {e}")
             
-        # Check if the user is already in the video group
-        cmd = ["groups", user]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if "video" in result.stdout:
-            logger.info(f"User {user} is already in the video group")
-            return True
+            # Short sleep before checking for new lines
+            time.sleep(0.01)
             
-        # Add user to video group
-        logger.info(f"Adding user {user} to video group...")
-        cmd = ["usermod", "-aG", "video", user]
-        result = run_elevated_command(cmd)
-        if result.returncode != 0:
-            logger.warning(f"Failed to add user to video group: {result.stderr}")
-            logger.warning("You may need to run as sudo or ensure the user has video group access")
-            return False
-        
-        logger.info(f"Added user {user} to video group")
-        logger.info("You may need to log out and log back in for group changes to take effect")
-        return True
-    except Exception as e:
-        logger.error(f"Error setting up device permissions: {e}")
-        return False
+        except Exception as e:
+            logger.warning(f"Error monitoring markers file: {e}")
+            time.sleep(0.5)
 
-# Add a fallback function for simple camera recording
-def start_simple_camera_recording(width, height, fps, output_path, duration_ms=0, exposure_us=None, preview=False):
-    """Start camera recording using minimal command line options for maximum compatibility"""
-    global camera_process, IS_RPI5
+def run_gscrop_script(width, height, fps, duration_ms, exposure_us=None, output_path=None, preview=False):
+    """Run the GScrop shell script to capture video"""
+    global camera_process, stop_event
     
-    # Make sure output directory exists
-    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    # Build command line arguments
+    cmd = ["./GScrop", str(width), str(height), str(fps), str(duration_ms)]
     
-    # Set up basic arguments
-    duration_arg = ["-t", str(int(duration_ms))] if duration_ms > 0 else []
-    exposure_arg = ["--shutter", str(int(exposure_us))] if exposure_us is not None else []
-    preview_arg = ["--preview"] if preview else []
+    # Add exposure if specified
+    if exposure_us is not None:
+        cmd.append(str(exposure_us))
     
-    # Use the most basic commands possible
-    if IS_RPI5:
-        cmd = [
-            "rpicam-vid",
-            "--width", str(width),
-            "--height", str(height),
-            "--framerate", str(fps),
-            *duration_arg,
-            *exposure_arg,
-            *preview_arg,
-            "-o", output_path
-        ]
-    else:
-        cmd = [
-            "libcamera-vid",
-            "--width", str(width),
-            "--height", str(height),
-            "--framerate", str(fps),
-            *duration_arg,
-            *exposure_arg,
-            *preview_arg,
-            "-o", output_path
-        ]
+    # Add output path if specified
+    if output_path is not None:
+        cmd.append(output_path)
     
-    logger.info(f"Starting simple camera recording with command: {' '.join(cmd)}")
+    # Add environment variables for camera selection
+    env = os.environ.copy()
     
-    # Start camera process
-    camera_process = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE
-    )
+    # Add cam1 if using second camera
+    if os.environ.get("cam1"):
+        env["cam1"] = "1"
     
-    # Start thread to monitor process output
-    threading.Thread(target=monitor_camera_process, daemon=True).start()
+    # Add preview mode if requested
+    if preview:
+        env["preview"] = "1"
     
-    return camera_process
+    logger.info(f"Starting GScrop with command: {' '.join(cmd)}")
+    
+    try:
+        # Start the GScrop script
+        camera_process = subprocess.Popen(
+            cmd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        
+        # Start threads to monitor stdout and stderr
+        threading.Thread(target=monitor_process_output, args=(camera_process.stdout, "stdout"), daemon=True).start()
+        threading.Thread(target=monitor_process_output, args=(camera_process.stderr, "stderr"), daemon=True).start()
+        
+        # Start thread to monitor the markers file
+        threading.Thread(target=monitor_markers_file, daemon=True).start()
+        
+        return camera_process
+    except Exception as e:
+        logger.error(f"Failed to start GScrop script: {e}")
+        return None
+
+def monitor_process_output(pipe, name):
+    """Monitor a process output pipe and log the results"""
+    for line in iter(pipe.readline, b''):
+        if stop_event.is_set():
+            break
+        
+        line_str = line.decode().strip()
+        if not line_str:
+            continue
+        
+        # Log the output based on content
+        if "error" in line_str.lower() or "ERROR" in line_str:
+            logger.error(f"GScrop {name}: {line_str}")
+        elif "warning" in line_str.lower() or "WARNING" in line_str:
+            logger.warning(f"GScrop {name}: {line_str}")
+        else:
+            logger.debug(f"GScrop {name}: {line_str}")
 
 def main():
     """Main function"""
-    global lsl_outlet, stop_event, IS_RPI5, lsl_data
+    global lsl_outlet, stop_event, lsl_data
 
     # Setup signal handlers
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description='Simplified IMX296 Camera Recorder with LSL')
+    parser = argparse.ArgumentParser(description='IMX296 Camera Recorder with LSL using GScrop script')
     parser.add_argument('--width', type=int, default=400, help='Camera width (default: 400)')
     parser.add_argument('--height', type=int, default=400, help='Camera height (default: 400)')
     parser.add_argument('--fps', type=int, default=100, help='Target frame rate (default: 100)')
@@ -868,10 +283,7 @@ def main():
     parser.add_argument('--lsl-type', type=str, default='Video', help='LSL stream type (default: Video)')
     parser.add_argument('--cam1', action='store_true', help='Use camera 1 instead of camera 0')
     parser.add_argument('--preview', action='store_true', help='Show camera preview during recording')
-    parser.add_argument('--setup-permissions', action='store_true', help='Set up device permissions for the current user')
     parser.add_argument('--verbose', action='store_true', help='Enable verbose logging')
-    parser.add_argument('--check-camera', action='store_true', help='Check camera capabilities and exit')
-    parser.add_argument('--simple-mode', action='store_true', help='Use simple mode with minimal options')
     args = parser.parse_args()
     
     # Convert duration from seconds to milliseconds
@@ -886,14 +298,6 @@ def main():
     logger.debug(f"Command line arguments: {vars(args)}")
     logger.debug(f"Duration in milliseconds: {duration_ms}")
 
-    # Set up device permissions if requested
-    if args.setup_permissions:
-        if setup_device_permissions():
-            logger.info("Device permissions set up successfully. Please log out and log back in.")
-        else:
-            logger.error("Failed to set up device permissions")
-        return 0
-    
     # Check if width and height are even numbers
     if not check_even_dimensions(args.width, args.height):
         return 1
@@ -914,73 +318,18 @@ def main():
         os.environ["cam1"] = "1"
         logger.info("Using camera 1")
     
-    # Detect Raspberry Pi version
-    IS_RPI5 = is_raspberry_pi5()
-    logger.info(f"Detected platform: {'Raspberry Pi 5' if IS_RPI5 else 'Older Raspberry Pi'}")
+    # Check if GScrop script exists and is executable
+    if not os.path.isfile("./GScrop"):
+        logger.error("GScrop script not found in current directory")
+        return 1
     
-    # Check for camera and software
-    try:
-        if IS_RPI5:
-            cmd = ["which", "rpicam-vid"]
-        else:
-            cmd = ["which", "libcamera-vid"]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode == 0:
-            camera_bin = result.stdout.strip()
-            logger.info(f"Found camera software: {camera_bin}")
-        else:
-            logger.warning(f"Camera software not found! Please install the Raspberry Pi camera software.")
-            logger.warning("For Pi 5: sudo apt install rpicam-apps")
-            logger.warning("For older Pi: sudo apt install libcamera-apps")
-            return 1
-    except Exception as e:
-        logger.warning(f"Error checking for camera software: {e}")
-    
-    # Check if camera is detected
-    try:
-        if IS_RPI5:
-            cmd = ["rpicam-hello", "--list-cameras"]
-        else:
-            cmd = ["libcamera-hello", "--list-cameras"]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode == 0:
-            if "No cameras available" in result.stdout:
-                logger.error("No cameras detected by the system!")
-                return 1
-            else:
-                logger.info(f"Camera detected: {result.stdout.strip()}")
-        else:
-            logger.warning(f"Could not check for cameras: {result.stderr}")
-    except Exception as e:
-        logger.warning(f"Error checking for cameras: {e}")
-    
-    # Check camera mode if requested
-    if args.check_camera:
-        logger.info("Camera check requested, running camera hello app...")
+    if not os.access("./GScrop", os.X_OK):
+        logger.warning("GScrop script is not executable, trying to make it executable")
         try:
-            if IS_RPI5:
-                cmd = ["rpicam-hello", "--list-cameras"]
-            else:
-                cmd = ["libcamera-hello", "--list-cameras"]
-            subprocess.run(cmd)
-            return 0
+            os.chmod("./GScrop", 0o755)
         except Exception as e:
-            logger.error(f"Error checking camera: {e}")
+            logger.error(f"Could not make GScrop executable: {e}")
             return 1
-    
-    # Find camera media device - Skip this step if using simple mode
-    if not args.simple_mode:
-        media_dev_path, entity_name = find_imx296_media_device()
-        if not media_dev_path or not entity_name:
-            logger.error("Camera not found. Try using --simple-mode to bypass media device configuration.")
-            return 1
-    
-        # Configure camera cropping
-        if not configure_media_ctl(media_dev_path, entity_name, args.width, args.height):
-            logger.error("Failed to configure camera. Try using --simple-mode to bypass media device configuration.")
-            return 1
-    else:
-        logger.info("Simple mode enabled - skipping media device configuration")
     
     # Create LSL outlet
     if LSL_AVAILABLE:
@@ -990,86 +339,78 @@ def main():
     output_dir = create_output_directory()
     logger.info(f"Using output directory: {output_dir}")
     
-    # Generate output filenames if not specified
-    if not args.output:
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        suffix = ".mp4" if IS_RPI5 else ".h264"
-        cam_suffix = "1" if args.cam1 else ""
-        filename_base = f"recording{cam_suffix}_{args.width}x{args.height}_{args.fps}fps_{timestamp}"
-        video_path = output_dir / f"{filename_base}{suffix}"
-        csv_path = output_dir / f"{filename_base}.csv"
-    else:
-        # Use the provided output path but still keep it in our directory structure
-        video_filename = os.path.basename(args.output)
-        video_path = output_dir / video_filename
-        csv_path = output_dir / f"{os.path.splitext(video_filename)[0]}.csv"
+    # Generate output filenames
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    cam_suffix = "1" if args.cam1 else ""
     
-    # Start camera recording
-    logger.info(f"Starting recording to {video_path}")
+    # Determine video output path (used by GScrop)
+    output_base = f"recording{cam_suffix}_{args.width}x{args.height}_{args.fps}fps_{timestamp}"
+    video_path = str(output_dir / output_base)
+    
+    # CSV output path (used by this script)
+    csv_path = output_dir / f"{output_base}.csv"
+    
+    # If user specified an output path, use that instead
+    if args.output:
+        video_path = args.output
+    
+    # Reset LSL data collector
+    lsl_data = []
+    
+    # Calculate appropriate exposure time if not specified
+    exposure = args.exposure
+    if exposure is None:
+        # Default exposure: try to balance frame rate and exposure
+        if args.fps > 60:
+            exposure = int(min(1000000 / args.fps * 0.8, 10000))
+            logger.info(f"Automatically setting exposure to {exposure}µs for high FPS")
+        else:
+            exposure = 10000  # Default exposure for lower FPS
     
     recording_successful = False
     try:
-        # Reset LSL data collector
-        lsl_data = []
+        # Start camera using GScrop script
+        logger.info(f"Starting recording to {video_path}")
         
-        # Calculate appropriate exposure time if not specified
-        exposure = args.exposure
-        if exposure is None:
-            # Default exposure: try to balance frame rate and exposure
-            # For high FPS, we need shorter exposure
-            if args.fps > 60:
-                exposure = int(min(1000000 / args.fps * 0.8, 10000))
-                logger.info(f"Automatically setting exposure to {exposure}µs for high FPS")
-            else:
-                exposure = 10000  # Default exposure for lower FPS
+        camera_proc = run_gscrop_script(
+            args.width, args.height, args.fps,
+            duration_ms, exposure, video_path,
+            preview=args.preview
+        )
         
-        # Try recording with chosen method
-        if args.simple_mode:
-            camera_proc = start_simple_camera_recording(
-                args.width, args.height, args.fps, 
-                str(video_path), duration_ms, exposure,
-                preview=args.preview
-            )
-        else:
-            camera_proc = start_camera_recording(
-                args.width, args.height, args.fps, 
-                str(video_path), duration_ms, exposure,
-                preview=args.preview
-            )
+        if not camera_proc:
+            logger.error("Failed to start GScrop script")
+            return 1
         
         # Wait for camera process to finish or Ctrl+C
         logger.info(f"Recording started with duration: {args.duration} seconds. Press Ctrl+C to stop earlier.")
         
-        # Allow recording to run for the specified duration
-        recording_start_time = time.time()
+        # Monitor LSL data collection
+        frames_count = 0
+        last_report_time = time.time()
+        
         while camera_proc.poll() is None and not stop_event.is_set():
-            # Check if we've reached our duration limit
-            if duration_ms > 0 and (time.time() - recording_start_time) * 1000 > duration_ms + 1000:
-                logger.info("Recording duration reached, stopping...")
-                break
-                
-            time.sleep(0.1)  # Check more frequently
+            # Sleep briefly
+            time.sleep(0.1)
+            
+            # Periodically report frame count
+            current_time = time.time()
+            if current_time - last_report_time >= 2.0:
+                current_frames = len(lsl_data)
+                new_frames = current_frames - frames_count
+                elapsed = current_time - last_report_time
+                fps_rate = new_frames / elapsed if elapsed > 0 else 0
+                logger.info(f"Current frame rate: {fps_rate:.1f} FPS ({new_frames} frames in {elapsed:.1f}s)")
+                frames_count = current_frames
+                last_report_time = current_time
         
-        # If the process is still running after reaching duration, terminate it
-        if camera_proc.poll() is None:
-            logger.info("Terminating camera process...")
-            camera_proc.terminate()
-            try:
-                camera_proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                logger.warning("Camera process did not terminate gracefully, forcing kill")
-                camera_proc.kill()
-        
-        # Check if video was recorded
-        if os.path.exists(str(video_path)):
-            file_size = os.path.getsize(str(video_path))
-            if file_size > 1000:
-                logger.info(f"Successfully recorded video: {file_size} bytes")
-                recording_successful = True
-            else:
-                logger.warning(f"Video file is very small: {file_size} bytes")
+        # Check exit code
+        exit_code = camera_proc.returncode if camera_proc.returncode is not None else 0
+        if exit_code == 0:
+            logger.info("GScrop script completed successfully")
+            recording_successful = True
         else:
-            logger.error("Video file was not created")
+            logger.error(f"GScrop script exited with error code: {exit_code}")
             
     except KeyboardInterrupt:
         logger.info("Recording stopped by user")
@@ -1077,6 +418,8 @@ def main():
         logger.error(f"Error during recording: {e}")
     finally:
         # Cleanup
+        stop_event.set()
+        
         if camera_process and camera_process.poll() is None:
             logger.info("Terminating camera process...")
             camera_process.terminate()
@@ -1088,31 +431,25 @@ def main():
         # Save LSL data to CSV
         if lsl_data:
             save_lsl_data_to_csv(csv_path)
-            if os.path.exists(str(video_path)):
-                video_size = os.path.getsize(str(video_path))
-                logger.info(f"Video size: {video_size} bytes")
+            logger.info(f"Frames captured: {len(lsl_data)}")
+            
+            # Check for expected video files
+            expected_video = f"{video_path}.mp4" if os.environ.get("cam1") else f"{video_path}.h264"
+            if os.path.exists(expected_video):
+                video_size = os.path.getsize(expected_video)
+                logger.info(f"Video file created: {expected_video} ({video_size} bytes)")
                 if video_size < 1000:
                     logger.warning("Video file is very small! Recording may have failed.")
             else:
-                logger.error(f"Video file was not created: {video_path}")
-            
-            logger.info(f"Frames captured: {len(lsl_data)}")
-            if len(lsl_data) < 5 and args.duration > 1:
-                logger.warning(f"Only {len(lsl_data)} frames were captured. Camera may not be working properly.")
-                
-                # Suggest simple mode if regular mode fails
-                if not args.simple_mode and not recording_successful:
-                    logger.info("Try running with --simple-mode to use minimal camera options")
+                # Try the other extension
+                alt_video = f"{video_path}.h264" if os.environ.get("cam1") else f"{video_path}.mp4"
+                if os.path.exists(alt_video):
+                    video_size = os.path.getsize(alt_video)
+                    logger.info(f"Video file created: {alt_video} ({video_size} bytes)")
+                else:
+                    logger.warning(f"No video file was created at {video_path}.[mp4/h264]")
         else:
             logger.warning("No LSL data was collected during recording")
-            
-            # Suggest simple mode if regular mode fails
-            if not args.simple_mode and not recording_successful:
-                logger.info("Try running with --simple-mode to use minimal camera options")
-        
-        # Analyze PTS file if not on Pi 5
-        if not IS_RPI5:
-            analyze_pts_file()
     
     if recording_successful:
         logger.info("Recording completed successfully")
