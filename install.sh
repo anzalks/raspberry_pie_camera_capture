@@ -10,9 +10,25 @@ if [ "$1" = "local" ]; then
   # Create local directories
   mkdir -p recordings logs
   
-  # Install minimal dependencies
-  echo "Checking Python dependencies..."
-  python3 -m pip install pylsl pyyaml python-dateutil psutil ntfy
+  # Detect virtual environment
+  if [ -n "$VIRTUAL_ENV" ]; then
+    echo "Virtual environment detected: $VIRTUAL_ENV"
+    PYTHON="$VIRTUAL_ENV/bin/python3"
+    PIP="$VIRTUAL_ENV/bin/pip"
+  else
+    echo "No virtual environment detected, using system Python"
+    PYTHON="python3"
+    PIP="python3 -m pip"
+  fi
+  
+  # Install minimal dependencies - skip if running as root to avoid breaking system packages
+  if [ "$EUID" -eq 0 ]; then
+    echo "Running as root - skipping pip installations to avoid breaking system packages"
+    echo "Please install required packages with your system package manager or in a virtual environment"
+  else
+    echo "Checking Python dependencies..."
+    $PIP install pylsl pyyaml python-dateutil psutil ntfy || echo "Warning: Some package installations failed, but continuing anyway"
+  fi
   
   # Print camera information
   echo "Checking for cameras..."
@@ -24,21 +40,21 @@ if [ "$1" = "local" ]; then
   
   # Run test capture first to verify camera works
   echo "Running test capture to verify camera works..."
-  if python3 bin/test_direct_capture.py -d 3; then
+  if $PYTHON bin/test_direct_capture.py -d 3; then
     echo "Test successful, starting main program..."
     
     # Check if running in background
     if [ "$2" = "--background" ]; then
       echo "Running in background..."
       mkdir -p logs
-      nohup python3 -m src.imx296_gs_capture.imx296_capture > logs/imx296_capture.log 2>&1 &
+      nohup $PYTHON -m src.imx296_gs_capture.imx296_capture > logs/imx296_capture.log 2>&1 &
       echo "Program started in background. PID: $!"
       echo "Check logs/imx296_capture.log for output."
       echo "To stop: kill $!"
     else
       # Run in foreground
       echo "Running in foreground (press Ctrl+C to stop)..."
-      python3 -m src.imx296_gs_capture.imx296_capture
+      $PYTHON -m src.imx296_gs_capture.imx296_capture
     fi
   else
     echo "Test capture failed, not starting main program."

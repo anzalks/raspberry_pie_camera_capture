@@ -31,6 +31,11 @@ Run the camera directly from the repository without system-wide installation:
 git clone https://github.com/anzalks/raspberry_pie_camera_capture.git
 cd raspberry_pie_camera_capture
 
+# Set up a virtual environment (recommended)
+python3 -m venv .venv
+source .venv/bin/activate
+pip install pylsl pyyaml python-dateutil psutil ntfy
+
 # Run locally (automatically tests camera first)
 ./install.sh local
 
@@ -42,6 +47,20 @@ This will:
 1. Create local directories (recordings, logs)
 2. Verify the camera works by running a test capture
 3. Run the camera software, saving recordings to the local directory
+
+### Running Without Virtual Environment
+
+If you don't want to use a virtual environment, you'll need to install the required packages with your system package manager:
+
+```bash
+# Install system packages
+sudo apt install python3-pylsl python3-yaml python3-dateutil python3-psutil python3-ntfy
+
+# Then run locally (without sudo)
+./install.sh local
+```
+
+**Important:** Do not use `sudo` with the local mode, as it may cause Python package installation issues on Debian-based systems due to PEP 668 restrictions.
 
 ## System Installation (Optional)
 
