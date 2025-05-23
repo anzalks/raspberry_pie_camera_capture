@@ -17,7 +17,6 @@ import re
 import datetime
 import signal
 import shutil
-import csv
 from pathlib import Path
 
 # Optional import of pylsl - we'll check this later
@@ -40,7 +39,7 @@ logger = logging.getLogger("IMX296Camera")
 stop_event = threading.Event()
 camera_process = None
 lsl_outlet = None
-lsl_data = []  # Store LSL data for CSV export
+lsl_data = []  # Store LSL data
 MARKERS_FILE = "/dev/shm/camera_markers.txt"
 
 def signal_handler(sig, frame):
@@ -88,28 +87,14 @@ def push_lsl_sample(frame_number, timestamp=None):
     if timestamp is None:
         timestamp = time.time()
     
-    # Save data for CSV export
-    lsl_data.append([timestamp, frame_number])
+    # Save data for debugging/analysis
+    lsl_data.append([timestamp, float(frame_number)])
     
     if lsl_outlet:
         try:
             lsl_outlet.push_sample([timestamp, float(frame_number)], timestamp)
         except Exception as e:
             logger.error(f"Error pushing LSL sample: {e}")
-
-def save_lsl_data_to_csv(csv_path):
-    """Save collected LSL data to a CSV file"""
-    global lsl_data
-    
-    try:
-        logger.info(f"Saving LSL data to {csv_path}")
-        with open(csv_path, 'w', newline='') as csvfile:
-            csv_writer = csv.writer(csvfile)
-            csv_writer.writerow(['UnixTimestamp', 'FrameNumber'])
-            csv_writer.writerows(lsl_data)
-        logger.info(f"Saved {len(lsl_data)} LSL data points to CSV")
-    except Exception as e:
-        logger.error(f"Error saving LSL data to CSV: {e}")
 
 def create_output_directory():
     """Create a dated directory structure for recordings"""
@@ -546,9 +531,6 @@ def main():
     output_base = f"recording{cam_suffix}_{args.width}x{args.height}_{args.fps}fps_{timestamp}"
     video_path = str(output_dir / output_base)
     
-    # CSV output path (used by this script)
-    csv_path = output_dir / f"{output_base}.csv"
-    
     # If user specified an output path, use that instead
     if args.output:
         video_path = args.output
@@ -685,9 +667,8 @@ def main():
         logger.info("Waiting for monitoring threads to finish...")
         time.sleep(1)
         
-        # Save LSL data to CSV
+        # Report data collection statistics
         if lsl_data:
-            save_lsl_data_to_csv(csv_path)
             logger.info(f"Frames captured: {len(lsl_data)}")
             
             # Check frame numbers
@@ -709,20 +690,23 @@ def main():
                     logger.info(f"Actual FPS: {actual_fps:.2f} (target: {expected_fps})")
             
             # Check for expected video files
-            expected_video = f"{video_path}.mp4" if os.environ.get("cam1") or "Revision.*: ...17.$" in open("/proc/cpuinfo").read() else f"{video_path}.h264"
-            if os.path.exists(expected_video):
-                video_size = os.path.getsize(expected_video)
-                logger.info(f"Video file created: {expected_video} ({video_size} bytes)")
-                if video_size < 1000:
-                    logger.warning("Video file is very small! Recording may have failed.")
-            else:
-                # Try the other extension
-                alt_video = f"{video_path}.h264" if os.environ.get("cam1") or "Revision.*: ...17.$" in open("/proc/cpuinfo").read() else f"{video_path}.mp4"
-                if os.path.exists(alt_video):
-                    video_size = os.path.getsize(alt_video)
-                    logger.info(f"Video file created: {alt_video} ({video_size} bytes)")
+            try:
+                expected_video = f"{video_path}.mp4" if os.environ.get("cam1") or (os.path.exists("/proc/cpuinfo") and "Revision.*: ...17.$" in open("/proc/cpuinfo").read()) else f"{video_path}.h264"
+                if os.path.exists(expected_video):
+                    video_size = os.path.getsize(expected_video)
+                    logger.info(f"Video file created: {expected_video} ({video_size} bytes)")
+                    if video_size < 1000:
+                        logger.warning("Video file is very small! Recording may have failed.")
                 else:
-                    logger.warning(f"No video file was created at {video_path}.[mp4/h264]")
+                    # Try the other extension
+                    alt_video = f"{video_path}.h264" if os.environ.get("cam1") or (os.path.exists("/proc/cpuinfo") and "Revision.*: ...17.$" in open("/proc/cpuinfo").read()) else f"{video_path}.mp4"
+                    if os.path.exists(alt_video):
+                        video_size = os.path.getsize(alt_video)
+                        logger.info(f"Video file created: {alt_video} ({video_size} bytes)")
+                    else:
+                        logger.warning(f"No video file was created at {video_path}.[mp4/h264]")
+            except Exception as e:
+                logger.warning(f"Error checking video file: {e}")
         else:
             logger.warning("No LSL data was collected during recording")
             
