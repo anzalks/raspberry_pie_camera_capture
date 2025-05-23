@@ -57,11 +57,11 @@ def create_lsl_outlet(name="IMX296Camera", stream_type="Video", fps=100):
         
     try:
         logger.info(f"Creating LSL outlet: {name}")
-        # Create stream info
+        # Create stream info with only one channel for frame numbers
         info = pylsl.StreamInfo(
             name=name,
             type=stream_type,
-            channel_count=2,  # Timestamp and frame number
+            channel_count=1,  # Only frame number
             nominal_srate=fps,
             channel_format=pylsl.cf_double64,
             source_id='imx296_camera'
@@ -69,7 +69,6 @@ def create_lsl_outlet(name="IMX296Camera", stream_type="Video", fps=100):
         
         # Add channel descriptions
         channels = info.desc().append_child("channels")
-        channels.append_child("channel").append_child_value("label", "UnixTimestamp")
         channels.append_child("channel").append_child_value("label", "FrameNumber")
         
         # Create and return the outlet
@@ -81,18 +80,19 @@ def create_lsl_outlet(name="IMX296Camera", stream_type="Video", fps=100):
         return None
 
 def push_lsl_sample(frame_number, timestamp=None):
-    """Push a sample to LSL with timestamp and frame number"""
+    """Push a sample to LSL with only frame number"""
     global lsl_outlet, lsl_data
     
     if timestamp is None:
         timestamp = time.time()
     
-    # Save data for debugging/analysis
+    # Save data for debugging/analysis (still save timestamp internally for stats)
     lsl_data.append([timestamp, float(frame_number)])
     
     if lsl_outlet:
         try:
-            lsl_outlet.push_sample([timestamp, float(frame_number)], timestamp)
+            # Only push frame number as the sample
+            lsl_outlet.push_sample([float(frame_number)], timestamp)
         except Exception as e:
             logger.error(f"Error pushing LSL sample: {e}")
 
@@ -384,6 +384,64 @@ def monitor_process_output(pipe, name):
             
     logger.debug(f"End of {name} pipe monitoring")
 
+def validate_camera_config(width, height, fps):
+    """
+    Validate if the requested camera configuration is likely to work
+    Returns a tuple of (is_valid, message)
+    """
+    # Known limitations of IMX296 global shutter camera
+    max_res_product = 1440 * 1080  # Maximum pixel count
+    max_data_rate = 1920 * 1080 * 60  # Approx maximum data rate (1080p @ 60fps)
+    max_high_fps = 120  # Maximum FPS for standard operation
+    
+    # Current configuration's metrics
+    res_product = width * height
+    data_rate = width * height * fps
+    
+    # Valid resolution check (must be <= max supported by IMX296)
+    if width > 1440 or height > 1080:
+        return False, f"Resolution {width}x{height} exceeds camera maximum dimensions (1440x1080)"
+    
+    # Valid resolution product check
+    if res_product > max_res_product:
+        return False, f"Resolution {width}x{height} exceeds camera capability ({res_product} > {max_res_product} pixels)"
+    
+    # Check if data rate is excessive
+    if data_rate > max_data_rate:
+        if fps > max_high_fps:
+            # If FPS is very high, suggest lower resolution
+            suggested_width = int(((max_data_rate / fps) ** 0.5) // 2) * 2  # Even number
+            suggested_height = suggested_width
+            return False, (f"Resolution {width}x{height} at {fps}fps exceeds camera data rate capability. "
+                          f"For {fps}fps, try {suggested_width}x{suggested_height} or lower.")
+        else:
+            # If resolution is very high, suggest lower FPS
+            suggested_fps = max(30, int(max_data_rate / res_product))
+            return False, (f"Resolution {width}x{height} at {fps}fps exceeds camera data rate capability. "
+                          f"For this resolution, try {suggested_fps}fps or lower.")
+    
+    # Check for extreme high-speed modes
+    if fps > 200:
+        max_res_for_fps = int(((max_data_rate / fps) ** 0.5) // 2) * 2
+        return False, f"FPS {fps} is too high. Maximum supported is ~200fps at low resolutions (try {max_res_for_fps}x{max_res_for_fps} or lower)."
+    
+    # Specific validation for common issues
+    if width > 640 and fps > 120:
+        suggested_fps = 120
+        suggested_width = 640 if width > 640 else width
+        suggested_height = 640 if height > 640 else height
+        return False, f"Resolution {width}x{height} at {fps}fps may be unstable. Try {suggested_width}x{suggested_height} at {suggested_fps}fps."
+    
+    # Recommended configurations based on experience
+    recommended_configs = [
+        (400, 400, 100),  # Good balance for 100fps
+        (640, 480, 90),   # Standard VGA
+        (800, 600, 60),   # SVGA
+        (320, 240, 200),  # Low-res high speed
+    ]
+    
+    return True, "Configuration appears to be within camera capabilities"
+
 def main():
     """Main function"""
     global lsl_outlet, stop_event, lsl_data, MARKERS_FILE
@@ -409,6 +467,7 @@ def main():
     parser.add_argument('--test-markers', action='store_true', help='Test markers file creation and monitoring')
     parser.add_argument('--no-awb', action='store_true', help='Disable AWB (Auto White Balance) adjustments')
     parser.add_argument('--direct-pts', action='store_true', help='Directly use PTS file for frame timing if available')
+    parser.add_argument('--force', action='store_true', help='Force camera configuration even if it might not work')
     args = parser.parse_args()
     
     # Convert duration from seconds to milliseconds
@@ -484,6 +543,20 @@ def main():
     # Check if width and height are even numbers
     if not check_even_dimensions(args.width, args.height):
         return 1
+    
+    # Validate camera configuration
+    if not args.force:
+        is_valid, message = validate_camera_config(args.width, args.height, args.fps)
+        if not is_valid:
+            logger.error(f"Invalid camera configuration: {message}")
+            logger.error("Use --force to try anyway, or adjust settings to a supported configuration")
+            logger.info("Recommended configurations:")
+            logger.info("  400x400 @ 100fps (balanced)")
+            logger.info("  640x480 @ 90fps (standard)")
+            logger.info("  320x240 @ 200fps (high speed)")
+            return 1
+        else:
+            logger.info(message)
          
     # Validate recording duration
     if duration_ms <= 0:
@@ -493,7 +566,7 @@ def main():
     
     # Check if FPS is reasonable
     if args.fps > 120:
-        logger.warning(f"Very high FPS requested ({args.fps}). The camera might not achieve this rate.")
+        logger.warning(f"High FPS requested ({args.fps}). The camera might not achieve this rate.")
         logger.warning("Consider reducing resolution for better high-FPS performance.")
     
     # Set camera selection environment variable if needed
@@ -543,7 +616,11 @@ def main():
     if exposure is None:
         # Default exposure: try to balance frame rate and exposure
         if args.fps > 60:
+            # For high FPS, use shorter exposure
             exposure = int(min(1000000 / args.fps * 0.8, 10000))
+            if args.fps > 100:
+                # For very high FPS, need even shorter exposure
+                exposure = int(min(1000000 / args.fps * 0.5, 5000))
             logger.info(f"Automatically setting exposure to {exposure}µs for high FPS")
         else:
             exposure = 10000  # Default exposure for lower FPS

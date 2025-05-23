@@ -5,15 +5,49 @@
 # Enable debug output
 set -x
 
-if [[ $# -lt 4 ]];  then  echo "Format: [narrow=1] [cam1=1] $0 width height framerate ms [us] [output_path]"; exit;  fi
-if [[ "$(( $1 % 2 ))" -eq 1 ]];  then echo "width has to be even"; exit;  fi
-if [[ "$(( $2 % 2 ))" -eq 1 ]];  then echo "height has to be even"; exit;  fi
+# Exit on any errors to ensure proper cleanup
+trap 'cleanup_and_exit' ERR
+
+# Cleanup function to handle errors gracefully
+cleanup_and_exit() {
+    local exit_code=$?
+    echo "Error occurred (code $exit_code). Cleaning up and exiting." >&2
+    
+    # Clean up temp files if needed
+    if [[ -f "$MARKERS_FILE" ]]; then
+        echo "Camera acquisition failed!" >> "$MARKERS_FILE" 
+        echo "Recording failed with error code $exit_code" >> "$MARKERS_FILE"
+    fi
+    
+    exit $exit_code
+}
+
+# Validate input
+if [[ $# -lt 4 ]];  then  echo "Format: [narrow=1] [cam1=1] $0 width height framerate ms [us] [output_path]"; exit 1;  fi
+if [[ "$(( $1 % 2 ))" -eq 1 ]];  then echo "width has to be even"; exit 2;  fi
+if [[ "$(( $2 % 2 ))" -eq 1 ]];  then echo "height has to be even"; exit 2;  fi
 
 # Get parameters
 WIDTH="$1"
 HEIGHT="$2"
 FRAMERATE="$3"
 DURATION_MS="$4"
+
+# Validate camera settings
+if (( WIDTH > 1440 )) || (( HEIGHT > 1080 )); then
+    echo "ERROR: Resolution ${WIDTH}x${HEIGHT} exceeds maximum camera resolution (1440x1080)" >&2
+    exit 3
+fi
+
+if (( WIDTH * HEIGHT > 1440 * 1080 )); then
+    echo "ERROR: Resolution ${WIDTH}x${HEIGHT} exceeds maximum pixel count (1440x1080)" >&2
+    exit 3
+fi
+
+if (( FRAMERATE > 200 )); then
+    echo "ERROR: Frame rate $FRAMERATE exceeds maximum recommended value (200)" >&2
+    exit 3
+fi
 
 # Output important parameters
 echo "Starting capture: ${WIDTH}x${HEIGHT} @ ${FRAMERATE}fps for ${DURATION_MS}ms" >&2
@@ -34,6 +68,7 @@ fi
 # Create markers file for LSL synchronization
 MARKERS_FILE="/dev/shm/camera_markers.txt"
 echo "Starting recording" > "$MARKERS_FILE"
+echo "CONFIG: ${WIDTH}x${HEIGHT}@${FRAMERATE}fps" >> "$MARKERS_FILE"
 echo "Markers file created at $MARKERS_FILE" >&2
 chmod 666 "$MARKERS_FILE" 2>/dev/null || true
 
@@ -70,17 +105,24 @@ do
     if media-ctl -d /dev/media$m --set-v4l2 "'imx296 $d-001a':0 [fmt:SBGGR10_1X10/${WIDTH}x${HEIGHT} crop:($(( (1440 - WIDTH) / 2 )),$(( (1088 - HEIGHT) / 2 )))/${WIDTH}x$HEIGHT]" -v 2>/dev/null; then
         MEDIA_DEVICE="/dev/media$m"
         echo "Successfully configured media device: $MEDIA_DEVICE" >&2
+        echo "MEDIA_DEVICE: $MEDIA_DEVICE" >> "$MARKERS_FILE"
         break
     fi
 done
 
 if [[ -z "$MEDIA_DEVICE" ]]; then
-    echo "WARNING: Could not configure any media device" >&2
-    # Continue anyway to attempt recording
+    echo "ERROR: Could not configure any media device" >&2
+    echo "ERROR: Could not configure any media device" >> "$MARKERS_FILE"
+    exit 4
 fi
 
 # Check if camera is detected
 libcamera-hello --list-cameras ; echo
+if [ $? -ne 0 ]; then
+    echo "ERROR: Camera not detected by libcamera-hello" >&2
+    echo "ERROR: Camera not detected by libcamera-hello" >> "$MARKERS_FILE"
+    exit 5
+fi
 
 # Prepare for recording
 rm -f /dev/shm/tst.pts
@@ -100,6 +142,11 @@ process_output() {
     local line="$1"
     local frame_num="$2"
     echo "$line" >&2
+    
+    # Check for errors
+    if [[ "$line" == *"ERROR"* || "$line" == *"error"* || "$line" == *"failed"* ]]; then
+        echo "ERROR: $line" >> "$MARKERS_FILE"
+    fi
 
     # Check for various frame indicators - be more thorough
     if [[ "$line" == *"frame"* || "$line" == *"Frame"* ]]; then
@@ -143,13 +190,30 @@ then
         $SHTR $5 -o $OUTPUT_FILE -n"
     
     echo "Command: $RPICAM_CMD" >&2
+    echo "COMMAND: $RPICAM_CMD" >> "$MARKERS_FILE"
     
-    # Execute command and capture output
+    # Execute command and capture output with error checking
     frame_num=0
+    set +e  # Temporarily disable exit on error for eval
     eval "$RPICAM_CMD" 2>&1 | while read -r line; do
         process_output "$line" "$frame_num"
         frame_num=$?
+        
+        # Check for errors in output
+        if [[ "$line" == *"ERROR"* || "$line" == *"failed"* || "$line" == *"Failed"* ]]; then
+            echo "ERROR: $line" >> "$MARKERS_FILE"
+            echo "Camera error detected!" >&2
+        fi
     done
+    
+    RPICAM_EXIT_CODE=${PIPESTATUS[0]}
+    set -e  # Re-enable exit on error
+    
+    if [ $RPICAM_EXIT_CODE -ne 0 ]; then
+        echo "ERROR: rpicam-vid exited with code $RPICAM_EXIT_CODE" >&2
+        echo "ERROR: rpicam-vid exited with code $RPICAM_EXIT_CODE" >> "$MARKERS_FILE"
+        cleanup_and_exit
+    fi
 else
     # Older Raspberry Pi - use libcamera-vid with PTS file
     if [[ -n "$OUTPUT_PATH" ]]; then
@@ -171,13 +235,30 @@ else
         $SHTR $5 -o $OUTPUT_FILE -n"
         
     echo "Command: $LIBCAM_CMD" >&2
+    echo "COMMAND: $LIBCAM_CMD" >> "$MARKERS_FILE"
     
-    # Execute the command and process output for frame markers
+    # Execute the command and process output for frame markers with error checking
     frame_num=0
+    set +e  # Temporarily disable exit on error for eval
     eval "$LIBCAM_CMD" 2>&1 | while read -r line; do
         process_output "$line" "$frame_num"
         frame_num=$?
+        
+        # Check for errors in output
+        if [[ "$line" == *"ERROR"* || "$line" == *"failed"* || "$line" == *"Failed"* ]]; then
+            echo "ERROR: $line" >> "$MARKERS_FILE"
+            echo "Camera error detected!" >&2
+        fi
     done
+    
+    LIBCAM_EXIT_CODE=${PIPESTATUS[0]}
+    set -e  # Re-enable exit on error
+    
+    if [ $LIBCAM_EXIT_CODE -ne 0 ]; then
+        echo "ERROR: libcamera-vid exited with code $LIBCAM_EXIT_CODE" >&2
+        echo "ERROR: libcamera-vid exited with code $LIBCAM_EXIT_CODE" >> "$MARKERS_FILE"
+        cleanup_and_exit
+    fi
     
     # Run PTS analysis
     if command -v ptsanalyze > /dev/null; then
@@ -202,9 +283,27 @@ ELAPSED_MS=$(echo "($END_TIME - $START_TIME) * 1000" | bc)
 echo "Recording end time: $END_TIME" >> "$MARKERS_FILE"
 echo "Recording elapsed time: $ELAPSED_MS ms" >> "$MARKERS_FILE"
 
+# Verify output file was created
+if [[ -n "$OUTPUT_FILE" && ! -f "$OUTPUT_FILE" ]]; then
+    echo "ERROR: Output file was not created: $OUTPUT_FILE" >&2
+    echo "ERROR: Output file was not created: $OUTPUT_FILE" >> "$MARKERS_FILE"
+    exit 6
+fi
+
+# Check if file size is reasonable
+if [[ -f "$OUTPUT_FILE" ]]; then
+    FILE_SIZE=$(stat -c%s "$OUTPUT_FILE")
+    echo "Output file size: $FILE_SIZE bytes" >> "$MARKERS_FILE"
+    
+    if [ "$FILE_SIZE" -lt 1000 ]; then
+        echo "WARNING: Output file is very small. Recording may have failed." >&2
+        echo "WARNING: Output file is very small. Recording may have failed." >> "$MARKERS_FILE"
+    fi
+fi
+
 echo "Recording complete. Output saved to: $OUTPUT_FILE" >&2
 echo "Frame markers saved to: $MARKERS_FILE" >&2
-echo "Total frames detected: $(grep -v "Starting" "$MARKERS_FILE" | wc -l)" >&2
+echo "Total frames detected: $(grep -v "Starting\|Recording\|CONFIG\|COMMAND\|ERROR\|MEDIA_DEVICE" "$MARKERS_FILE" | wc -l)" >&2
 echo "Actual duration: ${ELAPSED_MS}ms (requested: ${DURATION_MS}ms)" >&2
 
 # Disable debug output
