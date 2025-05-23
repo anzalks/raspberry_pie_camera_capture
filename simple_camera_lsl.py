@@ -17,6 +17,7 @@ import re
 import datetime
 import signal
 import shutil
+import csv
 from pathlib import Path
 
 # Optional import of pylsl - we'll check this later
@@ -43,6 +44,7 @@ fps_counter = 0
 last_fps_time = time.time()
 IS_RPI5 = False  # Will be set based on detection
 PTS_FILE_PATH = "/dev/shm/camera.pts"
+lsl_data = []  # Store LSL data for CSV export
 
 def signal_handler(sig, frame):
     """Handle Ctrl+C gracefully"""
@@ -191,15 +193,46 @@ def create_lsl_outlet(name="IMX296Camera", stream_type="Video", fps=60):
 
 def push_lsl_sample(frame_number, timestamp=None):
     """Push a sample to LSL with timestamp and frame number"""
-    global lsl_outlet
+    global lsl_outlet, lsl_data
+    
+    if timestamp is None:
+        timestamp = time.time()
+    
+    # Save data for CSV export
+    lsl_data.append([timestamp, frame_number])
     
     if lsl_outlet:
         try:
-            if timestamp is None:
-                timestamp = time.time()
             lsl_outlet.push_sample([timestamp, float(frame_number)], timestamp)
         except Exception as e:
             logger.error(f"Error pushing LSL sample: {e}")
+
+def save_lsl_data_to_csv(csv_path):
+    """Save collected LSL data to a CSV file"""
+    global lsl_data
+    
+    try:
+        logger.info(f"Saving LSL data to {csv_path}")
+        with open(csv_path, 'w', newline='') as csvfile:
+            csv_writer = csv.writer(csvfile)
+            csv_writer.writerow(['UnixTimestamp', 'FrameNumber'])
+            csv_writer.writerows(lsl_data)
+        logger.info(f"Saved {len(lsl_data)} LSL data points to CSV")
+    except Exception as e:
+        logger.error(f"Error saving LSL data to CSV: {e}")
+
+def create_output_directory():
+    """Create a dated directory structure for recordings"""
+    # Create main recordings directory
+    recordings_dir = Path("recordings")
+    recordings_dir.mkdir(exist_ok=True)
+    
+    # Create dated subdirectory (YYYY-MM-DD)
+    today = datetime.datetime.now().strftime("%Y-%m-%d")
+    date_dir = recordings_dir / today
+    date_dir.mkdir(exist_ok=True)
+    
+    return date_dir
 
 def parse_pts_file(pts_file_path):
     """Parse the PTS file to get frame timestamps"""
@@ -217,7 +250,7 @@ def parse_pts_file(pts_file_path):
         logger.error(f"Error parsing PTS file: {e}")
         return []
 
-def start_camera_recording(width, height, fps, output_path, duration_ms=0, exposure_us=None):
+def start_camera_recording(width, height, fps, output_path, duration_ms=0, exposure_us=None, preview=False):
     """Start camera recording using appropriate command based on Pi version"""
     global camera_process, IS_RPI5, PTS_FILE_PATH
     
@@ -251,6 +284,11 @@ def start_camera_recording(width, height, fps, output_path, duration_ms=0, expos
     if os.environ.get("cam1"):
         camera_arg = ["--camera", "1"]
     
+    # Determine preview option
+    preview_arg = []
+    if preview:
+        preview_arg = ["--preview"] if not IS_RPI5 else ["--display"]
+    
     # Build appropriate command based on Pi version
     if IS_RPI5:
         # For Pi 5, use rpicam-vid
@@ -264,6 +302,7 @@ def start_camera_recording(width, height, fps, output_path, duration_ms=0, expos
             "--framerate", str(fps),
             *duration_arg,
             *exposure_arg,
+            *preview_arg,
             "-o", output_path
         ]
     else:
@@ -278,6 +317,7 @@ def start_camera_recording(width, height, fps, output_path, duration_ms=0, expos
             "--save-pts", PTS_FILE_PATH,
             *duration_arg,
             *exposure_arg,
+            *preview_arg,
             "--codec", "h264",
             "-o", output_path
         ]
@@ -401,7 +441,7 @@ def check_even_dimensions(width, height):
 
 def main():
     """Main function"""
-    global lsl_outlet, stop_event, IS_RPI5
+    global lsl_outlet, stop_event, IS_RPI5, lsl_data
     
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Simplified IMX296 Camera Recorder with LSL')
@@ -414,6 +454,7 @@ def main():
     parser.add_argument('--lsl-name', type=str, default='IMX296Camera', help='LSL stream name (default: IMX296Camera)')
     parser.add_argument('--lsl-type', type=str, default='Video', help='LSL stream type (default: Video)')
     parser.add_argument('--cam1', action='store_true', help='Use camera 1 instead of camera 0')
+    parser.add_argument('--preview', action='store_true', help='Show camera preview during recording')
     args = parser.parse_args()
     
     # Check if width and height are even numbers
@@ -447,20 +488,33 @@ def main():
     if LSL_AVAILABLE:
         lsl_outlet = create_lsl_outlet(name=args.lsl_name, stream_type=args.lsl_type, fps=args.fps)
     
-    # Generate output filename if not specified
+    # Create dated output directory
+    output_dir = create_output_directory()
+    
+    # Generate output filenames if not specified
     if not args.output:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         suffix = ".mp4" if IS_RPI5 else ".h264"
         cam_suffix = "1" if args.cam1 else ""
-        output_dir = "/dev/shm" if args.duration > 0 else "."
-        args.output = f"{output_dir}/recording{cam_suffix}_{args.width}x{args.height}_{args.fps}fps_{timestamp}{suffix}"
+        filename_base = f"recording{cam_suffix}_{args.width}x{args.height}_{args.fps}fps_{timestamp}"
+        video_path = output_dir / f"{filename_base}{suffix}"
+        csv_path = output_dir / f"{filename_base}.csv"
+    else:
+        # Use the provided output path but still keep it in our directory structure
+        video_filename = os.path.basename(args.output)
+        video_path = output_dir / video_filename
+        csv_path = output_dir / f"{os.path.splitext(video_filename)[0]}.csv"
     
     # Start camera recording
-    logger.info(f"Starting recording to {args.output}")
+    logger.info(f"Starting recording to {video_path}")
     try:
+        # Reset LSL data collector
+        lsl_data = []
+        
         camera_proc = start_camera_recording(
             args.width, args.height, args.fps, 
-            args.output, args.duration, args.exposure
+            str(video_path), args.duration, args.exposure,
+            preview=args.preview
         )
         
         # Wait for camera process to finish or Ctrl+C
@@ -479,6 +533,10 @@ def main():
                 camera_process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 camera_process.kill()
+        
+        # Save LSL data to CSV
+        if lsl_data:
+            save_lsl_data_to_csv(csv_path)
         
         # Analyze PTS file if not on Pi 5
         if not IS_RPI5:
