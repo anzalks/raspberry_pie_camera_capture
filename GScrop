@@ -135,12 +135,11 @@ then
     # Start rpicam-vid with configurable AWB and tuned parameters
     # Add --verbose for more frame info
     # Use --timeout for full duration control in ms
-    # Specify keyframes more frequently for better frame accuracy
     RPICAM_CMD="rpicam-vid $workaround --verbose ${cam1:+--camera 1} \
         --width $WIDTH --height $HEIGHT \
         --denoise cdn_off --framerate $FRAMERATE \
         $AWB_PARAM --timeout $DURATION_MS \
-        --quality 75 --keyframes 20 \
+        --quality 75 \
         $SHTR $5 -o $OUTPUT_FILE -n"
     
     echo "Command: $RPICAM_CMD" >&2
@@ -164,12 +163,11 @@ else
     # Start libcamera-vid with configurable AWB and tuned parameters
     # Add --verbose for more frame info
     # Use -t for full duration control in ms
-    # Add inline pts data for better frame accuracy
     LIBCAM_CMD="libcamera-vid $workaround --verbose \
         --width $WIDTH --height $HEIGHT \
         --denoise cdn_off --framerate $FRAMERATE \
         $AWB_PARAM --save-pts /dev/shm/tst.pts \
-        -t $DURATION_MS --quality 75 --inline \
+        -t $DURATION_MS --quality 75 \
         $SHTR $5 -o $OUTPUT_FILE -n"
         
     echo "Command: $LIBCAM_CMD" >&2

@@ -180,6 +180,7 @@ def monitor_markers_file():
     last_frame = 0
     check_count = 0
     last_check_time = time.time()
+    processed_frames = 0
     
     logger.info("Starting to monitor markers file for frame data")
     
@@ -207,8 +208,15 @@ def monitor_markers_file():
                         if check_count % 5 == 0:
                             logger.debug(f"No new lines in markers file for {int(time.time() - last_check_time)}s, checking file size: {current_pos} bytes")
                             
+                            # Check file content from the beginning if needed
+                            if len(lsl_data) == 0 and current_pos > 0:
+                                logger.debug("No LSL data collected yet, reading file from beginning")
+                                f.seek(0)
+                                new_lines = f.readlines()
+                                current_pos = f.tell()
+                                last_pos = 0
                             # Check if file has grown but our position is incorrect
-                            if current_pos > last_pos + 100:
+                            elif current_pos > last_pos + 100:
                                 logger.warning(f"File has grown significantly but no new lines detected, resetting position")
                                 last_pos = 0
                                 continue
@@ -221,7 +229,7 @@ def monitor_markers_file():
                         
                         for line in new_lines:
                             line = line.strip()
-                            if not line or line.startswith("Starting"):
+                            if not line or line.startswith("Starting") or "Recording" in line:
                                 continue
                                 
                             # Parse frame number and timestamp
@@ -237,10 +245,12 @@ def monitor_markers_file():
                                             frame_time = float(parts[1])
                                             
                                             # Only push if this is a new frame
-                                            if frame_num > last_frame:
+                                            if frame_num > last_frame or frame_time > time.time() - 60:
                                                 push_lsl_sample(frame_num, frame_time)
                                                 last_frame = frame_num
-                                                logger.debug(f"Pushed LSL sample: Frame {frame_num}, Time {frame_time}")
+                                                processed_frames += 1
+                                                if processed_frames % 50 == 0:
+                                                    logger.debug(f"Processed {processed_frames} frames, latest: Frame {frame_num}, Time {frame_time}")
                                         except ValueError:
                                             # Second part is not a float timestamp
                                             logger.debug(f"Invalid timestamp in line: {line}")
@@ -261,7 +271,7 @@ def monitor_markers_file():
             logger.warning(f"Error monitoring markers file: {e}")
             time.sleep(0.5)
     
-    logger.info("Stopped monitoring markers file")
+    logger.info(f"Stopped monitoring markers file after processing {processed_frames} frames")
 
 def monitor_pts_file(pts_file="/dev/shm/tst.pts"):
     """Directly monitor the PTS file for frame timestamps"""
@@ -318,13 +328,8 @@ def run_gscrop_script(width, height, fps, duration_ms, exposure_us=None, output_
     """Run the GScrop shell script to capture video"""
     global camera_process, stop_event
     
-    # Convert duration to milliseconds and add a buffer for full capture
-    # Camera startup takes time, so we add 15% to the duration to ensure we get the full recording
-    adjusted_duration_ms = int(duration_ms * 1.15)
-    logger.info(f"Using adjusted duration of {adjusted_duration_ms}ms (added 15% buffer to requested {duration_ms}ms)")
-    
-    # Build command line arguments
-    cmd = ["./GScrop", str(width), str(height), str(fps), str(adjusted_duration_ms)]
+    # Build command line arguments - use exact duration as requested
+    cmd = ["./GScrop", str(width), str(height), str(fps), str(duration_ms)]
     
     # Add exposure if specified
     if exposure_us is not None:
@@ -598,18 +603,12 @@ def main():
         last_report_time = time.time()
         start_time = time.time()
         
-        # Allow threads to run a bit before we start checking
-        time.sleep(0.5)
+        # Give the threads more time to establish and start collecting data
+        time.sleep(1.0)
         
+        # Wait for recording to complete
         while camera_proc.poll() is None and not stop_event.is_set():
-            # Check if we've been running too long (30% longer than expected)
             current_time = time.time()
-            if duration_ms > 0 and (current_time - start_time) * 1000 > duration_ms * 1.3:
-                logger.warning("Recording taking longer than expected, checking process...")
-                if camera_proc.poll() is None:
-                    logger.warning("Process still running after expected duration, trying to terminate...")
-                    camera_proc.terminate()
-                    break
             
             # Sleep briefly
             time.sleep(0.1)
