@@ -318,8 +318,13 @@ def run_gscrop_script(width, height, fps, duration_ms, exposure_us=None, output_
     """Run the GScrop shell script to capture video"""
     global camera_process, stop_event
     
+    # Convert duration to milliseconds and add a buffer for full capture
+    # Camera startup takes time, so we add 15% to the duration to ensure we get the full recording
+    adjusted_duration_ms = int(duration_ms * 1.15)
+    logger.info(f"Using adjusted duration of {adjusted_duration_ms}ms (added 15% buffer to requested {duration_ms}ms)")
+    
     # Build command line arguments
-    cmd = ["./GScrop", str(width), str(height), str(fps), str(duration_ms)]
+    cmd = ["./GScrop", str(width), str(height), str(fps), str(adjusted_duration_ms)]
     
     # Add exposure if specified
     if exposure_us is not None:
@@ -359,9 +364,6 @@ def run_gscrop_script(width, height, fps, duration_ms, exposure_us=None, output_
         # Start threads to monitor stdout and stderr
         threading.Thread(target=monitor_process_output, args=(camera_process.stdout, "stdout"), daemon=True).start()
         threading.Thread(target=monitor_process_output, args=(camera_process.stderr, "stderr"), daemon=True).start()
-        
-        # Start thread to monitor the markers file
-        threading.Thread(target=monitor_markers_file, daemon=True).start()
         
         return camera_process
     except Exception as e:
@@ -574,29 +576,38 @@ def main():
         if not camera_proc:
             logger.error("Failed to start GScrop script")
             return 1
+            
+        # Start markers file monitoring thread - EXPLICITLY ON NEW THREAD
+        logger.info("Starting markers file monitoring on separate thread")
+        markers_thread = threading.Thread(target=monitor_markers_file, daemon=True)
+        markers_thread.start()
         
-        # Wait for camera process to finish or Ctrl+C
-        logger.info(f"Recording started with duration: {args.duration} seconds. Press Ctrl+C to stop earlier.")
-        
-        # Start PTS monitoring if requested
+        # Start PTS monitoring if requested - also on separate thread
         pts_thread = None
         if args.direct_pts:
+            logger.info("Starting PTS file monitoring on separate thread")
             pts_thread = threading.Thread(target=monitor_pts_file, daemon=True)
             pts_thread.start()
             logger.info("Started direct PTS file monitoring")
+        
+        # Wait for camera process to finish or Ctrl+C
+        logger.info(f"Recording started with duration: {args.duration} seconds. Press Ctrl+C to stop earlier.")
         
         # Monitor LSL data collection
         frames_count = 0
         last_report_time = time.time()
         start_time = time.time()
         
+        # Allow threads to run a bit before we start checking
+        time.sleep(0.5)
+        
         while camera_proc.poll() is None and not stop_event.is_set():
-            # Check if we've been running too long
+            # Check if we've been running too long (30% longer than expected)
             current_time = time.time()
-            if duration_ms > 0 and (current_time - start_time) * 1000 > duration_ms + 2000:
+            if duration_ms > 0 and (current_time - start_time) * 1000 > duration_ms * 1.3:
                 logger.warning("Recording taking longer than expected, checking process...")
                 if camera_proc.poll() is None:
-                    logger.warning("Process still running, trying to terminate...")
+                    logger.warning("Process still running after expected duration, trying to terminate...")
                     camera_proc.terminate()
                     break
             
@@ -609,7 +620,20 @@ def main():
                 new_frames = current_frames - frames_count
                 elapsed = current_time - last_report_time
                 fps_rate = new_frames / elapsed if elapsed > 0 else 0
+                
+                # Calculate expected frames vs actual
+                total_elapsed = current_time - start_time
+                expected_frames = int(total_elapsed * args.fps)
+                
                 logger.info(f"Current frame rate: {fps_rate:.1f} FPS ({new_frames} frames in {elapsed:.1f}s)")
+                
+                if expected_frames > 0 and current_frames > 0:
+                    capture_ratio = current_frames / expected_frames
+                    logger.info(f"Capture ratio: {capture_ratio:.2f} ({current_frames}/{expected_frames} frames)")
+                    
+                    # Alert if we're capturing too few frames
+                    if capture_ratio < 0.5 and current_time - start_time > 3:
+                        logger.warning(f"Low capture ratio detected: {capture_ratio:.2f}. Check system performance.")
                 
                 if args.debug and new_frames == 0 and current_frames == 0:
                     logger.debug("No frames detected, checking markers file...")
@@ -657,14 +681,36 @@ def main():
                 camera_process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 camera_process.kill()
+                
+        # Wait for threads to finish
+        logger.info("Waiting for monitoring threads to finish...")
+        time.sleep(1)
         
         # Save LSL data to CSV
         if lsl_data:
             save_lsl_data_to_csv(csv_path)
             logger.info(f"Frames captured: {len(lsl_data)}")
             
+            # Check frame numbers
+            if len(lsl_data) > 1:
+                first_frame = int(lsl_data[0][1])
+                last_frame = int(lsl_data[-1][1])
+                frame_count = len(lsl_data)
+                logger.info(f"Frame range: {first_frame} to {last_frame} ({frame_count} frames)")
+                
+                # Analyze frame timestamps
+                first_ts = float(lsl_data[0][0])
+                last_ts = float(lsl_data[-1][0])
+                captured_duration = last_ts - first_ts
+                logger.info(f"Captured duration: {captured_duration:.3f}s")
+                
+                if captured_duration > 0:
+                    actual_fps = frame_count / captured_duration
+                    expected_fps = args.fps
+                    logger.info(f"Actual FPS: {actual_fps:.2f} (target: {expected_fps})")
+            
             # Check for expected video files
-            expected_video = f"{video_path}.mp4" if os.environ.get("cam1") else f"{video_path}.h264"
+            expected_video = f"{video_path}.mp4" if os.environ.get("cam1") or "Revision.*: ...17.$" in open("/proc/cpuinfo").read() else f"{video_path}.h264"
             if os.path.exists(expected_video):
                 video_size = os.path.getsize(expected_video)
                 logger.info(f"Video file created: {expected_video} ({video_size} bytes)")
@@ -672,7 +718,7 @@ def main():
                     logger.warning("Video file is very small! Recording may have failed.")
             else:
                 # Try the other extension
-                alt_video = f"{video_path}.h264" if os.environ.get("cam1") else f"{video_path}.mp4"
+                alt_video = f"{video_path}.h264" if os.environ.get("cam1") or "Revision.*: ...17.$" in open("/proc/cpuinfo").read() else f"{video_path}.mp4"
                 if os.path.exists(alt_video):
                     video_size = os.path.getsize(alt_video)
                     logger.info(f"Video file created: {alt_video} ({video_size} bytes)")

@@ -9,6 +9,15 @@ if [[ $# -lt 4 ]];  then  echo "Format: [narrow=1] [cam1=1] $0 width height fram
 if [[ "$(( $1 % 2 ))" -eq 1 ]];  then echo "width has to be even"; exit;  fi
 if [[ "$(( $2 % 2 ))" -eq 1 ]];  then echo "height has to be even"; exit;  fi
 
+# Get parameters
+WIDTH="$1"
+HEIGHT="$2"
+FRAMERATE="$3"
+DURATION_MS="$4"
+
+# Output important parameters
+echo "Starting capture: ${WIDTH}x${HEIGHT} @ ${FRAMERATE}fps for ${DURATION_MS}ms" >&2
+
 # Set up shutter parameter if provided
 SHTR=""; if [[ $# -gt 4 ]]; then SHTR="--shutter"; fi
 
@@ -58,7 +67,7 @@ MEDIA_DEVICE=""
 for((m=0; m<=5; ++m))
 do
     echo "Trying media device /dev/media$m" >&2
-    if media-ctl -d /dev/media$m --set-v4l2 "'imx296 $d-001a':0 [fmt:SBGGR10_1X10/${1}x${2} crop:($(( (1440 - $1) / 2 )),$(( (1088 - $2) / 2 )))/${1}x$2]" -v 2>/dev/null; then
+    if media-ctl -d /dev/media$m --set-v4l2 "'imx296 $d-001a':0 [fmt:SBGGR10_1X10/${WIDTH}x${HEIGHT} crop:($(( (1440 - WIDTH) / 2 )),$(( (1088 - HEIGHT) / 2 )))/${WIDTH}x$HEIGHT]" -v 2>/dev/null; then
         MEDIA_DEVICE="/dev/media$m"
         echo "Successfully configured media device: $MEDIA_DEVICE" >&2
         break
@@ -81,6 +90,10 @@ FIFO="/dev/shm/camera_fifo"
 rm -f "$FIFO"
 mkfifo "$FIFO"
 chmod 666 "$FIFO" 2>/dev/null || true
+
+# Record start time for precise duration tracking
+START_TIME=$(date +%s.%N)
+echo "Recording start time: $START_TIME" >> "$MARKERS_FILE"
 
 # Function to process output and detect frames
 process_output() {
@@ -119,9 +132,17 @@ then
     
     echo "Starting rpicam-vid with output to $OUTPUT_FILE" >&2
     
-    # Start rpicam-vid with configurable AWB
+    # Start rpicam-vid with configurable AWB and tuned parameters
     # Add --verbose for more frame info
-    RPICAM_CMD="rpicam-vid $workaround --verbose ${cam1:+--camera 1} --width $1 --height $2 --denoise cdn_off --framerate $3 $AWB_PARAM -t $4 $SHTR $5 -o $OUTPUT_FILE -n"
+    # Use --timeout for full duration control in ms
+    # Specify keyframes more frequently for better frame accuracy
+    RPICAM_CMD="rpicam-vid $workaround --verbose ${cam1:+--camera 1} \
+        --width $WIDTH --height $HEIGHT \
+        --denoise cdn_off --framerate $FRAMERATE \
+        $AWB_PARAM --timeout $DURATION_MS \
+        --quality 75 --keyframes 20 \
+        $SHTR $5 -o $OUTPUT_FILE -n"
+    
     echo "Command: $RPICAM_CMD" >&2
     
     # Execute command and capture output
@@ -140,9 +161,17 @@ else
     
     echo "Starting libcamera-vid with output to $OUTPUT_FILE" >&2
     
-    # Start libcamera-vid with configurable AWB
+    # Start libcamera-vid with configurable AWB and tuned parameters
     # Add --verbose for more frame info
-    LIBCAM_CMD="libcamera-vid $workaround --verbose --width $1 --height $2 --denoise cdn_off --framerate $3 $AWB_PARAM --save-pts /dev/shm/tst.pts -t $4 $SHTR $5 -o $OUTPUT_FILE -n"
+    # Use -t for full duration control in ms
+    # Add inline pts data for better frame accuracy
+    LIBCAM_CMD="libcamera-vid $workaround --verbose \
+        --width $WIDTH --height $HEIGHT \
+        --denoise cdn_off --framerate $FRAMERATE \
+        $AWB_PARAM --save-pts /dev/shm/tst.pts \
+        -t $DURATION_MS --quality 75 --inline \
+        $SHTR $5 -o $OUTPUT_FILE -n"
+        
     echo "Command: $LIBCAM_CMD" >&2
     
     # Execute the command and process output for frame markers
@@ -169,9 +198,16 @@ else
     fi
 fi
 
+# Record end time and calculate actual duration
+END_TIME=$(date +%s.%N)
+ELAPSED_MS=$(echo "($END_TIME - $START_TIME) * 1000" | bc)
+echo "Recording end time: $END_TIME" >> "$MARKERS_FILE"
+echo "Recording elapsed time: $ELAPSED_MS ms" >> "$MARKERS_FILE"
+
 echo "Recording complete. Output saved to: $OUTPUT_FILE" >&2
 echo "Frame markers saved to: $MARKERS_FILE" >&2
 echo "Total frames detected: $(grep -v "Starting" "$MARKERS_FILE" | wc -l)" >&2
+echo "Actual duration: ${ELAPSED_MS}ms (requested: ${DURATION_MS}ms)" >&2
 
 # Disable debug output
 set +x 
