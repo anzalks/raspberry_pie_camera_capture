@@ -136,16 +136,21 @@ def check_even_dimensions(width, height):
 
 def monitor_markers_file():
     """Monitor the markers file created by GScrop script to get frame information"""
-    global stop_event, lsl_data
+    global stop_event, lsl_data, MARKERS_FILE
+    
+    # Wait a bit to let the GScrop script start
+    time.sleep(0.5)
     
     if not os.path.exists(MARKERS_FILE):
         logger.warning(f"Markers file {MARKERS_FILE} does not exist, waiting for it to be created...")
-    
-    # Wait until the file exists and has content
-    while not stop_event.is_set():
-        if os.path.exists(MARKERS_FILE):
-            break
-        time.sleep(0.1)
+        
+        # Wait for the file to be created with timeout
+        start_time = time.time()
+        while not stop_event.is_set() and not os.path.exists(MARKERS_FILE):
+            time.sleep(0.1)
+            if time.time() - start_time > 5.0:  # 5 second timeout
+                logger.error(f"Timed out waiting for markers file: {MARKERS_FILE}")
+                return
     
     if stop_event.is_set():
         return
@@ -154,9 +159,7 @@ def monitor_markers_file():
     
     # Keep track of the last read position
     last_pos = 0
-    
-    # Initial delay to let the script start creating markers
-    time.sleep(0.5)
+    last_frame = 0
     
     while not stop_event.is_set():
         try:
@@ -168,8 +171,13 @@ def monitor_markers_file():
                 
             # Open the file and read new lines
             with open(MARKERS_FILE, 'r') as f:
+                # Go to last read position
                 f.seek(last_pos)
+                
+                # Read new content
                 new_lines = f.readlines()
+                
+                # Update last position if we read anything
                 if new_lines:
                     last_pos = f.tell()
                     
@@ -184,8 +192,12 @@ def monitor_markers_file():
                             if len(parts) >= 2:
                                 frame_num = int(parts[0])
                                 frame_time = float(parts[1])
-                                push_lsl_sample(frame_num, frame_time)
-                                logger.debug(f"Pushed LSL sample: Frame {frame_num}, Time {frame_time}")
+                                
+                                # Only push if this is a new frame
+                                if frame_num > last_frame:
+                                    push_lsl_sample(frame_num, frame_time)
+                                    last_frame = frame_num
+                                    logger.debug(f"Pushed LSL sample: Frame {frame_num}, Time {frame_time}")
                         except ValueError as e:
                             logger.debug(f"Error parsing line '{line}': {e}")
             
@@ -218,9 +230,9 @@ def run_gscrop_script(width, height, fps, duration_ms, exposure_us=None, output_
     if os.environ.get("cam1"):
         env["cam1"] = "1"
     
-    # Add preview mode if requested
+    # Add narrow mode if requested
     if preview:
-        env["preview"] = "1"
+        env["narrow"] = "1"
     
     logger.info(f"Starting GScrop with command: {' '.join(cmd)}")
     
@@ -230,7 +242,8 @@ def run_gscrop_script(width, height, fps, duration_ms, exposure_us=None, output_
             cmd,
             env=env,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
+            stderr=subprocess.PIPE,
+            bufsize=0  # Unbuffered output
         )
         
         # Start threads to monitor stdout and stderr
