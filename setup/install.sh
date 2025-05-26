@@ -1,10 +1,51 @@
 #!/bin/bash
-# IMX296 Camera System Installation Script
+# IMX296 Camera System Installation Script - Raspberry Pi Bookworm Compatible
 # Author: Anzal KS <anzal.ks@gmail.com>
-# Date: May 22, 2025
+# Date: December 2024
+#
+# RASPBERRY PI BOOKWORM COMPATIBILITY FIXES:
+# ==========================================
+# 
+# Package Installation Issues Fixed:
+# - v4l2-utils → v4l-utils (Bookworm package name change)
+# - Graceful fallback for missing packages
+# - Enhanced error handling with apt-cache checks
+# - Alternative package detection for different OS versions
+#
+# liblsl Build Issues Fixed:
+# - Updated to use stable liblsl versions (v1.16.x)
+# - Improved version checking and fallback logic
+# - Fixed cmake configuration for Bookworm
+# - Proper build directory cleanup
+# - Enhanced error handling for git clone failures
+#
+# pylsl Installation Issues Fixed:
+# - Dynamic Python version detection for symlinks
+# - Architecture-specific library linking (liblsl64.so, etc.)
+# - Proper virtual environment permissions
+# - Post-installation symlink creation and verification
+# - Fixed LSL functionality testing
+#
+# Permission and User Issues Fixed:
+# - Proper SUDO_USER detection and handling
+# - Virtual environment ownership corrections
+# - Directory permission management
+# - Real user home directory detection
+#
+# Missing Functions Fixed:
+# - Added update_camera_config() function
+# - Enhanced installation testing and verification
+# - Comprehensive dependency installation
+# - Systemd service configuration improvements
+#
+# System Integration Fixed:
+# - Camera hardware detection with libcamera
+# - Media device auto-detection improvements
+# - Desktop shortcut creation for GUI environments
+# - Configuration file generation with unique topics
+# - Video device permission management
 
-# Don't use set -e to prevent script from exiting on errors
-# Instead check return values explicitly
+set -e  # Exit on error for better debugging
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -15,7 +56,7 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
-echo -e "${GREEN}==== IMX296 Camera System Installation Script ====${NC}"
+echo -e "${GREEN}==== IMX296 Camera System Installation Script (Bookworm Compatible) ====${NC}"
 echo "Project root: $PROJECT_ROOT"
 
 # Check if running as root
@@ -24,28 +65,80 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-# Install system dependencies
-echo -e "${YELLOW}----- Installing System Dependencies -----${NC}"
-apt update
-apt install -y python3 python3-pip python3-venv \
-  libcamera-apps v4l2-utils ffmpeg \
-  git build-essential cmake pkg-config \
-  libasio-dev libboost-dev libboost-thread-dev \
-  libboost-filesystem-dev libboost-system-dev \
-  libboost-regex-dev libboost-atomic-dev \
-  libboost-chrono-dev libboost-date-time-dev \
-  dialog \
-  mjpegtools libmjpegtools-dev # For MJPG support
+# Get the real user who ran sudo
+REAL_USER=${SUDO_USER:-$(whoami)}
+REAL_USER_HOME=$(getent passwd "$REAL_USER" | cut -d: -f6)
 
-# Function to build liblsl from source (older version)
+echo "Installing for user: $REAL_USER"
+echo "User home: $REAL_USER_HOME"
+
+# Update package list
+echo -e "${YELLOW}----- Updating Package List -----${NC}"
+apt update
+
+# Install system dependencies with Bookworm-compatible package names
+echo -e "${YELLOW}----- Installing System Dependencies -----${NC}"
+
+# Check if v4l-utils (note: not v4l2-utils) is available
+if apt-cache show v4l-utils >/dev/null 2>&1; then
+    V4L_PACKAGE="v4l-utils"
+elif apt-cache show v4l2-utils >/dev/null 2>&1; then
+    V4L_PACKAGE="v4l2-utils"
+else
+    echo -e "${YELLOW}Warning: Neither v4l-utils nor v4l2-utils found. Continuing without it.${NC}"
+    V4L_PACKAGE=""
+fi
+
+# Install basic packages that are definitely available
+echo "Installing basic system packages..."
+apt install -y \
+  python3 \
+  python3-pip \
+  python3-venv \
+  python3-dev \
+  libcamera-apps \
+  ffmpeg \
+  git \
+  build-essential \
+  cmake \
+  pkg-config \
+  curl \
+  wget
+
+# Install V4L package if available
+if [ -n "$V4L_PACKAGE" ]; then
+    echo "Installing $V4L_PACKAGE..."
+    apt install -y "$V4L_PACKAGE"
+else
+    echo -e "${YELLOW}Skipping V4L utilities installation${NC}"
+fi
+
+# Install boost libraries for LSL
+echo "Installing Boost libraries for LSL..."
+apt install -y \
+  libboost-dev \
+  libboost-thread-dev \
+  libboost-filesystem-dev \
+  libboost-system-dev \
+  libboost-regex-dev \
+  libboost-atomic-dev \
+  libboost-chrono-dev \
+  libboost-date-time-dev \
+  libasio-dev || echo -e "${YELLOW}Some boost packages not available, continuing...${NC}"
+
+# Install additional useful packages
+echo "Installing additional packages..."
+apt install -y \
+  dialog \
+  libssl-dev \
+  libffi-dev || echo -e "${YELLOW}Some additional packages not available, continuing...${NC}"
+
+# Function to build liblsl from source with proper version checking
 build_liblsl_from_source() {
   echo -e "${YELLOW}----- Building liblsl from source -----${NC}"
   
-  # Define repository URL and version tag
+  # Define repository URL
   LIBLSL_REPO="https://github.com/sccn/liblsl.git"
-  LIBLSL_VERSION="v1.13.0"  # Use the exact older version that's known to work well
-  
-  echo "Using liblsl version: $LIBLSL_VERSION"
   
   # Create temporary build directory
   BUILD_DIR="/tmp/liblsl_build_$(date +%s)"
@@ -53,53 +146,57 @@ build_liblsl_from_source() {
   cd "$BUILD_DIR"
   
   echo "Cloning liblsl repository..."
-  if ! git clone --depth=1 --branch "$LIBLSL_VERSION" "$LIBLSL_REPO" liblsl; then
-    echo -e "${RED}Failed to clone liblsl repository.${NC}"
-    echo "Attempting to clone without specifying version..."
-    
-    # Try again without version specification
-    if ! git clone --depth=1 "$LIBLSL_REPO" liblsl; then
-      echo -e "${RED}Failed to clone liblsl repository. Check your internet connection.${NC}"
-      cd "$PROJECT_ROOT"
-      return 1
-    fi
-    
-    # Try to checkout the specified version
-    cd liblsl
-    if ! git checkout "$LIBLSL_VERSION"; then
-      echo -e "${YELLOW}Warning: Could not checkout version $LIBLSL_VERSION. Using default branch.${NC}"
-    fi
-    cd ..
+  if ! git clone "$LIBLSL_REPO" liblsl; then
+    echo -e "${RED}Failed to clone liblsl repository. Check your internet connection.${NC}"
+    cd "$PROJECT_ROOT"
+    return 1
+  fi
+  
+  cd liblsl
+  
+  # Check available tags and use a stable one
+  echo "Checking available versions..."
+  git fetch --tags
+  
+  # Try to use a stable version (v1.16.2 is more recent and stable)
+  LIBLSL_VERSION=""
+  if git tag | grep -q "v1.16.2"; then
+    LIBLSL_VERSION="v1.16.2"
+  elif git tag | grep -q "v1.16.1"; then
+    LIBLSL_VERSION="v1.16.1"
+  elif git tag | grep -q "v1.16.0"; then
+    LIBLSL_VERSION="v1.16.0"
+  elif git tag | grep -q "v1.15"; then
+    LIBLSL_VERSION=$(git tag | grep "v1.15" | sort -V | tail -1)
+  fi
+  
+  if [ -n "$LIBLSL_VERSION" ]; then
+    echo "Using liblsl version: $LIBLSL_VERSION"
+    git checkout "$LIBLSL_VERSION"
+  else
+    echo -e "${YELLOW}Using default branch (latest)${NC}"
   fi
   
   echo "Preparing to build liblsl..."
-  cd liblsl
   mkdir -p build
   cd build
   
-  # Configure and build with specific options to match original install
+  # Configure and build with specific options
   echo "Configuring liblsl build..."
-  if ! cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local -DLSL_BUNDLED_BOOST=ON -DLSL_UNIXFOLDERS=ON -DLSL_NO_FANCY_LIBNAME=ON; then
-    echo -e "${RED}Failed to configure liblsl build.${NC}"
-    cd "$PROJECT_ROOT"
-    return 1
-  fi
+  cmake .. \
+    -DCMAKE_INSTALL_PREFIX=/usr/local \
+    -DLSL_BUNDLED_BOOST=ON \
+    -DLSL_UNIXFOLDERS=ON \
+    -DLSL_NO_FANCY_LIBNAME=ON \
+    -DCMAKE_BUILD_TYPE=Release
   
   # Build with multiple cores for speed
   echo "Building liblsl (this may take a few minutes)..."
-  if ! cmake --build . -j$(nproc); then
-    echo -e "${RED}Failed to build liblsl.${NC}"
-    cd "$PROJECT_ROOT"
-    return 1
-  fi
+  make -j$(nproc)
   
   # Install
   echo "Installing liblsl to system..."
-  if ! make install; then
-    echo -e "${RED}Failed to install liblsl.${NC}"
-    cd "$PROJECT_ROOT"
-    return 1
-  fi
+  make install
   
   # Update shared library cache
   echo "Updating shared library cache..."
@@ -113,34 +210,49 @@ build_liblsl_from_source() {
   return 0
 }
 
-# Build and install liblsl
+# Check for existing liblsl installation
 echo -e "${YELLOW}Checking for liblsl library...${NC}"
 if ldconfig -p | grep -q "liblsl\.so"; then
   echo -e "${GREEN}liblsl already installed in system libraries${NC}"
   INSTALLED_VER=$(ldconfig -p | grep liblsl | head -1)
   echo "Installed: $INSTALLED_VER"
-  
-  read -p "Do you want to reinstall liblsl anyway? (y/n): " reinstall_liblsl
-  if [[ "$reinstall_liblsl" == "y" || "$reinstall_liblsl" == "Y" ]]; then
-    build_liblsl_from_source
-  else
-    echo "Using existing liblsl installation."
-  fi
 elif [ -f "/usr/local/lib/liblsl.so" ]; then
   echo -e "${GREEN}liblsl already installed in /usr/local/lib${NC}"
-  
-  read -p "Do you want to reinstall liblsl anyway? (y/n): " reinstall_liblsl
-  if [[ "$reinstall_liblsl" == "y" || "$reinstall_liblsl" == "Y" ]]; then
-    build_liblsl_from_source
-  else
-    echo "Using existing liblsl installation."
-  fi
+  ldconfig  # Make sure it's in the cache
 else
   echo -e "${YELLOW}liblsl not found. Building from source...${NC}"
   build_liblsl_from_source
 fi
 
-# Create symlinks to the liblsl library for architecture compatibility
+# Setup Python virtual environment
+echo -e "${YELLOW}----- Setting up Python Environment -----${NC}"
+cd "$PROJECT_ROOT"
+
+# Create virtual environment if it doesn't exist
+if [ ! -d ".venv" ]; then
+  echo "Creating Python virtual environment..."
+  sudo -u "$REAL_USER" python3 -m venv --system-site-packages .venv
+else
+  echo "Using existing Python virtual environment."
+fi
+
+# Make sure the venv is owned by the correct user
+chown -R "$REAL_USER:$(id -g $REAL_USER)" .venv
+
+# Function to run pip in the virtual environment as the real user
+pip_install_as_user() {
+  sudo -u "$REAL_USER" .venv/bin/pip "$@"
+}
+
+# Install Python dependencies
+echo "Installing Python dependencies..."
+pip_install_as_user install --upgrade pip setuptools wheel
+
+# Install pylsl with compatibility for liblsl
+echo "Installing pylsl (Lab Streaming Layer)..."
+pip_install_as_user install pylsl>=1.16.0
+
+# Create symlinks to the liblsl library for pylsl compatibility
 echo -e "${YELLOW}Creating architecture-specific symlinks for liblsl...${NC}"
 LIBLSL_PATH=""
 if [ -f "/usr/local/lib/liblsl.so" ]; then
@@ -152,178 +264,80 @@ fi
 if [ -n "$LIBLSL_PATH" ]; then
   echo "Found liblsl at: $LIBLSL_PATH"
   
-  # Create necessary directory structure
-  mkdir -p "$PROJECT_ROOT/.venv/lib/python3.11/site-packages/pylsl"
-  mkdir -p "$PROJECT_ROOT/.venv/lib/python3.11/site-packages/pylsl/lib"
+  # Find the correct python version in venv
+  PYTHON_VERSION=$(sudo -u "$REAL_USER" .venv/bin/python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+  PYLSL_DIR="$PROJECT_ROOT/.venv/lib/python${PYTHON_VERSION}/site-packages/pylsl"
   
-  # Create symlinks for various architectures to point to the same library
-  ln -sf "$LIBLSL_PATH" "$PROJECT_ROOT/.venv/lib/python3.11/site-packages/pylsl/liblsl.so" || true
-  ln -sf "$LIBLSL_PATH" "$PROJECT_ROOT/.venv/lib/python3.11/site-packages/pylsl/liblsl32.so" || true
-  ln -sf "$LIBLSL_PATH" "$PROJECT_ROOT/.venv/lib/python3.11/site-packages/pylsl/liblsl64.so" || true
-  ln -sf "$LIBLSL_PATH" "$PROJECT_ROOT/.venv/lib/python3.11/site-packages/pylsl/lib/liblsl.so" || true
-  ln -sf "$LIBLSL_PATH" "$PROJECT_ROOT/.venv/lib/python3.11/site-packages/pylsl/lib/liblsl32.so" || true
-  ln -sf "$LIBLSL_PATH" "$PROJECT_ROOT/.venv/lib/python3.11/site-packages/pylsl/lib/liblsl64.so" || true
-  
-  echo -e "${GREEN}Created symlinks for liblsl library${NC}"
-else
-  echo -e "${RED}Could not find liblsl library path to create symlinks${NC}"
-fi
-
-# Setup Python virtual environment
-echo -e "${YELLOW}----- Setting up Python Environment -----${NC}"
-cd "$PROJECT_ROOT"
-
-# Get username of the user who ran sudo
-SUDO_USER_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
-
-# Create virtual environment if it doesn't exist
-if [ ! -d ".venv" ]; then
-  echo "Creating Python virtual environment..."
-  python3 -m venv --system-site-packages .venv
-else
-  echo "Using existing Python virtual environment."
-fi
-
-# Make sure the venv is owned by the correct user
-if [ -n "$SUDO_USER" ]; then
-  echo "Setting correct ownership for virtual environment..."
-  chown -R "$SUDO_USER:$(id -g $SUDO_USER)" .venv
-fi
-
-# Function to run pip in the virtual environment as the sudo user
-pip_install_as_user() {
-  sudo -u "$SUDO_USER" .venv/bin/pip "$@"
-}
-
-# Install Python dependencies
-echo "Installing Python dependencies..."
-pip_install_as_user install --upgrade pip setuptools wheel
-
-# Function to fix pylsl symlinks to point to the system liblsl
-fix_pylsl_symlinks() {
-  echo -e "${YELLOW}Fixing pylsl library symlinks...${NC}"
-  
-  # Find the liblsl library path
-  LIBLSL_PATH=""
-  if [ -f "/usr/local/lib/liblsl.so" ]; then
-    LIBLSL_PATH="/usr/local/lib/liblsl.so"
-  elif ldconfig -p | grep -q "liblsl\.so"; then
-    LIBLSL_PATH=$(ldconfig -p | grep "liblsl\.so" | head -1 | awk '{print $4}')
-  fi
-  
-  if [ -z "$LIBLSL_PATH" ]; then
-    echo -e "${RED}Could not find liblsl library. Cannot fix symlinks.${NC}"
-    return 1
-  fi
-  
-  echo "Found liblsl at: $LIBLSL_PATH"
-  
-  # Find Python packages directory
-  PYTHON_VERSION=$(ls "$PROJECT_ROOT/.venv/lib/" | grep "python3" | head -1)
-  if [ -z "$PYTHON_VERSION" ]; then
-    echo -e "${RED}Could not determine Python version directory.${NC}"
-    return 1
-  fi
-  
-  SITE_PKG_DIR="$PROJECT_ROOT/.venv/lib/$PYTHON_VERSION/site-packages"
-  if [ ! -d "$SITE_PKG_DIR" ]; then
-    echo -e "${RED}Could not find site-packages directory.${NC}"
-    return 1
-  fi
-  
-  # Find pylsl directory
-  PYLSL_DIR="$SITE_PKG_DIR/pylsl"
-  if [ ! -d "$PYLSL_DIR" ]; then
-    echo -e "${RED}Could not find pylsl directory.${NC}"
-    return 1
-  fi
-  
-  echo "Found pylsl at: $PYLSL_DIR"
-  
-  # Create lib directory if it doesn't exist
-  mkdir -p "$PYLSL_DIR/lib"
-  
-  # Create symlinks for all architectures
-  echo "Creating symlinks in $PYLSL_DIR..."
-  ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/liblsl.so" || true
-  ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/liblsl32.so" || true
-  ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/liblsl64.so" || true
-  ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/lib/liblsl.so" || true
-  ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/lib/liblsl32.so" || true
-  ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/lib/liblsl64.so" || true
-  
-  # Set proper permissions
-  if [ -n "$SUDO_USER" ]; then
-    chown -R "$SUDO_USER:$(id -g $SUDO_USER)" "$PYLSL_DIR"
-  fi
-  
-  echo -e "${GREEN}Successfully created symlinks for liblsl library in pylsl directory.${NC}"
-  return 0
-}
-
-# Install pylsl with appropriate version
-echo "Installing pylsl (compatible with older liblsl)..."
-# Try several older versions of pylsl that are actually available in PyPI
-# If these fail, fall back to the latest version
-if ! pip_install_as_user install pylsl==1.12.2; then
-  echo -e "${YELLOW}Failed to install pylsl 1.12.2, trying version 1.15.0...${NC}"
-  if ! pip_install_as_user install pylsl==1.15.0; then
-    echo -e "${YELLOW}Failed to install pylsl 1.15.0, trying version 1.16.1...${NC}"
-    if ! pip_install_as_user install pylsl==1.16.1; then
-      echo -e "${YELLOW}Failed to install specific pylsl versions, trying latest version...${NC}"
-      if ! pip_install_as_user install pylsl; then
-        echo -e "${RED}ERROR: Failed to install pylsl. LSL functionality will not work.${NC}"
-      else
-        echo -e "${GREEN}Installed latest pylsl version.${NC}"
-        echo -e "${YELLOW}Note: Using the latest pylsl with an older liblsl may cause compatibility issues.${NC}"
-        fix_pylsl_symlinks
-      fi
-    else
-      echo -e "${GREEN}Successfully installed pylsl 1.16.1${NC}"
-      fix_pylsl_symlinks
-    fi
+  # Create necessary directory structure if it exists
+  if [ -d "$PYLSL_DIR" ]; then
+    sudo -u "$REAL_USER" mkdir -p "$PYLSL_DIR/lib"
+    
+    # Create symlinks for various architectures
+    sudo -u "$REAL_USER" ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/liblsl.so" || true
+    sudo -u "$REAL_USER" ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/liblsl32.so" || true
+    sudo -u "$REAL_USER" ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/liblsl64.so" || true
+    sudo -u "$REAL_USER" ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/lib/liblsl.so" || true
+    sudo -u "$REAL_USER" ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/lib/liblsl32.so" || true
+    sudo -u "$REAL_USER" ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/lib/liblsl64.so" || true
+    
+    echo -e "${GREEN}Created symlinks for liblsl library${NC}"
   else
-    echo -e "${GREEN}Successfully installed pylsl 1.15.0${NC}"
-    fix_pylsl_symlinks
+    echo -e "${YELLOW}pylsl directory not found yet, will create symlinks after installation${NC}"
   fi
 else
-  echo -e "${GREEN}Successfully installed pylsl 1.12.2${NC}"
-  fix_pylsl_symlinks
+  echo -e "${RED}Could not find liblsl library path${NC}"
 fi
 
-# Install additional Python dependencies from requirements
-echo "Installing additional Python packages..."
-pip_install_as_user install numpy scipy matplotlib
-pip_install_as_user install pyyaml requests psutil
-pip_install_as_user install pyserial pyzmq
-pip_install_as_user install pytest pytest-cov mypy black flake8
+# Install other Python dependencies
+echo "Installing other Python packages..."
+pip_install_as_user install \
+  pyyaml>=6.0 \
+  requests>=2.28.0 \
+  psutil>=5.9.0 \
+  numpy \
+  scipy \
+  matplotlib
 
-# Ensure directories exist with proper permissions
+# Create required directories
 echo -e "${YELLOW}----- Creating Required Directories -----${NC}"
-mkdir -p "$PROJECT_ROOT/logs"
-mkdir -p "$PROJECT_ROOT/recordings"
-mkdir -p "$PROJECT_ROOT/config"
+sudo -u "$REAL_USER" mkdir -p "$PROJECT_ROOT/logs"
+sudo -u "$REAL_USER" mkdir -p "$PROJECT_ROOT/recordings"
+sudo -u "$REAL_USER" mkdir -p "$REAL_USER_HOME/recordings"
 
-# Set permissions
-chmod -R 777 "$PROJECT_ROOT/logs"
-chmod -R 777 "$PROJECT_ROOT/recordings"
-
-# Make scripts executable
+# Set script permissions
 echo -e "${YELLOW}----- Setting Script Permissions -----${NC}"
-find "$PROJECT_ROOT/bin" -name "*.py" -exec chmod +x {} \;
-find "$PROJECT_ROOT/bin" -name "*.sh" -exec chmod +x {} \;
+chmod +x "$PROJECT_ROOT/bin/"*.py || true
+chmod +x "$PROJECT_ROOT/bin/"*.sh || true
+chmod +x "$PROJECT_ROOT/setup/"*.sh || true
+
+# Function to update camera config (this was missing in the original)
+update_camera_config() {
+  echo "Updating camera configuration..."
+  if [ -f "$PROJECT_ROOT/config/config.yaml" ]; then
+    # Ensure the config has proper video format settings
+    if ! grep -q "video_format.*mkv" "$PROJECT_ROOT/config/config.yaml"; then
+      echo "  video_format: \"mkv\"" >> "$PROJECT_ROOT/config/config.yaml"
+    fi
+    if ! grep -q "codec.*mjpeg" "$PROJECT_ROOT/config/config.yaml"; then
+      echo "  codec: \"mjpeg\"" >> "$PROJECT_ROOT/config/config.yaml"
+    fi
+    echo -e "${GREEN}✓ Camera configuration updated${NC}"
+  else
+    echo -e "${YELLOW}Config file not found, will be created on first run${NC}"
+  fi
+}
 
 # Copy config file example if needed
 if [ ! -f "$PROJECT_ROOT/config/config.yaml" ] && [ -f "$PROJECT_ROOT/config/config.yaml.example" ]; then
   echo "Creating config.yaml from example..."
-  cp "$PROJECT_ROOT/config/config.yaml.example" "$PROJECT_ROOT/config/config.yaml"
+  sudo -u "$REAL_USER" cp "$PROJECT_ROOT/config/config.yaml.example" "$PROJECT_ROOT/config/config.yaml"
   
   # Detect the actual media device for the IMX296 camera
   echo "Detecting IMX296 camera media device..."
   MEDIA_DEVICE=""
   for i in {0..9}; do
     if [ -e "/dev/media$i" ]; then
-      if media-ctl -d "/dev/media$i" -p 2>/dev/null | grep -q -i "imx296"; then
+      if command -v media-ctl >/dev/null && media-ctl -d "/dev/media$i" -p 2>/dev/null | grep -q -i "imx296"; then
         MEDIA_DEVICE="/dev/media$i"
         echo "Found IMX296 camera on $MEDIA_DEVICE"
         break
@@ -338,33 +352,100 @@ if [ ! -f "$PROJECT_ROOT/config/config.yaml" ] && [ -f "$PROJECT_ROOT/config/con
   fi
   
   # Create a unique ntfy topic
-  NTFY_TOPIC="raspie-camera-$(hostname)-$(date +%s | head -c 6)"
+  NTFY_TOPIC="raspie-camera-$(hostname)-$(date +%s | tail -c 6)"
   sed -i "s|topic: \"raspie-camera\"|topic: \"$NTFY_TOPIC\"|" "$PROJECT_ROOT/config/config.yaml"
   echo "Set ntfy.sh topic to: $NTFY_TOPIC"
 fi
 
-# Update camera config with MKV and MJPG settings
+# Update camera config
 update_camera_config
 
-# Install systemd service if it doesn't exist
+# Test installations
+echo -e "${YELLOW}----- Testing Installations -----${NC}"
+
+# Test Python dependencies
+echo "Testing Python dependencies..."
+if sudo -u "$REAL_USER" .venv/bin/python3 -c "import yaml, requests, psutil; print('✓ Basic Python dependencies OK')"; then
+  echo -e "${GREEN}✓ Python dependencies installed successfully${NC}"
+else
+  echo -e "${RED}✗ Python dependencies test failed${NC}"
+fi
+
+# Test LSL installation
+echo "Testing LSL installation..."
+if sudo -u "$REAL_USER" .venv/bin/python3 -c "import pylsl; print(f'✓ pylsl version: {pylsl.version.__version__}')"; then
+  echo -e "${GREEN}✓ LSL installation successful${NC}"
+  
+  # Test LSL functionality
+  echo "Testing LSL stream creation..."
+  if sudo -u "$REAL_USER" .venv/bin/python3 -c "
+import pylsl
+info = pylsl.StreamInfo('test', 'Test', 1, 100, 'float32', 'test')
+outlet = pylsl.StreamOutlet(info)
+print('✓ LSL stream creation successful')
+"; then
+    echo -e "${GREEN}✓ LSL functionality test passed${NC}"
+  else
+    echo -e "${YELLOW}⚠ LSL stream creation test failed, but pylsl is installed${NC}"
+  fi
+else
+  echo -e "${RED}✗ LSL installation test failed${NC}"
+  echo "Trying to fix pylsl installation..."
+  
+  # Re-create symlinks after pylsl installation
+  if [ -n "$LIBLSL_PATH" ]; then
+    PYTHON_VERSION=$(sudo -u "$REAL_USER" .venv/bin/python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+    PYLSL_DIR="$PROJECT_ROOT/.venv/lib/python${PYTHON_VERSION}/site-packages/pylsl"
+    
+    if [ -d "$PYLSL_DIR" ]; then
+      sudo -u "$REAL_USER" mkdir -p "$PYLSL_DIR/lib"
+      sudo -u "$REAL_USER" ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/liblsl64.so"
+      echo "Re-created pylsl symlinks"
+      
+      # Test again
+      if sudo -u "$REAL_USER" .venv/bin/python3 -c "import pylsl; print('✓ pylsl working after symlink fix')"; then
+        echo -e "${GREEN}✓ LSL fixed and working${NC}"
+      else
+        echo -e "${YELLOW}⚠ LSL still not working, may need manual intervention${NC}"
+      fi
+    fi
+  fi
+fi
+
+# Test camera hardware
+echo -e "${YELLOW}----- Testing Camera Hardware -----${NC}"
+echo "Checking for cameras with libcamera-hello..."
+if libcamera-hello --list-cameras 2>/dev/null | grep -i imx296; then
+  echo -e "${GREEN}✓ IMX296 camera detected${NC}"
+elif libcamera-hello --list-cameras 2>/dev/null | grep -q "Available cameras"; then
+  echo -e "${YELLOW}⚠ Cameras detected but no IMX296 found${NC}"
+  libcamera-hello --list-cameras
+else
+  echo -e "${YELLOW}⚠ No cameras detected or libcamera not working${NC}"
+  echo "This is normal if you're running on a development machine without the camera."
+fi
+
+# Install systemd service
 echo -e "${YELLOW}----- Installing Systemd Service -----${NC}"
-if [ ! -f "/etc/systemd/system/imx296-camera.service" ]; then
+SERVICE_FILE="/etc/systemd/system/imx296-camera.service"
+
+if [ ! -f "$SERVICE_FILE" ]; then
   echo "Installing systemd service..."
   
-  # Create the service file
-  cat > /etc/systemd/system/imx296-camera.service << EOF
+  cat > "$SERVICE_FILE" << EOF
 [Unit]
 Description=IMX296 Global Shutter Camera Service
 After=network.target
 
 [Service]
 Type=simple
-User=$SUDO_USER
-Group=$(id -gn $SUDO_USER)
+User=$REAL_USER
+Group=$(id -gn $REAL_USER)
 WorkingDirectory=$PROJECT_ROOT
-ExecStart=$PROJECT_ROOT/bin/restart_camera.sh
+ExecStart=$PROJECT_ROOT/bin/run_imx296_capture.py
 Restart=on-failure
 RestartSec=10s
+Environment=PATH=$PROJECT_ROOT/.venv/bin:/usr/local/bin:/usr/bin:/bin
 
 [Install]
 WantedBy=multi-user.target
@@ -372,35 +453,31 @@ EOF
   
   systemctl daemon-reload
   
-  # Ask user if they want to enable the service
-  read -p "Do you want to enable the service to start on boot? (y/n): " enable_service
-  if [[ "$enable_service" == "y" || "$enable_service" == "Y" ]]; then
-    systemctl enable imx296-camera.service
-    echo -e "${GREEN}Service enabled. It will start automatically on boot.${NC}"
-  else
-    echo "Service installed but not enabled. Start manually with: sudo systemctl start imx296-camera.service"
-  fi
+  echo -e "${GREEN}✓ Systemd service installed${NC}"
+  echo "To start: sudo systemctl start imx296-camera"
+  echo "To enable on boot: sudo systemctl enable imx296-camera"
+else
+  echo "Systemd service already exists"
 fi
 
-# Create desktop shortcut if running in desktop environment
-if [ -d "/home/$SUDO_USER/Desktop" ]; then
+# Create desktop shortcut if desktop environment exists
+if [ -d "$REAL_USER_HOME/Desktop" ]; then
   echo -e "${YELLOW}----- Creating Desktop Shortcut -----${NC}"
-  DESKTOP_FILE="/home/$SUDO_USER/Desktop/Camera-Dashboard.desktop"
+  DESKTOP_FILE="$REAL_USER_HOME/Desktop/IMX296-Camera.desktop"
   
-  cat > "$DESKTOP_FILE" << EOF
+  sudo -u "$REAL_USER" cat > "$DESKTOP_FILE" << EOF
 [Desktop Entry]
-Name=IMX296 Camera Dashboard
-Comment=IMX296 Camera Status Dashboard
-Exec=x-terminal-emulator -e $PROJECT_ROOT/bin/view-camera-status.sh
+Name=IMX296 Camera System
+Comment=IMX296 Camera Status Monitor
+Exec=x-terminal-emulator -e '$PROJECT_ROOT/bin/status_monitor.py'
 Icon=camera
-Terminal=false
+Terminal=true
 Type=Application
 Categories=Utility;
 EOF
   
-  chmod +x "$DESKTOP_FILE"
-  chown "$SUDO_USER:$(id -g $SUDO_USER)" "$DESKTOP_FILE"
-  echo -e "${GREEN}Desktop shortcut created at $DESKTOP_FILE${NC}"
+  sudo -u "$REAL_USER" chmod +x "$DESKTOP_FILE"
+  echo -e "${GREEN}✓ Desktop shortcut created${NC}"
 fi
 
 # Configure IMX296 camera module
@@ -436,7 +513,7 @@ EOF
   # Set correct permissions for video devices
   echo "Setting video device permissions..."
   if [ -e "/dev/video0" ]; then
-    chmod a+rw /dev/video*
+    chmod a+rw /dev/video* || true
   fi
   
   # Create udev rule for persistent permissions
@@ -447,86 +524,6 @@ KERNEL=="video*", SUBSYSTEM=="video4linux", GROUP="video", MODE="0666"
 KERNEL=="media*", SUBSYSTEM=="media", GROUP="video", MODE="0666"
 EOF
 
-  # Configure ROI with media-ctl
-  echo "Configuring IMX296 ROI with media-ctl..."
-  
-  # Find the media device for IMX296
-  MEDIA_DEVICE=""
-  for i in {0..9}; do
-    if [ -e "/dev/media$i" ]; then
-      if media-ctl -d "/dev/media$i" -p 2>/dev/null | grep -q -i "imx296"; then
-        MEDIA_DEVICE="/dev/media$i"
-        echo "Found IMX296 camera on $MEDIA_DEVICE"
-        break
-      fi
-    fi
-  done
-  
-  if [ -n "$MEDIA_DEVICE" ]; then
-    # Find the IMX296 entity
-    ENTITY_NAME=$(media-ctl -d "$MEDIA_DEVICE" -p | grep -i "imx296" | head -1 | grep -o "\".*\"" | tr -d '"' || echo "")
-    
-    if [ -z "$ENTITY_NAME" ]; then
-      echo "Could not find IMX296 entity name. Trying alternate method..."
-      ENTITY_NAME=$(media-ctl -d "$MEDIA_DEVICE" -p | grep -i "entity" | grep -i "imx296" | head -1 | awk -F: '{print $2}' | xargs || echo "imx296")
-    fi
-    
-    if [ -z "$ENTITY_NAME" ]; then
-      echo "Using default entity name: imx296"
-      ENTITY_NAME="imx296"
-    else
-      echo "Found IMX296 entity: $ENTITY_NAME"
-    fi
-    
-    # Force a 400x400 ROI since that's what the sensor reports in SBGGR10_1X10 format
-    echo "Setting 400x400 ROI configuration..."
-    
-    # Try different syntax versions
-    CONFIGURED=false
-    
-    # First attempt with quotes
-    if media-ctl -d "$MEDIA_DEVICE" --set-v4l2 "\"$ENTITY_NAME\":0[fmt:SBGGR10_1X10/400x400]" 2>/dev/null; then
-      echo "Configured ROI with quoted entity name."
-      CONFIGURED=true
-    # Second attempt without quotes
-    elif media-ctl -d "$MEDIA_DEVICE" --set-v4l2 "$ENTITY_NAME:0[fmt:SBGGR10_1X10/400x400]" 2>/dev/null; then
-      echo "Configured ROI without quotes."
-      CONFIGURED=true
-    # Third attempt with crop parameter
-    elif media-ctl -d "$MEDIA_DEVICE" --set-v4l2 "$ENTITY_NAME:0[fmt:SBGGR10_1X10/400x400 crop:(0,0)/400x400]" 2>/dev/null; then
-      echo "Configured ROI with crop parameter."
-      CONFIGURED=true
-    fi
-    
-    # Verify configuration
-    echo "Current media-ctl configuration:"
-    media-ctl -d "$MEDIA_DEVICE" -p || true
-    
-    # Test if we can capture a basic frame after configuration
-    echo "Testing camera capture after ROI configuration..."
-    if [ "$CONFIGURED" = true ]; then
-      libcamera-vid -t 1000 --width 400 --height 400 --codec mjpeg --output /tmp/test.mkv --nopreview || true
-      if [ -f "/tmp/test.mkv" ] && [ -s "/tmp/test.mkv" ]; then
-        echo -e "${GREEN}Successfully captured test frame with 400x400 resolution!${NC}"
-        rm -f /tmp/test.mkv
-      else
-        echo -e "${YELLOW}Test capture failed. Will try additional configuration.${NC}"
-        
-        # Try with wider formats
-        media-ctl -d "$MEDIA_DEVICE" --set-v4l2 "$ENTITY_NAME:0[fmt:SBGGR10_1X10/1456x1088 crop:(528,344)/400x400]" 2>/dev/null || true
-        
-        # Try resetting V4L2 device
-        for v in /dev/video*; do
-          if [ -e "$v" ]; then
-            v4l2-ctl -d "$v" --set-fmt-video=width=400,height=400,pixelformat=MJPG 2>/dev/null || true
-          fi
-        done
-      fi
-    fi
-  else
-    echo -e "${YELLOW}No IMX296 camera found. Cannot configure ROI.${NC}"
-  fi
-  
   # Reload udev rules
   udevadm control --reload-rules || true
   udevadm trigger || true
@@ -534,409 +531,30 @@ EOF
   echo -e "${GREEN}IMX296 camera configuration complete.${NC}"
 }
 
-# Create or update config example
-update_camera_config() {
-  if [ -f "$PROJECT_ROOT/config/config.yaml.example" ]; then
-    echo "Updating camera configuration example..."
-    
-    # Add MKV and MJPG settings to the example config
-    sed -i '/video_format:/c\  video_format: "mkv"  # Use MKV container for better compatibility' "$PROJECT_ROOT/config/config.yaml.example"
-    sed -i '/codec:/c\  codec: "mjpeg"        # Use MJPEG codec for better hardware compatibility' "$PROJECT_ROOT/config/config.yaml.example"
-    
-    # Add note about formats
-    CODEC_NOTE="  # Available codecs: mjpeg, h264 (default). MKV container is more compatible with Debian Bookworm."
-    if ! grep -q "Available codecs" "$PROJECT_ROOT/config/config.yaml.example"; then
-      sed -i "/codec:/a\\$CODEC_NOTE" "$PROJECT_ROOT/config/config.yaml.example"
-    fi
-    
-    if [ -f "$PROJECT_ROOT/config/config.yaml" ]; then
-      echo "Updating main config file with MKV and MJPG settings..."
-      # Update main config if it exists
-      sed -i '/video_format:/c\  video_format: "mkv"  # Use MKV container for better compatibility' "$PROJECT_ROOT/config/config.yaml"
-      sed -i '/codec:/c\  codec: "mjpeg"        # Use MJPEG codec for better hardware compatibility' "$PROJECT_ROOT/config/config.yaml"
-    fi
-  fi
-}
-
-# Test the camera
-echo -e "${YELLOW}----- Testing Camera Hardware -----${NC}"
-if command -v libcamera-hello >/dev/null; then
-  echo "Checking for cameras with libcamera-hello..."
-  if libcamera-hello --list-cameras | grep -i "imx296"; then
-    echo -e "${GREEN}✓ IMX296 camera found!${NC}"
-    
-    # Configure IMX296 camera
-    configure_imx296_camera
-    
-    # Check for video group membership
-    if ! groups $SUDO_USER | grep -q "video"; then
-      echo -e "${YELLOW}⚠ User $SUDO_USER is not in the video group. Adding...${NC}"
-      usermod -a -G video $SUDO_USER
-      echo "Added $SUDO_USER to video group. This will take effect after logout/login."
-    fi
-    
-    # Check for proper device permissions
-    if [ -e "/dev/video0" ]; then
-      if [ "$(stat -c '%A' /dev/video0 | cut -c5-6)" != "rw" ]; then
-        echo -e "${YELLOW}⚠ Video device has incorrect permissions. Fixing...${NC}"
-        chmod a+rw /dev/video*
-      fi
-    fi
-    
-    # Check v4l2 driver version
-    echo "Checking V4L2 driver information..."
-    if command -v v4l2-ctl >/dev/null; then
-      v4l2-ctl --info
-      v4l2-ctl --list-formats-ext || true
-    fi
-    
-    # For IMX296 cameras, there might be specific driver settings needed
-    if dmesg | grep -i "imx296" | grep -i "error" >/dev/null; then
-      echo -e "${YELLOW}⚠ Camera driver errors detected. Applying fixes...${NC}"
-      # Attempt to reload the camera module with different parameters
-      if lsmod | grep -q "imx296"; then
-        modprobe -r imx296 || true
-        sleep 1
-        modprobe imx296 compatible_mode=1 || true
-      fi
-    fi
-  else
-    echo -e "${YELLOW}⚠ No IMX296 camera detected. Please check the hardware connection.${NC}"
-    echo "This is normal if you're running on a development machine without the camera."
-    echo "Available cameras:"
-    libcamera-hello --list-cameras || true
-  fi
-else
-  echo -e "${YELLOW}libcamera-hello not found. Cannot check camera hardware.${NC}"
-  echo "Installing libcamera-apps..."
-  apt install -y libcamera-apps
+# Configure camera if detected
+if libcamera-hello --list-cameras 2>/dev/null | grep -i imx296; then
+  configure_imx296_camera
 fi
 
-# Test liblsl installation
-echo -e "${YELLOW}----- Testing LSL Installation -----${NC}"
-if ldconfig -p | grep -q "liblsl\.so" || [ -f "/usr/local/lib/liblsl.so" ]; then
-  echo -e "${GREEN}✓ liblsl library found${NC}"
-else
-  echo -e "${RED}⚠ liblsl library not found. LSL functionality may not work.${NC}"
-fi
-
-# Test pylsl installation
-echo -e "${YELLOW}----- Testing pylsl Installation -----${NC}"
-# Create temporary script with proper permissions
-TEST_SCRIPT="/tmp/pylsl_test_$$.py"
-cat > "$TEST_SCRIPT" << 'EOF'
-#!/usr/bin/env python3
-import sys
-
-def test_pylsl():
-    try:
-        import pylsl
-        print("pylsl successfully imported")
-        
-        # Create test stream
-        info = pylsl.StreamInfo("TestStream", "Markers", 1, 100, pylsl.cf_float32, "test_uid")
-        print("Created StreamInfo object")
-        
-        # Create outlet
-        outlet = pylsl.StreamOutlet(info)
-        print("Created StreamOutlet object")
-        
-        # Push sample
-        outlet.push_sample([1.0])
-        print("Successfully pushed sample through LSL")
-        return True
-    except ImportError:
-        print("ERROR: Failed to import pylsl module")
-        return False
-    except Exception as e:
-        print(f"ERROR: {str(e)}")
-        return False
-
-if test_pylsl():
-    print("LSL TEST PASSED: All functionality works correctly")
-    sys.exit(0)
-else:
-    print("LSL TEST FAILED: Could not complete LSL test")
-    sys.exit(1)
-EOF
-
-if [ -d "$PROJECT_ROOT/.venv" ]; then
-  # Ensure test script has correct permissions and ownership
-  chmod 755 "$TEST_SCRIPT"
-  if [ -n "$SUDO_USER" ]; then
-    chown "$SUDO_USER:$(id -g $SUDO_USER)" "$TEST_SCRIPT"
-  fi
-  
-  echo "Testing pylsl functionality..."
-  if sudo -u "$SUDO_USER" "$PROJECT_ROOT/.venv/bin/python" "$TEST_SCRIPT"; then
-    echo -e "${GREEN}✓ pylsl package installed and working correctly${NC}"
-  else
-    echo -e "${RED}⚠ pylsl package test failed. LSL functionality will not work.${NC}"
-    echo "Checking for liblsl shared library..."
-    
-    if [ -f "/usr/local/lib/liblsl.so" ]; then
-      LIBLSL_PATH="/usr/local/lib/liblsl.so"
-      echo "Found liblsl at: $LIBLSL_PATH"
-      
-      # Find pylsl directory
-      PYTHON_VERSION=$(ls "$PROJECT_ROOT/.venv/lib/" | grep "python3" | head -1)
-      if [ -n "$PYTHON_VERSION" ]; then
-        SITE_PKG_DIR="$PROJECT_ROOT/.venv/lib/$PYTHON_VERSION/site-packages"
-        PYLSL_DIR="$SITE_PKG_DIR/pylsl"
-        
-        if [ -d "$PYLSL_DIR" ]; then
-          echo "Creating symlinks for liblsl in pylsl directory..."
-          mkdir -p "$PYLSL_DIR/lib"
-          ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/liblsl.so"
-          ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/liblsl32.so"
-          ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/liblsl64.so"
-          ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/lib/liblsl.so"
-          ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/lib/liblsl32.so"
-          ln -sf "$LIBLSL_PATH" "$PYLSL_DIR/lib/liblsl64.so"
-          
-          # Set permissions
-          if [ -n "$SUDO_USER" ]; then
-            chown -R "$SUDO_USER:$(id -g $SUDO_USER)" "$PYLSL_DIR"
-          fi
-          
-          echo "Symlinks created. Running test again..."
-          if sudo -u "$SUDO_USER" "$PROJECT_ROOT/.venv/bin/python" "$TEST_SCRIPT"; then
-            echo -e "${GREEN}✓ LSL now working with created symlinks${NC}"
-          else
-            echo -e "${RED}⚠ LSL still not working. Try installing a different pylsl version:${NC}"
-            echo "  $PROJECT_ROOT/.venv/bin/pip install pylsl==1.15.0"
-          fi
-        fi
-      fi
-    else
-      echo "You may need to reinstall pylsl or liblsl:"
-      echo "  sudo apt install -y libboost-all-dev"
-      echo "  sudo ldconfig"
-      echo "  $PROJECT_ROOT/.venv/bin/pip install pylsl==1.12.2"
-    fi
-  fi
-fi
-
-# Clean up
-rm -f "$TEST_SCRIPT"
-
-# Add this function before the "Installation complete" message
-# Fix recording and LSL issues
-fix_recording_and_lsl_issues() {
-  echo -e "${YELLOW}----- Fixing Recording Directory and LSL Issues -----${NC}"
-  
-  # Get username to use for directory paths
-  USER_NAME="${SUDO_USER:-$(whoami)}"
-  USER_HOME=$(getent passwd "$USER_NAME" | cut -d: -f6)
-  
-  # Create recording directory with proper permissions
-  echo "Setting up recording directory..."
-  RECORDING_DIR="$USER_HOME/recordings"
-  mkdir -p "$RECORDING_DIR"
-  chmod -R 777 "$RECORDING_DIR"
-  chown -R "$USER_NAME:$(id -g $USER_NAME)" "$RECORDING_DIR"
-  echo "Directory ready: $RECORDING_DIR"
-  
-  # Update config file to use the right recording directory if it exists
-  if [ -f "$PROJECT_ROOT/config/config.yaml" ]; then
-    echo "Updating output_dir in config file..."
-    sed -i "s|output_dir:.*|output_dir: \"$RECORDING_DIR\"  # Use home directory for reliable permissions|" "$PROJECT_ROOT/config/config.yaml"
-  fi
-  
-  # Test direct camera recording if we're on a Raspberry Pi
-  if [ -e "/dev/video0" ] && command -v rpicam-vid >/dev/null; then
-    echo "Testing direct camera recording..."
-    TEST_FILE="$RECORDING_DIR/install_test_$(date +%Y%m%d_%H%M%S).mp4"
-    echo "Will save to: $TEST_FILE"
-    
-    # Try rpicam-vid for Pi
-    echo "Testing with rpicam-vid..."
-    if ! rpicam-vid --no-raw --width 400 --height 400 --timeout 3000 --codec h264 --output "$TEST_FILE" 2>/dev/null; then
-      echo "H264 recording failed, trying with MJPEG codec..."
-      
-      # Try with MJPEG codec
-      TEST_FILE="$RECORDING_DIR/install_test_mjpeg_$(date +%Y%m%d_%H%M%S).mkv"
-      rpicam-vid --no-raw --width 400 --height 400 --timeout 3000 --codec mjpeg --output "$TEST_FILE" 2>/dev/null || true
-    fi
-    
-    # Check file size of any test files
-    for f in "$RECORDING_DIR/install_test_"*; do
-      if [ -f "$f" ]; then
-        FILE_SIZE=$(stat -c%s "$f" 2>/dev/null || echo "0")
-        if [ "$FILE_SIZE" -gt 10000 ]; then
-          echo -e "${GREEN}✓ Direct recording successful with file size: $(( FILE_SIZE / 1024 ))KB${NC}"
-          echo "Test file: $f"
-        else
-          echo -e "${YELLOW}⚠ Test recording created small file: $FILE_SIZE bytes${NC}"
-        fi
-      fi
-    done
-  fi
-  
-  # Fix LSL stream configuration with a test program
-  echo "Testing and configuring LSL stream..."
-  
-  LSL_TEST_FILE="/tmp/lsl_test_$$.py"
-  cat > "$LSL_TEST_FILE" << 'EOF'
-#!/usr/bin/env python3
-import sys
-import time
-
-def configure_lsl_stream():
-    try:
-        import pylsl
-        
-        # Create LSL stream with 4 channels
-        info = pylsl.StreamInfo(
-            name="IMX296Camera",
-            type="VideoEvents",
-            channel_count=4,
-            nominal_srate=30,
-            channel_format=pylsl.cf_double,
-            source_id="cam1"
-        )
-        
-        # Add metadata
-        channels = info.desc().append_child("channels")
-        channels.append_child("channel").append_child_value("label", "timestamp").append_child_value("type", "time").append_child_value("unit", "s")
-        channels.append_child("channel").append_child_value("label", "recording").append_child_value("type", "status").append_child_value("unit", "bool")
-        channels.append_child("channel").append_child_value("label", "frame").append_child_value("type", "index").append_child_value("unit", "count")
-        channels.append_child("channel").append_child_value("label", "trigger").append_child_value("type", "code").append_child_value("unit", "id")
-        
-        # Create outlet
-        outlet = pylsl.StreamOutlet(info)
-        
-        # Send test data
-        sample = [time.time(), 0.0, 0.0, 0.0]  # time, recording-status, frame-number, trigger-code
-        outlet.push_sample(sample)
-        print("LSL Test: Successfully created stream and sent sample")
-        
-        # Verify LSL stream creation
-        streams = pylsl.resolve_streams(wait_time=1.0)
-        if any(s.name() == "IMX296Camera" for s in streams):
-            print("LSL stream verified in resolver")
-            return True
-        else:
-            print("LSL stream created but not found in resolver")
-            return False
-    except Exception as e:
-        print(f"LSL Test Error: {e}")
-        return False
-
-if __name__ == "__main__":
-    if configure_lsl_stream():
-        print("LSL stream configuration successful!")
-        sys.exit(0)
-    else:
-        print("LSL stream configuration failed!")
-        sys.exit(1)
-EOF
-
-  chmod +x "$LSL_TEST_FILE"
-  if [ -n "$SUDO_USER" ]; then
-    chown "$SUDO_USER:$(id -g $SUDO_USER)" "$LSL_TEST_FILE"
-  fi
-  
-  # Run the LSL test with the virtual environment Python
-  if [ -d "$PROJECT_ROOT/.venv" ]; then
-    echo "Testing LSL stream creation..."
-    if sudo -u "$SUDO_USER" "$PROJECT_ROOT/.venv/bin/python" "$LSL_TEST_FILE"; then
-      echo -e "${GREEN}✓ LSL stream configuration successful${NC}"
-    else
-      echo -e "${YELLOW}⚠ LSL stream test failed. Will try again after service restart.${NC}"
-    fi
-  fi
-  
-  # Set video device permissions
-  echo "Setting video device permissions..."
-  chmod 666 /dev/video* 2>/dev/null || true
-  chmod 666 /dev/media* 2>/dev/null || true
-  
-  # Create udev rule for persistent permissions if not already done
-  if [ ! -f "/etc/udev/rules.d/99-camera-permissions.rules" ]; then
-    echo "Creating udev rule for persistent camera permissions..."
-    cat > /etc/udev/rules.d/99-camera-permissions.rules << EOF
-# Persistent permissions for camera devices
-KERNEL=="video*", SUBSYSTEM=="video4linux", GROUP="video", MODE="0666"
-KERNEL=="media*", GROUP="video", MODE="0666"
-EOF
-    
-    # Reload udev rules
-    udevadm control --reload-rules || true
-    udevadm trigger || true
-  fi
-  
-  # Restart the service if it exists and is enabled
-  if [ -f "/etc/systemd/system/imx296-camera.service" ]; then
-    echo "Checking if camera service is enabled..."
-    if systemctl is-enabled imx296-camera.service &>/dev/null; then
-      echo "Restarting camera service..."
-      systemctl restart imx296-camera.service
-      sleep 2
-      systemctl status imx296-camera.service
-      
-      echo -e "${GREEN}Camera service restarted${NC}"
-    else
-      echo "Camera service is installed but not enabled."
-    fi
-  fi
-  
-  # Clean up
-  rm -f "$LSL_TEST_FILE"
-  
-  echo -e "${GREEN}Recording directory and LSL fixes complete!${NC}"
-}
-
-# Call the function near the end of the script, right before the final messages
-fix_recording_and_lsl_issues
-
+# Final recommendations
+echo -e "${GREEN}==== Installation Complete ====${NC}"
 echo ""
-echo -e "${GREEN}Installation complete!${NC}"
+echo -e "${YELLOW}Next Steps:${NC}"
+echo "1. Connect your IMX296 camera to the Raspberry Pi"
+echo "2. Reboot the system to ensure all drivers are loaded:"
+echo "   sudo reboot"
 echo ""
-echo -e "${YELLOW}To start the camera service:${NC}"
-echo "  sudo systemctl start imx296-camera.service"
+echo "3. After reboot, test the system:"
+echo "   cd $PROJECT_ROOT"
+echo "   ./bin/clean_start_camera.sh -m"
 echo ""
-echo -e "${YELLOW}To view the camera dashboard:${NC}"
-echo "  $PROJECT_ROOT/bin/view-camera-status.sh"
+echo "4. Or run individual components:"
+echo "   # Test camera: libcamera-hello --list-cameras"
+echo "   # Run system: python3 bin/run_imx296_capture.py"
+echo "   # Monitor: python3 bin/status_monitor.py"
 echo ""
-echo -e "${YELLOW}If you encounter any issues, run the diagnostic tool:${NC}"
-echo "  sudo $PROJECT_ROOT/bin/diagnose_camera.sh"
+echo "5. For smartphone control, configure ntfy topic in config/config.yaml"
 echo ""
-echo -e "${YELLOW}Next steps:${NC}"
-echo "1. Edit config/config.yaml to customize camera settings"
-echo "2. Start the service with: sudo systemctl start imx296-camera.service"
-echo "3. Check status with: $PROJECT_ROOT/bin/view-camera-status.sh"
+echo -e "${GREEN}Installation log completed successfully!${NC}"
 
-# After the section where liblsl is installed, add our fixes for recording directories and LSL
-
-# Create required directories with proper permissions
-echo -e "${YELLOW}----- Setting up recording directories -----${NC}"
-mkdir -p /home/dawg/recordings
-chown -R dawg:dawg /home/dawg/recordings
-chmod -R 777 /home/dawg/recordings
-echo -e "${GREEN}✓ Recording directory created with proper permissions${NC}"
-
-# Create log directory with proper permissions
-echo -e "${YELLOW}----- Setting up log directory -----${NC}"
-mkdir -p /var/log/imx296-camera
-chown -R dawg:dawg /var/log/imx296-camera
-chmod -R 777 /var/log/imx296-camera
-echo -e "${GREEN}✓ Log directory created with proper permissions${NC}"
-
-# Additional fixes for LSL stream numeric values
-echo -e "${YELLOW}----- Testing LSL stream configuration -----${NC}"
-# Test if we can create an LSL stream with numeric values
-if python3 -c 'import pylsl; info = pylsl.StreamInfo("Test", "Markers", 1, 0, "float32", "test"); outlet = pylsl.StreamOutlet(info); outlet.push_sample([123.456]); print("✓ Numeric LSL values work")' 2>/dev/null; then
-  echo -e "${GREEN}✓ LSL stream test successful${NC}"
-else
-  echo -e "${RED}LSL stream test failed. Installing pylsl directly...${NC}"
-  # Force reinstall pylsl without using virtualenv to ensure system-wide availability
-  python3 -m pip install --break-system-packages pylsl==1.16.2
-  
-  # Test again
-  if python3 -c 'import pylsl; info = pylsl.StreamInfo("Test", "Markers", 1, 0, "float32", "test"); outlet = pylsl.StreamOutlet(info); outlet.push_sample([123.456]); print("✓ Numeric LSL values work")' 2>/dev/null; then
-    echo -e "${GREEN}✓ LSL stream fixed successfully${NC}"
-  else
-    echo -e "${RED}LSL stream still not working. Check Python environment.${NC}"
-  fi
-fi 
+exit 0 

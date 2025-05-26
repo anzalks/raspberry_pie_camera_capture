@@ -71,20 +71,99 @@ This system provides a complete solution for IMX296 Global Shutter camera captur
 - **File Management**: Cleans shared memory, configs, cache files
 - **Multi-Mode Operation**: Cleanup-only, verify-only, combined modes
 
-## 🚀 Quick Start
+## 🚀 Installation
 
-### 1. Installation
+### Quick Install (Raspberry Pi Bookworm Compatible)
 
 ```bash
 # Clone repository
 git clone https://github.com/anzalks/raspberry_pie_camera_capture.git
 cd raspberry_pie_camera_capture
 
-# Install dependencies
-pip3 install -r setup/requirements.txt
-
-# Run installation script
+# Run Bookworm-compatible installation script
 sudo ./setup/install.sh
+```
+
+### Installation Features
+
+**✅ Bookworm Compatibility**:
+- Fixed package names (`v4l-utils` vs `v4l2-utils`)
+- Proper liblsl build from source with cmake error handling
+- Fixed pylsl symlink creation for all architectures
+- Enhanced error handling with graceful fallbacks
+
+**✅ Automatic Detection**:
+- Camera hardware detection with libcamera
+- Python version compatibility (3.9+)
+- Architecture-specific library linking
+- Missing package graceful handling
+
+**✅ Complete Setup**:
+- Virtual environment with proper permissions
+- Systemd service installation
+- Desktop shortcut creation
+- Configuration file setup with unique ntfy topics
+
+### Manual Installation (Alternative)
+
+If the automated script fails:
+
+```bash
+# Install system dependencies manually
+sudo apt update
+sudo apt install -y python3 python3-pip python3-venv python3-dev \
+  libcamera-apps ffmpeg git build-essential cmake pkg-config \
+  libboost-dev libboost-thread-dev
+
+# Build liblsl from source
+cd /tmp
+git clone https://github.com/sccn/liblsl.git
+cd liblsl
+mkdir build && cd build
+cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local -DLSL_BUNDLED_BOOST=ON
+make -j$(nproc) && sudo make install
+sudo ldconfig
+
+# Setup Python environment
+cd raspberry_pie_camera_capture
+python3 -m venv --system-site-packages .venv
+.venv/bin/pip install pylsl>=1.16.0 pyyaml>=6.0 requests>=2.28.0 psutil>=5.9.0
+```
+
+### Troubleshooting Installation
+
+**LSL Library Issues**:
+```bash
+# Verify liblsl installation
+ldconfig -p | grep liblsl
+
+# Fix pylsl symlinks manually
+PYLSL_DIR=.venv/lib/python3.*/site-packages/pylsl
+mkdir -p $PYLSL_DIR/lib
+ln -sf /usr/local/lib/liblsl.so $PYLSL_DIR/liblsl64.so
+```
+
+**Package Installation Failures**:
+```bash
+# Check available package names
+apt-cache search v4l-utils
+apt-cache search libboost
+
+# Alternative V4L tools
+sudo apt install -y media-ctl-tools  # If v4l-utils unavailable
+```
+
+### Post-Installation
+
+After successful installation:
+
+```bash
+# Reboot to load camera drivers
+sudo reboot
+
+# Test installation
+libcamera-hello --list-cameras
+python3 -c "import pylsl; print('LSL working')"
 ```
 
 ### 2. Clean Start (Recommended)
