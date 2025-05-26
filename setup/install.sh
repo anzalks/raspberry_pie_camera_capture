@@ -1,7 +1,18 @@
 #!/bin/bash
-# IMX296 Camera System Installation Script - Raspberry Pi Bookworm Compatible
+# IMX296 Camera System Installation Script - Dynamic Path Compatible
 # Author: Anzal KS <anzal.ks@gmail.com>
 # Date: December 2024
+#
+# DYNAMIC PATH COMPATIBILITY:
+# ==========================
+# 
+# All paths are now dynamically detected:
+# - Project root: Auto-detected from script location
+# - User home: Dynamic detection via getent/whoami
+# - Installation paths: Relative to detected project root
+# - Service files: Generated with dynamic paths at install time
+# - Virtual environment: Created relative to project root
+# - Configuration: Dynamic path substitution in all configs
 #
 # RASPBERRY PI BOOKWORM COMPATIBILITY FIXES:
 # ==========================================
@@ -27,7 +38,7 @@
 # - Fixed LSL functionality testing
 #
 # Permission and User Issues Fixed:
-# - Proper SUDO_USER detection and handling
+# - Dynamic SUDO_USER detection and handling
 # - Virtual environment ownership corrections
 # - Directory permission management
 # - Real user home directory detection
@@ -47,8 +58,9 @@
 
 set -e  # Exit on error for better debugging
 
+# Dynamic path detection - works regardless of installation location
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+PROJECT_ROOT="$(cd "$(dirname "$SCRIPT_DIR")" && pwd)"
 
 # Define colors for output
 GREEN='\033[0;32m'
@@ -56,7 +68,8 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
-echo -e "${GREEN}==== IMX296 Camera System Installation Script (Bookworm Compatible) ====${NC}"
+echo -e "${GREEN}==== IMX296 Camera System Installation Script (Dynamic Path Compatible) ====${NC}"
+echo "Script directory: $SCRIPT_DIR"
 echo "Project root: $PROJECT_ROOT"
 
 # Check if running as root
@@ -65,12 +78,22 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-# Get the real user who ran sudo
-REAL_USER=${SUDO_USER:-$(whoami)}
-REAL_USER_HOME=$(getent passwd "$REAL_USER" | cut -d: -f6)
+# Get the real user who ran sudo - dynamic detection
+if [ -n "$SUDO_USER" ]; then
+    REAL_USER="$SUDO_USER"
+    REAL_USER_HOME=$(getent passwd "$REAL_USER" | cut -d: -f6)
+elif [ -n "$USER" ]; then
+    REAL_USER="$USER"
+    REAL_USER_HOME="$HOME"
+else
+    # Fallback: detect the user who owns the project directory
+    REAL_USER=$(stat -c '%U' "$PROJECT_ROOT")
+    REAL_USER_HOME=$(getent passwd "$REAL_USER" | cut -d: -f6)
+fi
 
 echo "Installing for user: $REAL_USER"
 echo "User home: $REAL_USER_HOME"
+echo "Project location: $PROJECT_ROOT"
 
 # Update package list
 echo -e "${YELLOW}----- Updating Package List -----${NC}"
@@ -241,7 +264,7 @@ chown -R "$REAL_USER:$(id -g $REAL_USER)" .venv
 
 # Function to run pip in the virtual environment as the real user
 pip_install_as_user() {
-  sudo -u "$REAL_USER" .venv/bin/pip "$@"
+  sudo -u "$REAL_USER" "$PROJECT_ROOT/.venv/bin/pip" "$@"
 }
 
 # Install Python dependencies
@@ -265,7 +288,7 @@ if [ -n "$LIBLSL_PATH" ]; then
   echo "Found liblsl at: $LIBLSL_PATH"
   
   # Find the correct python version in venv
-  PYTHON_VERSION=$(sudo -u "$REAL_USER" .venv/bin/python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+  PYTHON_VERSION=$(sudo -u "$REAL_USER" "$PROJECT_ROOT/.venv/bin/python3" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
   PYLSL_DIR="$PROJECT_ROOT/.venv/lib/python${PYTHON_VERSION}/site-packages/pylsl"
   
   # Create necessary directory structure if it exists
@@ -298,7 +321,7 @@ pip_install_as_user install \
   scipy \
   matplotlib
 
-# Create required directories
+# Create required directories with dynamic paths
 echo -e "${YELLOW}----- Creating Required Directories -----${NC}"
 sudo -u "$REAL_USER" mkdir -p "$PROJECT_ROOT/logs"
 sudo -u "$REAL_USER" mkdir -p "$PROJECT_ROOT/recordings"
@@ -312,24 +335,30 @@ chmod +x "$PROJECT_ROOT/setup/"*.sh || true
 
 # Function to update camera config (this was missing in the original)
 update_camera_config() {
-  echo "Updating camera configuration..."
-  if [ -f "$PROJECT_ROOT/config/config.yaml" ]; then
+  echo "Updating camera configuration with dynamic paths..."
+  CONFIG_FILE="$PROJECT_ROOT/config/config.yaml"
+  if [ -f "$CONFIG_FILE" ]; then
     # Ensure the config has proper video format settings
-    if ! grep -q "video_format.*mkv" "$PROJECT_ROOT/config/config.yaml"; then
-      echo "  video_format: \"mkv\"" >> "$PROJECT_ROOT/config/config.yaml"
+    if ! grep -q "video_format.*mkv" "$CONFIG_FILE"; then
+      echo "  video_format: \"mkv\"" >> "$CONFIG_FILE"
     fi
-    if ! grep -q "codec.*mjpeg" "$PROJECT_ROOT/config/config.yaml"; then
-      echo "  codec: \"mjpeg\"" >> "$PROJECT_ROOT/config/config.yaml"
+    if ! grep -q "codec.*mjpeg" "$CONFIG_FILE"; then
+      echo "  codec: \"mjpeg\"" >> "$CONFIG_FILE"
     fi
-    echo -e "${GREEN}✓ Camera configuration updated${NC}"
+    
+    # Update any hardcoded paths to be relative to project root
+    sed -i "s|script_path: \"/.*GScrop\"|script_path: \"bin/GScrop\"|" "$CONFIG_FILE"
+    sed -i "s|output_dir: \"/.*recordings\"|output_dir: \"recordings\"|" "$CONFIG_FILE"
+    
+    echo -e "${GREEN}✓ Camera configuration updated with dynamic paths${NC}"
   else
     echo -e "${YELLOW}Config file not found, will be created on first run${NC}"
   fi
 }
 
-# Copy config file example if needed
+# Copy config file example if needed and configure dynamic paths
 if [ ! -f "$PROJECT_ROOT/config/config.yaml" ] && [ -f "$PROJECT_ROOT/config/config.yaml.example" ]; then
-  echo "Creating config.yaml from example..."
+  echo "Creating config.yaml from example with dynamic paths..."
   sudo -u "$REAL_USER" cp "$PROJECT_ROOT/config/config.yaml.example" "$PROJECT_ROOT/config/config.yaml"
   
   # Detect the actual media device for the IMX296 camera
@@ -351,13 +380,13 @@ if [ ! -f "$PROJECT_ROOT/config/config.yaml" ] && [ -f "$PROJECT_ROOT/config/con
     echo "Updated config with camera device: $MEDIA_DEVICE"
   fi
   
-  # Create a unique ntfy topic
-  NTFY_TOPIC="raspie-camera-$(hostname)-$(date +%s | tail -c 6)"
+  # Create a unique ntfy topic based on hostname and project location
+  NTFY_TOPIC="$(hostname)-camera-$(basename "$PROJECT_ROOT")-$(date +%s | tail -c 6)"
   sed -i "s|topic: \"raspie-camera\"|topic: \"$NTFY_TOPIC\"|" "$PROJECT_ROOT/config/config.yaml"
   echo "Set ntfy.sh topic to: $NTFY_TOPIC"
 fi
 
-# Update camera config
+# Update camera config with dynamic paths
 update_camera_config
 
 # Test installations
@@ -365,7 +394,7 @@ echo -e "${YELLOW}----- Testing Installations -----${NC}"
 
 # Test Python dependencies
 echo "Testing Python dependencies..."
-if sudo -u "$REAL_USER" .venv/bin/python3 -c "import yaml, requests, psutil; print('✓ Basic Python dependencies OK')"; then
+if sudo -u "$REAL_USER" "$PROJECT_ROOT/.venv/bin/python3" -c "import yaml, requests, psutil; print('✓ Basic Python dependencies OK')"; then
   echo -e "${GREEN}✓ Python dependencies installed successfully${NC}"
 else
   echo -e "${RED}✗ Python dependencies test failed${NC}"
@@ -373,12 +402,12 @@ fi
 
 # Test LSL installation
 echo "Testing LSL installation..."
-if sudo -u "$REAL_USER" .venv/bin/python3 -c "import pylsl; print(f'✓ pylsl version: {pylsl.version.__version__}')"; then
+if sudo -u "$REAL_USER" "$PROJECT_ROOT/.venv/bin/python3" -c "import pylsl; print(f'✓ pylsl version: {pylsl.version.__version__}')"; then
   echo -e "${GREEN}✓ LSL installation successful${NC}"
   
   # Test LSL functionality
   echo "Testing LSL stream creation..."
-  if sudo -u "$REAL_USER" .venv/bin/python3 -c "
+  if sudo -u "$REAL_USER" "$PROJECT_ROOT/.venv/bin/python3" -c "
 import pylsl
 info = pylsl.StreamInfo('test', 'Test', 1, 100, 'float32', 'test')
 outlet = pylsl.StreamOutlet(info)
@@ -394,7 +423,7 @@ else
   
   # Re-create symlinks after pylsl installation
   if [ -n "$LIBLSL_PATH" ]; then
-    PYTHON_VERSION=$(sudo -u "$REAL_USER" .venv/bin/python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+    PYTHON_VERSION=$(sudo -u "$REAL_USER" "$PROJECT_ROOT/.venv/bin/python3" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
     PYLSL_DIR="$PROJECT_ROOT/.venv/lib/python${PYTHON_VERSION}/site-packages/pylsl"
     
     if [ -d "$PYLSL_DIR" ]; then
@@ -403,7 +432,7 @@ else
       echo "Re-created pylsl symlinks"
       
       # Test again
-      if sudo -u "$REAL_USER" .venv/bin/python3 -c "import pylsl; print('✓ pylsl working after symlink fix')"; then
+      if sudo -u "$REAL_USER" "$PROJECT_ROOT/.venv/bin/python3" -c "import pylsl; print('✓ pylsl working after symlink fix')"; then
         echo -e "${GREEN}✓ LSL fixed and working${NC}"
       else
         echo -e "${YELLOW}⚠ LSL still not working, may need manual intervention${NC}"
@@ -425,12 +454,12 @@ else
   echo "This is normal if you're running on a development machine without the camera."
 fi
 
-# Install systemd service
-echo -e "${YELLOW}----- Installing Systemd Service -----${NC}"
+# Generate systemd service with dynamic paths
+echo -e "${YELLOW}----- Installing Systemd Service with Dynamic Paths -----${NC}"
 SERVICE_FILE="/etc/systemd/system/imx296-camera.service"
 
 if [ ! -f "$SERVICE_FILE" ]; then
-  echo "Installing systemd service..."
+  echo "Installing systemd service with dynamic paths..."
   
   cat > "$SERVICE_FILE" << EOF
 [Unit]
@@ -442,10 +471,11 @@ Type=simple
 User=$REAL_USER
 Group=$(id -gn $REAL_USER)
 WorkingDirectory=$PROJECT_ROOT
-ExecStart=$PROJECT_ROOT/bin/run_imx296_capture.py
+ExecStart=$PROJECT_ROOT/.venv/bin/python $PROJECT_ROOT/bin/run_imx296_capture.py
 Restart=on-failure
 RestartSec=10s
 Environment=PATH=$PROJECT_ROOT/.venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONPATH=$PROJECT_ROOT
 
 [Install]
 WantedBy=multi-user.target
@@ -453,31 +483,74 @@ EOF
   
   systemctl daemon-reload
   
-  echo -e "${GREEN}✓ Systemd service installed${NC}"
+  echo -e "${GREEN}✓ Systemd service installed with dynamic paths${NC}"
   echo "To start: sudo systemctl start imx296-camera"
   echo "To enable on boot: sudo systemctl enable imx296-camera"
 else
   echo "Systemd service already exists"
 fi
 
+# Generate systemd service with monitor and dynamic paths
+SERVICE_MONITOR_FILE="/etc/systemd/system/imx296-camera-monitor.service"
+
+if [ ! -f "$SERVICE_MONITOR_FILE" ]; then
+  echo "Installing systemd service with monitor and dynamic paths..."
+  
+  cat > "$SERVICE_MONITOR_FILE" << EOF
+[Unit]
+Description=IMX296 Camera Service with Status Monitor
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=$REAL_USER
+Group=$(id -gn $REAL_USER)
+WorkingDirectory=$PROJECT_ROOT
+ExecStart=$PROJECT_ROOT/.venv/bin/python $PROJECT_ROOT/bin/start_camera_with_monitor.py --monitor --no-output
+Environment=PYTHONPATH=$PROJECT_ROOT
+Environment=PATH=$PROJECT_ROOT/.venv/bin:/usr/local/bin:/usr/bin:/bin
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Service management
+KillMode=mixed
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  
+  systemctl daemon-reload
+  
+  echo -e "${GREEN}✓ Systemd monitor service installed with dynamic paths${NC}"
+  echo "To start: sudo systemctl start imx296-camera-monitor"
+  echo "To enable on boot: sudo systemctl enable imx296-camera-monitor"
+else
+  echo "Systemd monitor service already exists"
+fi
+
 # Create desktop shortcut if desktop environment exists
 if [ -d "$REAL_USER_HOME/Desktop" ]; then
-  echo -e "${YELLOW}----- Creating Desktop Shortcut -----${NC}"
+  echo -e "${YELLOW}----- Creating Desktop Shortcut with Dynamic Paths -----${NC}"
   DESKTOP_FILE="$REAL_USER_HOME/Desktop/IMX296-Camera.desktop"
   
   sudo -u "$REAL_USER" cat > "$DESKTOP_FILE" << EOF
 [Desktop Entry]
 Name=IMX296 Camera System
 Comment=IMX296 Camera Status Monitor
-Exec=x-terminal-emulator -e '$PROJECT_ROOT/bin/status_monitor.py'
+Exec=x-terminal-emulator -e '$PROJECT_ROOT/.venv/bin/python $PROJECT_ROOT/bin/status_monitor.py'
 Icon=camera
 Terminal=true
 Type=Application
 Categories=Utility;
+Path=$PROJECT_ROOT
 EOF
   
   sudo -u "$REAL_USER" chmod +x "$DESKTOP_FILE"
-  echo -e "${GREEN}✓ Desktop shortcut created${NC}"
+  echo -e "${GREEN}✓ Desktop shortcut created with dynamic paths${NC}"
 fi
 
 # Configure IMX296 camera module
@@ -536,8 +609,14 @@ if libcamera-hello --list-cameras 2>/dev/null | grep -i imx296; then
   configure_imx296_camera
 fi
 
-# Final recommendations
+# Final recommendations with dynamic paths
 echo -e "${GREEN}==== Installation Complete ====${NC}"
+echo ""
+echo -e "${YELLOW}Installation Summary:${NC}"
+echo "Project root: $PROJECT_ROOT"
+echo "User: $REAL_USER"
+echo "User home: $REAL_USER_HOME"
+echo "Virtual environment: $PROJECT_ROOT/.venv"
 echo ""
 echo -e "${YELLOW}Next Steps:${NC}"
 echo "1. Connect your IMX296 camera to the Raspberry Pi"
@@ -550,11 +629,11 @@ echo "   ./bin/clean_start_camera.sh -m"
 echo ""
 echo "4. Or run individual components:"
 echo "   # Test camera: libcamera-hello --list-cameras"
-echo "   # Run system: python3 bin/run_imx296_capture.py"
-echo "   # Monitor: python3 bin/status_monitor.py"
+echo "   # Run system: $PROJECT_ROOT/.venv/bin/python $PROJECT_ROOT/bin/run_imx296_capture.py"
+echo "   # Monitor: $PROJECT_ROOT/.venv/bin/python $PROJECT_ROOT/bin/status_monitor.py"
 echo ""
-echo "5. For smartphone control, configure ntfy topic in config/config.yaml"
+echo "5. For smartphone control, configure ntfy topic in $PROJECT_ROOT/config/config.yaml"
 echo ""
-echo -e "${GREEN}Installation log completed successfully!${NC}"
+echo -e "${GREEN}Installation log completed successfully with dynamic path support!${NC}"
 
 exit 0 

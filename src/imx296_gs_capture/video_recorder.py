@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Video Recording Pipeline for IMX296 Camera
-==========================================
+Video Recording Pipeline for IMX296 Camera - Dynamic Path Compatible
+===================================================================
 
 Handles video recording using ffmpeg with MKV output format.
 Creates organized folder structure: recordings/yyyy_mm_dd/video/
@@ -22,11 +22,11 @@ import shutil
 
 
 class VideoRecorder:
-    """Handles video recording pipeline with ffmpeg."""
+    """Handles video recording pipeline with ffmpeg using dynamic paths."""
     
     def __init__(self, config: Dict[str, Any]):
         """
-        Initialize video recorder.
+        Initialize video recorder with dynamic path detection.
         
         Args:
             config: Recording configuration dictionary
@@ -34,15 +34,31 @@ class VideoRecorder:
         self.config = config
         self.logger = logging.getLogger(__name__)
         
-        # Recording configuration
-        self.base_dir = Path(self.config.get('output_dir', 'recordings'))
+        # Dynamic path detection for project root
+        project_root = Path(__file__).resolve().parent.parent.parent
+        
+        # Recording configuration with dynamic path resolution
+        output_dir = self.config.get('output_dir', 'recordings')
+        if os.path.isabs(output_dir):
+            self.base_dir = Path(output_dir)
+        else:
+            # Make relative paths relative to project root
+            self.base_dir = project_root / output_dir
+        
         self.video_format = self.config.get('video_format', 'mkv')
         self.codec = self.config.get('codec', 'mjpeg')
         self.quality = self.config.get('quality', 90)
         
-        # System paths
+        # System paths with dynamic detection
         system_config = self.config.get('system', {})
         self.ffmpeg_path = system_config.get('ffmpeg_path', '/usr/bin/ffmpeg')
+        
+        # Also check for ffmpeg in PATH
+        if not Path(self.ffmpeg_path).exists():
+            ffmpeg_in_path = shutil.which('ffmpeg')
+            if ffmpeg_in_path:
+                self.ffmpeg_path = ffmpeg_in_path
+                self.logger.info(f"Using ffmpeg from PATH: {self.ffmpeg_path}")
         
         # State tracking
         self.recording = False
@@ -55,7 +71,10 @@ class VideoRecorder:
         # Ensure base directory exists
         self.base_dir.mkdir(parents=True, exist_ok=True)
         
-        self.logger.info(f"Video recorder initialized - output dir: {self.base_dir}")
+        self.logger.info(f"Video recorder initialized with dynamic paths:")
+        self.logger.info(f"  Project root: {project_root}")
+        self.logger.info(f"  Output directory: {self.base_dir}")
+        self.logger.info(f"  ffmpeg path: {self.ffmpeg_path}")
     
     def _get_recording_path(self, timestamp: Optional[datetime] = None) -> Path:
         """

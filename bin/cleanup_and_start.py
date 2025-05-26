@@ -178,11 +178,12 @@ class CameraSystemCleanup:
         """Clean up old configuration files that might conflict."""
         self.print_section("CLEANING UP OLD CONFIGURATIONS")
         
-        # Old config locations that might conflict
+        # Old config locations that might conflict (using dynamic paths)
         old_configs = [
             "config.yaml",  # Old location in root
             "/etc/imx296-camera/",
-            "/home/pi/.camera_config/",
+            # Use dynamic user detection instead of hardcoded /home/pi
+            Path.home() / ".camera_config/",  # Current user's home
             "old_config/",
             "backup_config/"
         ]

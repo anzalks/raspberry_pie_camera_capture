@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-IMX296 Camera Capture Launcher Script
+IMX296 Camera Capture Launcher Script - Dynamic Path Compatible
 This script handles proper initialization and launching of the IMX296 camera capture system.
 
 Author: Anzal KS <anzal.ks@gmail.com>
@@ -16,21 +16,36 @@ import logging
 import shutil
 from pathlib import Path
 
-# Setup basic logging
+# Dynamic path detection - works regardless of installation location
+script_path = Path(__file__).resolve()
+project_root = script_path.parent.parent
+bin_dir = script_path.parent
+
+# Change to project root for consistent operation
+original_cwd = Path.cwd()
+os.chdir(project_root)
+
+# Setup basic logging with dynamic paths
+log_dir = project_root / "logs"
+log_dir.mkdir(exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler('logs/camera_launcher.log')
+        logging.FileHandler(log_dir / 'camera_launcher.log')
     ]
 )
 logger = logging.getLogger('camera_launcher')
 
-# Ensure we're in the project root directory
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-os.chdir(project_root)
-logger.info(f"Working directory: {os.getcwd()}")
+# Log dynamic path detection for debugging
+logger.info(f"Dynamic path detection:")
+logger.info(f"  Script location: {script_path}")
+logger.info(f"  Project root: {project_root}")
+logger.info(f"  Bin directory: {bin_dir}")
+logger.info(f"  Working directory: {Path.cwd()}")
+logger.info(f"  Original CWD: {original_cwd}")
 
 def check_camera_devices():
     """Check if camera devices are available."""
@@ -64,27 +79,37 @@ def check_camera_devices():
     return True
 
 def check_gscrop_script():
-    """Check if GScrop script is available and executable."""
-    logger.info("Checking GScrop script...")
+    """Check if GScrop script is available and executable using dynamic path detection."""
+    logger.info("Checking GScrop script with dynamic path detection...")
     
-    gscrop_path = os.path.join(project_root, 'bin', 'GScrop')
+    # Search for GScrop in multiple locations
+    gscrop_locations = [
+        project_root / 'bin' / 'GScrop',
+        bin_dir / 'GScrop',
+        project_root / 'GScrop',
+        Path.cwd() / 'GScrop'
+    ]
     
-    if not os.path.exists(gscrop_path):
-        logger.error(f"GScrop script not found at: {gscrop_path}")
-        return False
+    for gscrop_path in gscrop_locations:
+        if gscrop_path.exists():
+            if not os.access(gscrop_path, os.X_OK):
+                logger.warning(f"GScrop script found but not executable: {gscrop_path}")
+                logger.info("Attempting to make GScrop executable...")
+                try:
+                    gscrop_path.chmod(0o755)
+                    logger.info("Successfully made GScrop executable")
+                except Exception as e:
+                    logger.error(f"Failed to make GScrop executable: {e}")
+                    continue
+            
+            logger.info(f"GScrop script found and executable: {gscrop_path}")
+            return True
     
-    if not os.access(gscrop_path, os.X_OK):
-        logger.error(f"GScrop script is not executable: {gscrop_path}")
-        logger.info("Attempting to make GScrop executable...")
-        try:
-            os.chmod(gscrop_path, 0o755)
-            logger.info("Successfully made GScrop executable")
-        except Exception as e:
-            logger.error(f"Failed to make GScrop executable: {e}")
-            return False
+    logger.error("GScrop script not found in any expected location:")
+    for path in gscrop_locations:
+        logger.error(f"  - {path}")
     
-    logger.info(f"GScrop script found and executable: {gscrop_path}")
-    return True
+    return False
 
 def reset_camera_devices():
     """Reset camera devices to ensure clean start."""
@@ -123,26 +148,31 @@ def reset_camera_devices():
     logger.info("Camera reset completed")
 
 def ensure_directories():
-    """Ensure required directories exist with proper permissions."""
-    dirs = ['logs', 'recordings']
-    for dir_name in dirs:
-        dir_path = os.path.join(project_root, dir_name)
-        os.makedirs(dir_path, exist_ok=True)
+    """Ensure required directories exist with proper permissions using dynamic paths."""
+    required_dirs = ['logs', 'recordings', 'config']
+    
+    for dir_name in required_dirs:
+        dir_path = project_root / dir_name
+        dir_path.mkdir(exist_ok=True)
         try:
             # Try to set permissions, but don't fail if not possible
-            os.chmod(dir_path, 0o777)
+            dir_path.chmod(0o777)
         except:
             pass
         logger.info(f"Ensured directory exists: {dir_path}")
 
 def launch_camera_capture():
-    """Launch the IMX296 capture script."""
+    """Launch the IMX296 capture script using dynamic path detection."""
     logger.info("Launching IMX296 camera capture system...")
     
     # Import and run the main capture script
     try:
         logger.info("Importing imx296_capture module...")
-        sys.path.insert(0, os.path.join(project_root, 'src'))
+        
+        # Add project source directory to Python path
+        src_dir = project_root / 'src'
+        if str(src_dir) not in sys.path:
+            sys.path.insert(0, str(src_dir))
         
         # Use the module path for the IMX296 capture
         from imx296_gs_capture import imx296_capture
@@ -150,26 +180,28 @@ def launch_camera_capture():
         # Run the main function
         logger.info("Starting imx296_capture.main()")
         return imx296_capture.main()
+        
     except ImportError as e:
         logger.error(f"Failed to import imx296_capture module: {e}")
         
         # Try to run as subprocess instead
         logger.info("Trying to run as subprocess instead...")
         try:
-            capture_script = os.path.join(project_root, 'src', 'imx296_gs_capture', 'imx296_capture.py')
-            if os.path.exists(capture_script):
+            capture_script = project_root / 'src' / 'imx296_gs_capture' / 'imx296_capture.py'
+            if capture_script.exists():
                 logger.info(f"Running {capture_script}")
                 
                 # Make sure it's executable
-                os.chmod(capture_script, 0o755)
+                capture_script.chmod(0o755)
                 
                 # Run the script
-                subprocess.run([sys.executable, capture_script], check=True)
+                subprocess.run([sys.executable, str(capture_script)], check=True)
                 return 0
             else:
                 logger.error(f"Script not found: {capture_script}")
         except Exception as subproc_e:
             logger.error(f"Failed to run as subprocess: {subproc_e}")
+            
     except Exception as e:
         logger.error(f"Error launching camera capture: {e}")
     
@@ -177,7 +209,8 @@ def launch_camera_capture():
 
 def main():
     """Main function to set up and launch the camera capture system."""
-    logger.info("Starting IMX296 camera capture launcher...")
+    logger.info("Starting IMX296 camera capture launcher with dynamic path support...")
+    logger.info(f"Project root: {project_root}")
     
     # Ensure required directories exist
     ensure_directories()
@@ -198,11 +231,12 @@ def main():
     try:
         return launch_camera_capture()
     except KeyboardInterrupt:
-        logger.info("Received keyboard interrupt, shutting down...")
+        logger.info("Received keyboard interrupt, stopping...")
         return 0
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
         return 1
 
 if __name__ == "__main__":
-    sys.exit(main()) 
+    exit_code = main()
+    sys.exit(exit_code) 

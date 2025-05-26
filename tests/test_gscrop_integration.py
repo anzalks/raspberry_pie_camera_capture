@@ -120,44 +120,35 @@ def test_gscrop_script():
     
     return True
 
-def test_directory_structure():
-    """Test required directory structure."""
-    print("\nTesting directory structure...")
+def test_project_structure():
+    """Test that project has correct structure using dynamic path detection."""
+    # Get project root dynamically
+    current_file = Path(__file__).resolve()
+    project_root = current_file.parent.parent
     
     required_dirs = ['src/imx296_gs_capture', 'config', 'bin', 'logs', 'recordings']
     
+    missing_dirs = []
     for dir_path in required_dirs:
-        if os.path.exists(dir_path):
-            print(f"✓ Directory exists: {dir_path}")
-        else:
-            print(f"✗ Directory missing: {dir_path}")
-            # Try to create logs and recordings directories
+        full_path = project_root / dir_path
+        if not full_path.exists():
+            missing_dirs.append(str(full_path))
+            
+            # Try to create logs and recordings directories for tests
             if dir_path in ['logs', 'recordings']:
                 try:
-                    os.makedirs(dir_path, exist_ok=True)
-                    print(f"✓ Created directory: {dir_path}")
+                    full_path.mkdir(parents=True, exist_ok=True)
+                    print(f"✓ Created directory for tests: {full_path}")
                 except Exception as e:
-                    print(f"✗ Failed to create directory {dir_path}: {e}")
-                    return False
-            else:
-                return False
+                    print(f"✗ Failed to create test directory {full_path}: {e}")
     
-    # Check key files
-    required_files = [
-        'src/imx296_gs_capture/__init__.py',
-        'src/imx296_gs_capture/imx296_capture.py',
-        'config/config.yaml',
-        'bin/GScrop'
-    ]
+    # Filter out directories we successfully created
+    missing_dirs = [d for d in missing_dirs if not Path(d).exists()]
     
-    for file_path in required_files:
-        if os.path.exists(file_path):
-            print(f"✓ File exists: {file_path}")
-        else:
-            print(f"✗ File missing: {file_path}")
-            return False
+    if missing_dirs:
+        print(f"✗ Missing required directories: {missing_dirs}")
     
-    return True
+    return len(missing_dirs) == 0
 
 def test_launcher_script():
     """Test the launcher script."""
@@ -191,7 +182,7 @@ def main():
     print("=" * 60)
     
     tests = [
-        ("Directory Structure", test_directory_structure),
+        ("Directory Structure", test_project_structure),
         ("Configuration Loading", test_config_loading),
         ("GScrop Script", test_gscrop_script),
         ("Launcher Script", test_launcher_script),

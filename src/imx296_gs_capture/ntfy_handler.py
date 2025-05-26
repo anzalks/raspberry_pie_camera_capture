@@ -34,9 +34,18 @@ class NtfyHandler:
         self.callback_handler = callback_handler
         self.logger = logging.getLogger(__name__)
         
-        # ntfy configuration
+        # ntfy configuration with dynamic topic generation
         self.server = self.config.get('server', 'https://ntfy.sh')
-        self.topic = self.config.get('topic', 'raspie-camera-dawg-123')
+        
+        # Generate dynamic topic if not specified
+        default_topic = self.config.get('topic')
+        if not default_topic:
+            import platform
+            hostname = platform.node() or 'unknown'
+            # Create unique topic based on hostname and timestamp
+            default_topic = f"raspie-camera-{hostname}-{int(time.time()) % 10000}"
+        
+        self.topic = default_topic
         self.poll_interval = self.config.get('poll_interval_sec', 2)
         
         # State tracking

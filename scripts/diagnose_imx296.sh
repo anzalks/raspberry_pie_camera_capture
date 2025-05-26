@@ -15,6 +15,12 @@ echo "===== IMX296 Camera Diagnostic Script ====="
 echo "This script will run diagnostics on your IMX296 camera setup."
 echo ""
 
+# Dynamic path detection
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+USER_HOME="$(eval echo ~$USER)"
+RECORDING_DIR="$PROJECT_ROOT/recordings"
+
 # Function to highlight output
 highlight() {
   echo -e "\e[1;33m$1\e[0m"
@@ -173,7 +179,6 @@ fi
 
 highlight "7. Checking directory permissions..."
 # Check recording directory
-RECORDING_DIR="/home/dawg/recordings"
 if [ -d "$RECORDING_DIR" ]; then
   echo "✓ Recording directory exists: $RECORDING_DIR"
   
@@ -186,19 +191,19 @@ if [ -d "$RECORDING_DIR" ]; then
   echo "  Owner: $OWNER"
   echo "  Group: $GROUP"
   
-  # Check if writable by dawg user
-  if su -c "touch $RECORDING_DIR/test_write.tmp" dawg 2>/dev/null; then
-    echo "✓ Directory is writable by dawg user"
+  # Check if writable by current user
+  if touch "$RECORDING_DIR/test_write.tmp" 2>/dev/null; then
+    echo "✓ Directory is writable by $USER user"
     rm -f "$RECORDING_DIR/test_write.tmp"
   else
-    echo "✗ Directory is NOT writable by dawg user"
-    echo "  Fix with: sudo chown -R dawg:dawg $RECORDING_DIR && sudo chmod -R 777 $RECORDING_DIR"
+    echo "✗ Directory is NOT writable by $USER user"
+    echo "  Fix with: sudo chown -R $USER:$USER $RECORDING_DIR && sudo chmod -R 777 $RECORDING_DIR"
   fi
 else
   echo "✗ Recording directory does not exist: $RECORDING_DIR"
   echo "  Creating directory and setting permissions..."
   mkdir -p "$RECORDING_DIR"
-  chown -R dawg:dawg "$RECORDING_DIR"
+  chown -R "$USER:$USER" "$RECORDING_DIR"
   chmod -R 777 "$RECORDING_DIR"
   echo "✓ Created recording directory with proper permissions"
 fi
@@ -322,7 +327,7 @@ echo "Please check the messages above for any '✗' or '⚠' symbols indicating 
 echo "If you need assistance, please provide the full output of this script."
 echo ""
 echo "Quick Fixes:"
-echo "  1. Reset recording directory: sudo mkdir -p /home/dawg/recordings && sudo chown -R dawg:dawg /home/dawg/recordings && sudo chmod -R 777 /home/dawg/recordings"
+echo "  1. Reset recording directory: sudo mkdir -p $RECORDING_DIR && sudo chown -R $USER:$USER $RECORDING_DIR && sudo chmod -R 777 $RECORDING_DIR"
 echo "  2. Restart service: sudo systemctl restart imx296-camera.service"
 echo "  3. Reinstall pylsl: python3 -m pip install --force-reinstall pylsl"
 echo "  4. Run direct capture test: sudo /usr/local/bin/test_direct_capture.py"

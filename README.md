@@ -4,7 +4,7 @@
 **Repository**: https://github.com/anzalks/raspberry_pie_camera_capture  
 **License**: MIT
 
-A comprehensive high-performance camera capture system for IMX296 Global Shutter cameras with automatic detection, independent LSL streaming, remote control, and advanced cleanup capabilities.
+A comprehensive high-performance camera capture system for IMX296 Global Shutter cameras with **dynamic path compatibility**, automatic detection, independent LSL streaming, remote control, and advanced cleanup capabilities.
 
 ## 🎯 Overview
 
@@ -16,11 +16,39 @@ This system provides a complete solution for IMX296 Global Shutter camera captur
 - **Professional video recording** with MKV output
 - **Real-time status monitoring** with terminal UI
 - **Comprehensive cleanup system** for conflict-free deployment
+- **🔄 Dynamic Path Compatibility** - Works on any user, device, or installation location
 
 **Total codebase**: 9,577 lines across Python, Shell, and configuration files  
 **Test coverage**: 38/38 tests passing (100% success rate)
 
 ## ✅ Features
+
+### 🔄 Dynamic Path Compatibility (MAJOR UPDATE)
+This system now features **complete path portability** - it works seamlessly regardless of installation location, username, or device:
+
+**✅ Universal Installation**:
+- Works on any username (`pi`, `dawg`, `ubuntu`, `anzal`, etc.)
+- Works in any directory (`/home/user`, `/opt`, `/usr/local`, etc.)
+- Works on any Raspberry Pi device or Linux system
+- No hardcoded paths to specific users or directories
+
+**✅ Auto-Detection Technology**:
+- **Dynamic Project Root**: Detected from actual script locations
+- **Dynamic User Context**: Multi-fallback user detection (`getent`/`whoami`/`$USER`)
+- **Dynamic Service Generation**: Systemd services created with detected paths
+- **Dynamic Config Loading**: Searches multiple config locations intelligently
+
+**✅ Migration Features**:
+- **Seamless Device Transfer**: `git clone` + `install.sh` on any device
+- **User Account Changes**: Works when moved between user accounts
+- **Directory Relocation**: Functions correctly in any filesystem location
+- **CI/CD Ready**: Perfect for automated deployments and containers
+
+**✅ Backward Compatibility**:
+- Existing installations continue working unchanged
+- All original functionality preserved
+- No configuration file changes required
+- Same command-line interface
 
 ### 🎥 Core Camera System
 - **IMX296 Global Shutter Integration**: Hardware-level cropping via media-ctl
@@ -73,20 +101,29 @@ This system provides a complete solution for IMX296 Global Shutter camera captur
 
 ## 🚀 Installation
 
-### Quick Install (Raspberry Pi Bookworm Compatible)
+### Quick Install (Dynamic Path Compatible)
+
+The installation system now works on **any user, any device, any location**:
 
 ```bash
-# Clone repository
+# Clone repository anywhere
 git clone https://github.com/anzalks/raspberry_pie_camera_capture.git
 cd raspberry_pie_camera_capture
 
-# Run Bookworm-compatible installation script
+# Run dynamic installation script (works for any user)
 sudo ./setup/install.sh
 ```
 
 ### Installation Features
 
-**✅ Bookworm Compatibility**:
+**✅ Dynamic Path Compatibility**:
+- Auto-detects installation location from script directory
+- Dynamic user detection via `getent`/`whoami` with multiple fallbacks
+- All paths calculated relative to detected project root
+- Systemd services generated with dynamic paths at install time
+- Works when moved between users, devices, or filesystem locations
+
+**✅ Raspberry Pi Bookworm Compatibility**:
 - Fixed package names (`v4l-utils` vs `v4l2-utils`)
 - Proper liblsl build from source with cmake error handling
 - Fixed pylsl symlink creation for all architectures
@@ -100,7 +137,7 @@ sudo ./setup/install.sh
 
 **✅ Complete Setup**:
 - Virtual environment with proper permissions
-- Systemd service installation
+- Systemd service installation with dynamic paths
 - Desktop shortcut creation
 - Configuration file setup with unique ntfy topics
 

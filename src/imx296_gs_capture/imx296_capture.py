@@ -34,9 +34,21 @@ except ImportError:
     psutil = None
     PSUTIL_AVAILABLE = False
 
-# Add project root to Python path
+# Add project root to Python path - dynamic detection from actual file location
 project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(project_root))
+
+# Change working directory to project root for consistent file access
+original_cwd = os.getcwd()
+os.chdir(project_root)
+
+# Log the dynamic paths for debugging
+if __name__ == "__main__":
+    print(f"Dynamic path detection:")
+    print(f"  Script location: {Path(__file__).resolve()}")
+    print(f"  Project root: {project_root}")
+    print(f"  Working directory: {os.getcwd()}")
+    print(f"  Original CWD: {original_cwd}")
 
 try:
     import pylsl
@@ -167,24 +179,47 @@ class GSCropCameraCapture:
         self.logger.info(f"GScrop camera capture initialized: {self.width}x{self.height}@{self.fps}fps (independent mode)")
     
     def _find_gscrop_script(self):
-        """Find the GScrop script in the project."""
-        # Get script path from config
+        """Find the GScrop script in the project using dynamic path detection."""
+        # Get script path from config (should be relative to project root)
         script_path = self.config['camera'].get('script_path', 'bin/GScrop')
         
-        # Look for GScrop script in common locations
+        # Get project root dynamically
+        project_root = Path(__file__).resolve().parent.parent.parent
+        
+        # Look for GScrop script in dynamic locations
         script_locations = [
-            script_path,
-            "./GScrop",
-            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), script_path)
+            # Relative to project root (preferred)
+            project_root / script_path,
+            # Direct relative path (current working directory)
+            Path(script_path),
+            # Legacy absolute path if script_path is absolute
+            Path(script_path) if os.path.isabs(script_path) else None,
+            # Fallback: search in project bin directory
+            project_root / "bin" / "GScrop",
+            # Fallback: current directory
+            Path.cwd() / "GScrop",
+            # Fallback: script directory
+            Path(__file__).parent / "GScrop"
         ]
         
-        for location in script_locations:
-            if os.path.isfile(location) and os.access(location, os.X_OK):
-                self.logger.info(f"Found GScrop script at: {location}")
-                return os.path.abspath(location)
+        # Filter out None values
+        script_locations = [loc for loc in script_locations if loc is not None]
         
-        # If not found, raise an error
-        raise FileNotFoundError("GScrop script not found. Please ensure bin/GScrop exists and is executable.")
+        for location in script_locations:
+            abs_location = location.resolve()
+            if abs_location.is_file() and os.access(abs_location, os.X_OK):
+                self.logger.info(f"Found GScrop script at: {abs_location}")
+                return str(abs_location)
+        
+        # If not found, provide helpful error message
+        self.logger.error("GScrop script not found. Searched in:")
+        for location in script_locations:
+            self.logger.error(f"  - {location.resolve()}")
+        
+        raise FileNotFoundError(
+            f"GScrop script not found. Please ensure it exists and is executable in one of the expected locations. "
+            f"Project root: {project_root}"
+        )
     
     def _auto_detect_camera(self):
         """Automatically detect IMX296 camera and configure media pipeline."""
@@ -1056,31 +1091,50 @@ def setup_logging(config):
 
 
 def load_config(config_file="config/config.yaml"):
-    """Load configuration from YAML file."""
+    """Load configuration from YAML file using dynamic path detection."""
     logger = logging.getLogger('imx296_capture')
     
-    # Try the local config file first, then fallback to other locations
+    # Get project root dynamically
+    project_root = Path(__file__).resolve().parent.parent.parent
+    
+    # Dynamic config file locations - check in order of preference
     config_locations = [
-        os.path.join(os.getcwd(), "config/config.yaml"),
-        config_file,
-        os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "config/config.yaml")
+        # User-specified config file (if absolute path)
+        Path(config_file) if os.path.isabs(config_file) else None,
+        # Config relative to project root (preferred)
+        project_root / config_file,
+        # Config relative to current working directory
+        Path.cwd() / config_file,
+        # Default config location in project
+        project_root / "config" / "config.yaml",
+        # Config in script directory
+        Path(__file__).parent / "config.yaml",
+        # Fallback to example config
+        project_root / "config" / "config.yaml.example",
     ]
+    
+    # Filter out None values
+    config_locations = [loc for loc in config_locations if loc is not None]
     
     # Try each location
     for loc in config_locations:
         try:
-            if os.path.exists(loc):
-                with open(loc, 'r') as f:
+            abs_loc = loc.resolve()
+            if abs_loc.exists():
+                with open(abs_loc, 'r') as f:
                     config = yaml.safe_load(f)
-                logger.info(f"Successfully loaded config from: {loc}")
+                logger.info(f"Successfully loaded config from: {abs_loc}")
                 return config
         except Exception as e:
             logger.warning(f"Error loading config from {loc}: {e}")
     
     # If we get here, all locations failed - create default config
     logger.warning("Failed to load config from any location, using default values")
+    logger.info("Searched in:")
+    for loc in config_locations:
+        logger.info(f"  - {loc.resolve()}")
     
-    # Create a basic default config
+    # Create a basic default config with dynamic paths
     default_config = {
         'system': {
             'media_ctl_path': "/usr/bin/media-ctl",
@@ -1091,10 +1145,11 @@ def load_config(config_file="config/config.yaml"):
             'height': 400,
             'fps': 100,
             'exposure_time_us': 5000,
-            'script_path': 'bin/GScrop',
+            'script_path': 'bin/GScrop',  # Relative to project root
             'markers_file': '/dev/shm/camera_markers.txt',
             'frame_queue_size': 10000,
             'lsl_worker_threads': 1,
+            'auto_detect': True,
             'media_ctl': {
                 'device_pattern': "/dev/media%d",
                 'entity_pattern': "imx296",
@@ -1111,31 +1166,33 @@ def load_config(config_file="config/config.yaml"):
             'id': "cam1"
         },
         'recording': {
-            'output_dir': "recordings",
+            'output_dir': "recordings",  # Relative to project root
             'video_format': "mkv",
             'codec': "mjpeg",
             'quality': 90
         },
         'ntfy': {
             'server': "https://ntfy.sh",
-            'topic': "raspie-camera-dawg-123",
+            'topic': f"raspie-camera-{os.uname().nodename}-{int(time.time()) % 10000}",  # Dynamic topic
             'poll_interval_sec': 2
         },
         'logging': {
             'level': "DEBUG",
             'console': True,
-            'file': "logs/imx296_capture.log",
+            'file': "logs/imx296_capture.log",  # Relative to project root
             'max_size_mb': 10,
             'backup_count': 5
         }
     }
     
-    # Try to save the default config locally
+    # Try to save the default config in project root
     try:
-        os.makedirs("config", exist_ok=True)
-        with open("config/config.yaml", 'w') as f:
-            yaml.dump(default_config, f)
-        logger.info(f"Created default config at: config/config.yaml")
+        config_dir = project_root / "config"
+        config_dir.mkdir(exist_ok=True)
+        config_file_path = config_dir / "config.yaml"
+        with open(config_file_path, 'w') as f:
+            yaml.dump(default_config, f, default_flow_style=False, indent=2)
+        logger.info(f"Created default config at: {config_file_path}")
     except Exception as e:
         logger.warning(f"Could not create default config: {e}")
     
