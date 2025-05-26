@@ -5,7 +5,7 @@ IMX296 Camera Capture Launcher Script
 This script handles proper initialization and launching of the IMX296 camera capture system.
 
 Author: Anzal KS <anzal.ks@gmail.com>
-Date: May 22, 2025
+Date: May 26, 2025
 """
 
 import os
@@ -61,51 +61,30 @@ def check_camera_devices():
     else:
         logger.info(f"Found media devices: {media_devices}")
     
-    # Use libcamera-hello to verify camera is detected
-    try:
-        logger.info("Running libcamera-hello to check camera...")
-        result = subprocess.run(
-            ["libcamera-hello", "--list-cameras"],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
-        
-        logger.info(f"libcamera-hello output: {result.stdout}")
-        logger.info(f"libcamera-hello error: {result.stderr}")
-        
-        if "imx296" in result.stdout.lower() or "camera0" in result.stdout.lower():
-            logger.info("Camera detected by libcamera-hello")
-            return True
-        else:
-            logger.warning("IMX296 camera not explicitly detected by libcamera-hello")
-            if "available cameras" in result.stdout.lower():
-                logger.info("But some camera was detected, will proceed")
-                return True
-    except subprocess.TimeoutExpired:
-        logger.error("libcamera-hello timed out")
-    except Exception as e:
-        logger.error(f"Error running libcamera-hello: {e}")
+    return True
+
+def check_gscrop_script():
+    """Check if GScrop script is available and executable."""
+    logger.info("Checking GScrop script...")
     
-    # Fall back to v4l2-ctl as a final check
-    try:
-        logger.info("Checking with v4l2-ctl as fallback...")
-        result = subprocess.run(
-            ["v4l2-ctl", "--list-devices"],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
-        
-        logger.info(f"v4l2-ctl output: {result.stdout}")
-        
-        if result.stdout.strip():
-            logger.info("Some video devices detected by v4l2-ctl, will proceed")
-            return True
-    except Exception as e:
-        logger.error(f"Error running v4l2-ctl: {e}")
+    gscrop_path = os.path.join(project_root, 'bin', 'GScrop')
     
-    return False
+    if not os.path.exists(gscrop_path):
+        logger.error(f"GScrop script not found at: {gscrop_path}")
+        return False
+    
+    if not os.access(gscrop_path, os.X_OK):
+        logger.error(f"GScrop script is not executable: {gscrop_path}")
+        logger.info("Attempting to make GScrop executable...")
+        try:
+            os.chmod(gscrop_path, 0o755)
+            logger.info("Successfully made GScrop executable")
+        except Exception as e:
+            logger.error(f"Failed to make GScrop executable: {e}")
+            return False
+    
+    logger.info(f"GScrop script found and executable: {gscrop_path}")
+    return True
 
 def reset_camera_devices():
     """Reset camera devices to ensure clean start."""
@@ -116,14 +95,9 @@ def reset_camera_devices():
         for i in range(10):
             dev_path = f"/dev/video{i}"
             if os.path.exists(dev_path):
-                logger.info(f"Resetting {dev_path}")
+                logger.debug(f"Resetting {dev_path}")
                 subprocess.run(
                     ["v4l2-ctl", "-d", dev_path, "--all"],
-                    capture_output=True,
-                    timeout=2
-                )
-                subprocess.run(
-                    ["v4l2-ctl", "-d", dev_path, "-c", "timeout_value=3000"],
                     capture_output=True,
                     timeout=2
                 )
@@ -135,7 +109,7 @@ def reset_camera_devices():
         for i in range(10):
             dev_path = f"/dev/media{i}"
             if os.path.exists(dev_path):
-                logger.info(f"Resetting {dev_path}")
+                logger.debug(f"Resetting {dev_path}")
                 subprocess.run(
                     ["media-ctl", "-d", dev_path, "-r"],
                     capture_output=True,
@@ -198,28 +172,37 @@ def launch_camera_capture():
             logger.error(f"Failed to run as subprocess: {subproc_e}")
     except Exception as e:
         logger.error(f"Error launching camera capture: {e}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
     
     return 1
 
 def main():
-    """Main function to run the camera capture launcher."""
-    logger.info("========== IMX296 Camera Capture Launcher ==========")
+    """Main function to set up and launch the camera capture system."""
+    logger.info("Starting IMX296 camera capture launcher...")
     
-    # Ensure directories exist
+    # Ensure required directories exist
     ensure_directories()
     
-    # Reset camera devices
-    reset_camera_devices()
-    
-    # Check if camera is available
-    if not check_camera_devices():
-        logger.error("Camera check failed. Cannot proceed.")
+    # Check if GScrop script is available
+    if not check_gscrop_script():
+        logger.error("Cannot proceed without GScrop script")
         return 1
     
-    # Launch camera capture
-    return launch_camera_capture()
+    # Check camera devices
+    if not check_camera_devices():
+        logger.warning("No camera devices found, but will try to proceed anyway")
+    
+    # Reset camera devices for clean start
+    reset_camera_devices()
+    
+    # Launch the capture system
+    try:
+        return launch_camera_capture()
+    except KeyboardInterrupt:
+        logger.info("Received keyboard interrupt, shutting down...")
+        return 0
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        return 1
 
 if __name__ == "__main__":
     sys.exit(main()) 

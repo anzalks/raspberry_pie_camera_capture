@@ -4,8 +4,6 @@
 
 # System paths and tools
 system:
-  libcamera_vid_path: "/usr/bin/libcamera-vid"
-  libcamera_hello_path: "/usr/bin/libcamera-hello"
   media_ctl_path: "/usr/bin/media-ctl"
   ffmpeg_path: "/usr/bin/ffmpeg"
 
@@ -16,7 +14,13 @@ camera:
   height: 400
   fps: 100  # Increased to 100 FPS for high-speed capture
   exposure_time_us: 5000  # 5ms exposure
-  pts_file_path: "/tmp/imx296_pts.txt"
+  
+  # GScrop script settings
+  script_path: "bin/GScrop"  # Path to GScrop script (relative to project root)
+  markers_file: "/dev/shm/camera_markers.txt"  # Markers file for frame timing
+  frame_queue_size: 10000  # Size of frame processing queue
+  lsl_worker_threads: 1  # Number of LSL worker threads
+  
   media_ctl:
     device_pattern: "/dev/media%d"
     entity_pattern: "imx296"
