@@ -20,6 +20,64 @@ Complete high-performance camera capture system for IMX296 Global Shutter camera
 - ✅ **Multi-format Output** - Raw markers + MKV video files
 - ✅ **Comprehensive Testing** - 17/17 tests passing
 
+## 🧹 Clean Start (New Feature)
+
+For users upgrading or dealing with conflicts from previous installations, the system now includes comprehensive cleanup tools.
+
+### Quick Clean Start
+
+**Simplest way - Use the bash wrapper:**
+```bash
+# Clean start with monitor (recommended)
+./bin/clean_start_camera.sh -m
+
+# Clean start service only
+./bin/clean_start_camera.sh
+
+# Cleanup only (don't start)
+./bin/clean_start_camera.sh -c
+
+# Check system state
+./bin/clean_start_camera.sh -v
+```
+
+### Python Cleanup Tool
+
+**For more control, use the Python script directly:**
+```bash
+# Cleanup and start with monitor
+python3 bin/cleanup_and_start.py --monitor
+
+# Cleanup only
+python3 bin/cleanup_and_start.py --cleanup-only
+
+# Cleanup including logs
+python3 bin/cleanup_and_start.py --cleanup-only --logs
+
+# Skip cleanup, start directly
+python3 bin/cleanup_and_start.py --no-cleanup --monitor
+```
+
+### What Gets Cleaned Up
+
+The cleanup process removes:
+- **🔴 Active Services**: Stops all camera-related systemd services
+- **🗑️ Service Files**: Removes old systemd service files from `/etc/systemd/system/`
+- **💀 Processes**: Terminates any running camera/LSL/video processes
+- **🧠 Shared Memory**: Cleans up `/dev/shm/` files (status, markers, locks)
+- **⚙️ Old Configs**: Removes conflicting configuration files
+- **📝 Log Files**: Optionally cleans up old log files
+- **🐍 Python Cache**: Removes `__pycache__` directories
+
+### Services Cleaned
+
+- `imx296-camera`
+- `imx296-camera-monitor`
+- `raspberry-pi-camera`
+- `camera-service`
+- `lsl-camera`
+- `gscrop-camera`
+
 ## Features
 
 ### 🎥 **GScrop-Based Capture**
@@ -92,6 +150,17 @@ recording:
 ```
 
 ### 3. Run System
+
+**Recommended - Clean Start:**
+```bash
+# For fresh installations or after updates
+./bin/clean_start_camera.sh -m
+
+# Or using Python directly
+python3 bin/cleanup_and_start.py --monitor
+```
+
+**Traditional Start:**
 ```bash
 # Direct execution
 python3 bin/run_imx296_capture.py
