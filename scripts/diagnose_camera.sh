@@ -69,7 +69,7 @@ check_liblsl() {
   else
     echo "✗ liblsl library not found in system paths."
     echo "  This is required for LSL functionality."
-    echo "  Run: sudo bin/install.sh to build and install liblsl"
+    echo "  Run: sudo setup/install.sh to build and install liblsl"
     return 1
   fi
 }

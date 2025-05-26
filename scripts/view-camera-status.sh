@@ -679,6 +679,8 @@ show_dashboard() {
             echo
             echo "To enable LSL streaming, ensure LSL is properly configured"
             echo "with all 4 required channels (time, frame_no, trigger_status, trigger_source)"
+            echo "❌ LSL library not found"
+            echo "Please run: sudo setup/install.sh"
         fi
         
         echo

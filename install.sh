@@ -38,15 +38,17 @@ chmod 777 "$RECORDING_DIR"
 
 # Update camera stream module
 echo "Updating camera stream module..."
-bash bin/update_camera_stream.sh
+bash scripts/update_camera_stream.sh
 
 # Create dashboard
 echo "Creating camera dashboard..."
-bash bin/create_dashboard.sh
+bash desktop/create_dashboard.sh
 
-# Create systemd service
-echo "Creating systemd service..."
-bash bin/configure_imx296_service.sh
+# Configure the systemd service
+if prompt_yes_no "Do you want to configure the IMX296 camera as a systemd service?"; then
+    echo "Configuring systemd service..."
+    bash setup/configure_imx296_service.sh
+fi
 
 # Install services
 echo "Installing systemd services..."

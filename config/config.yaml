@@ -9,10 +9,10 @@ system:
 
 # Camera settings
 camera:
-  # IMX296 camera is 400x400 native resolution in global shutter mode
-  width: 400
-  height: 400
-  fps: 100  # Increased to 100 FPS for high-speed capture
+  # Default resolution increased for better capture quality
+  width: 900
+  height: 600
+  fps: 100  # High-speed capture
   exposure_time_us: 5000  # 5ms exposure
   
   # GScrop script settings
@@ -21,6 +21,8 @@ camera:
   frame_queue_size: 10000  # Size of frame processing queue
   lsl_worker_threads: 1  # Number of LSL worker threads
   
+  # Automatic camera detection
+  auto_detect: true
   media_ctl:
     device_pattern: "/dev/media%d"
     entity_pattern: "imx296"
@@ -28,14 +30,19 @@ camera:
 
 # RAM buffer settings for pre-trigger storage
 buffer:
-  duration_seconds: 5
-  max_frames: 500  # Increased to handle higher frame rate
+  duration_seconds: 15
+  max_frames: 1500  # 15 seconds at 100fps
 
-# LSL stream configuration
+# LSL stream configuration - Independent streaming
 lsl:
   name: "IMX296Camera"  # Stream name
   type: "VideoEvents"   # Stream type
   id: "cam1"           # Unique identifier
+  channel_count: 3      # frame_number, trigger_time, trigger_type
+  channels:
+    - "frame_number"    # Sequential frame counter
+    - "trigger_time"    # Unix timestamp when trigger occurred
+    - "trigger_type"    # 0=none, 1=keyboard, 2=ntfy
 
 # Recording settings
 recording:

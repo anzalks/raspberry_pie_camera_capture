@@ -4,34 +4,29 @@
 
 # Camera settings
 camera:
-  # Target resolution and frame rate
-  width: 400
-  height: 400
-  fps: 100
+  # Default resolution for better capture quality
+  width: 900
+  height: 600
+  fps: 100  # High-speed capture
+  exposure_time_us: 5000  # 5ms exposure
   
-  # Original sensor resolution for crop calculation
-  sensor_width: 1456
-  sensor_height: 1088
+  # GScrop script settings
+  script_path: "bin/GScrop"  # Path to GScrop script (relative to project root)
+  markers_file: "/dev/shm/camera_markers.txt"  # Markers file for frame timing
+  frame_queue_size: 10000  # Size of frame processing queue
+  lsl_worker_threads: 1  # Number of LSL worker threads
   
-  # Exposure time in microseconds (9000 is good for 100fps)
-  exposure_time_us: 9000
-  
-  # Media controller settings
+  # Automatic camera detection
+  auto_detect: true
   media_ctl:
-    # This will be automatically detected and updated by the install script
-    device_pattern: "/dev/media0"
-    entity_pattern: "imx296 %s-001a"
-    bayer_format: "SBGGR10_1X10"  # Format appropriate for IMX296
-  
-  # PTS file path for timestamp tracking
-  pts_file_path: "/tmp/camera_live.pts"
+    device_pattern: "/dev/media%d"
+    entity_pattern: "imx296"
+    bayer_format: "SBGGR10_1X10"  # Raw Bayer format for IMX296
 
-# RAM buffer settings
+# RAM buffer settings for pre-trigger storage
 buffer:
-  # Duration in seconds (10-20 seconds recommended)
   duration_seconds: 15
-  # Maximum size in frames (as a safety backup)
-  max_frames: 1500  # ~15 seconds at 100fps
+  max_frames: 1500  # 15 seconds at 100fps
 
 # Recording settings
 recording:
@@ -49,12 +44,16 @@ ntfy:
   topic: "raspie-camera"
   poll_interval_sec: 30  # Long polling interval
 
-# LSL (Lab Streaming Layer) settings
+# LSL stream configuration - Independent streaming
 lsl:
-  stream_name: "IMX296_Metadata"
-  stream_type: "CameraEvents"
-  channel_count: 3  # CaptureTimeUnix, ntfy_notification_active, session_frame_no
-  nominal_srate: 100  # Matches camera FPS
+  name: "IMX296Camera"  # Stream name
+  type: "VideoEvents"   # Stream type
+  id: "cam1"           # Unique identifier
+  channel_count: 3      # frame_number, trigger_time, trigger_type
+  channels:
+    - "frame_number"    # Sequential frame counter
+    - "trigger_time"    # Unix timestamp when trigger occurred
+    - "trigger_type"    # 0=none, 1=keyboard, 2=ntfy
 
 # Logging settings
 logging:
