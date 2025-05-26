@@ -101,6 +101,67 @@ sudo systemctl start imx296-camera
 sudo systemctl enable imx296-camera
 ```
 
+## 📊 Real-Time Status Monitor
+
+The system includes a comprehensive terminal-based status monitor that displays live information about the camera service with minimal processor overhead.
+
+### Features
+- **Real-time updates** every second with live service data
+- **Minimal overhead** using Python curses for efficient display
+- **Comprehensive monitoring** of all system components
+- **Visual indicators** with progress bars and status colors
+
+### Status Information Displayed
+- **Service Status**: Running/stopped state and uptime
+- **LSL Streaming**: Connection status, sample rate, total samples sent
+- **LSL Channel Data**: Current values for frame_number, trigger_time, trigger_type
+- **Rolling Buffer**: Current size, utilization percentage with visual progress bar
+- **Recording Status**: Active/inactive state, frames recorded, duration
+- **Video Recording**: Status and current file information
+- **Trigger Status**: Last trigger type, time, and total trigger count
+- **System Info**: CPU, memory, and disk usage percentages
+
+### Usage Options
+
+**Start camera service with status monitor:**
+```bash
+python3 bin/start_camera_with_monitor.py --monitor
+```
+
+**Start camera service only:**
+```bash
+python3 bin/start_camera_with_monitor.py
+```
+
+**Start status monitor only (service must be running):**
+```bash
+python3 bin/status_monitor.py
+# or
+python3 bin/start_camera_with_monitor.py --monitor-only
+```
+
+### Monitor Controls
+- **'q'** - Quit monitor
+- **'r'** - Force refresh display
+- **'c'** - Clear screen
+
+### Systemd Integration with Monitor
+```bash
+# Install service with status monitor
+sudo cp setup/imx296-camera-monitor.service /etc/systemd/system/
+sudo systemctl enable imx296-camera-monitor
+sudo systemctl start imx296-camera-monitor
+
+# View service logs
+sudo journalctl -u imx296-camera-monitor -f
+```
+
+### Technical Details
+- Status data shared via `/dev/shm/imx296_status.json` for high performance
+- Monitor updates every 1 second, service writes status every 2 seconds
+- Automatic cleanup of status file when service stops
+- Graceful handling of service restarts and disconnections
+
 ## Remote Control via ntfy.sh
 
 ### Setup Mobile App
@@ -224,99 +285,3 @@ media-ctl -d /dev/media0 -e imx296
 # Test LSL connectivity
 python3 -c "import pylsl; print(pylsl.resolve_streams())"
 ```
-
-### ntfy.sh Connection
-```bash
-# Test notification
-curl -d "test message" https://ntfy.sh/your-topic
-```
-
-### Video Recording Problems
-```bash
-# Check ffmpeg
-ffmpeg -version
-
-# Test video device
-ffmpeg -f v4l2 -i /dev/video0 -t 5 test.mkv
-```
-
-## Development
-
-### Running Tests
-```bash
-# Simple integration test (5/5 tests)
-python3 tests/test_simple_integration.py
-
-# Full test suite (17/17 tests)  
-python3 tests/test_integrated_system.py
-
-# GScrop integration test (4/4 tests)
-python3 tests/test_gscrop_integration.py
-```
-
-**Test Status: ✅ ALL TESTS PASSING (26/26 total tests)**
-
-### Implementation Status
-
-| Feature | Status | Details |
-|---------|--------|---------|
-| 3-Channel LSL Streaming | ✅ Complete | frame_number, trigger_time, trigger_type (independent) |
-| Automatic Camera Detection | ✅ Complete | Auto-detects IMX296 and configures media pipeline |
-| Independent Operation | ✅ Complete | Video, LSL, buffer operate independently of triggers |
-| ntfy.sh Remote Control | ✅ Complete | Full smartphone integration with status notifications |
-| Video Recording Pipeline | ✅ Complete | 900x600@100fps, organized structure |
-| GScrop Camera Capture | ✅ Complete | Hardware-level cropping with frame markers |
-| Testing Framework | ✅ Complete | Comprehensive test coverage with mocking |
-
-### Adding Features
-1. **New Commands**: Add to `ntfy_handler.py` supported_commands
-2. **Video Codecs**: Extend `video_recorder.py` codec options
-3. **LSL Channels**: Modify `imx296_capture.py` LSL setup
-
-## License
-
-MIT License - see LICENSE file for details.
-
-## Author
-
-**Anzal KS** <anzal.ks@gmail.com>  
-GitHub: https://github.com/anzalks/
-
----
-
-*Built for high-speed behavioral research and real-time monitoring applications.*
-
-## Project Structure
-
-```
-├── bin/                    # Main executables
-│   ├── GScrop             # Core camera capture script
-│   └── run_imx296_capture.py  # Main launcher
-├── config/                # Configuration files
-│   ├── config.yaml        # Main configuration
-│   └── imx296-camera.service  # Systemd service
-├── desktop/               # Desktop integration
-│   ├── Camera-Dashboard.desktop  # Desktop launcher
-│   └── create_dashboard.sh      # Dashboard creation
-├── scripts/               # Utility scripts
-│   ├── diagnose_camera.sh      # System diagnostics
-│   ├── check_recording.sh      # Status monitoring
-│   └── restart_camera.sh       # System management
-├── setup/                 # Installation scripts
-│   ├── install.sh         # Main installer
-│   └── configure_imx296_service.sh  # Service setup
-├── src/                   # Source code
-│   └── imx296_gs_capture/ # Main module
-│       ├── imx296_capture.py   # Core capture system
-│       ├── ntfy_handler.py     # Remote control
-│       └── video_recorder.py   # Video pipeline
-├── tests/                 # Test suite
-│   ├── test_simple_integration.py    # Basic tests
-│   ├── test_integrated_system.py     # Full system tests
-│   └── test_gscrop_integration.py    # GScrop tests
-├── logs/                  # Log files
-└── recordings/            # Video recordings
-    └── yyyy_mm_dd/video/  # Organized by date
-```
-
-## Development 

@@ -22,8 +22,17 @@ import datetime
 import signal
 import re
 import collections
+import json
 from pathlib import Path
 from typing import Dict, Any, Optional
+
+# Optional system monitoring
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    psutil = None
+    PSUTIL_AVAILABLE = False
 
 # Add project root to Python path
 project_root = Path(__file__).resolve().parent.parent.parent
@@ -45,6 +54,9 @@ from .video_recorder import VideoRecorder
 # Global variables for threading coordination
 stop_event = threading.Event()
 frame_queue = queue.Queue(maxsize=10000)
+
+# Status file for monitoring
+STATUS_FILE = "/dev/shm/imx296_status.json"
 
 class GSCropCameraCapture:
     """
@@ -71,6 +83,14 @@ class GSCropCameraCapture:
         # Trigger tracking for LSL
         self.last_trigger_time = 0.0
         self.last_trigger_type = 0  # 0=none, 1=keyboard, 2=ntfy
+        
+        # Status tracking for monitor
+        self.service_start_time = time.time()
+        self.trigger_count = 0
+        self.last_lsl_sample = [0, 0, 0]
+        self.lsl_samples_sent = 0
+        self.status_update_thread = None
+        self.status_update_active = False
         
         self.ntfy_handler = None
         self.video_recorder = None
@@ -140,6 +160,9 @@ class GSCropCameraCapture:
         
         # Start rolling buffer immediately
         self.start_rolling_buffer()
+        
+        # Start status reporting
+        self._start_status_reporting()
         
         self.logger.info(f"GScrop camera capture initialized: {self.width}x{self.height}@{self.fps}fps (independent mode)")
     
@@ -262,6 +285,11 @@ class GSCropCameraCapture:
                 ]
                 self.lsl_outlet.push_sample(sample, timestamp)
                 self.frames_processed += 1
+                
+                # Update status tracking
+                self.lsl_samples_sent += 1
+                self.last_lsl_sample = sample
+                
             except Exception as e:
                 self.logger.error(f"Error pushing LSL sample: {e}")
     
@@ -302,6 +330,10 @@ class GSCropCameraCapture:
             
         self.last_trigger_time = trigger_time
         self.last_trigger_type = trigger_type
+        
+        # Count non-zero triggers
+        if trigger_type > 0:
+            self.trigger_count += 1
         
         self.logger.info(f"Trigger set: type={trigger_type}, time={trigger_time}")
     
@@ -631,6 +663,9 @@ class GSCropCameraCapture:
         if self.buffer_active:
             self.stop_rolling_buffer()
         
+        # Stop status reporting
+        self._stop_status_reporting()
+        
         # Clean up ntfy handler
         if self.ntfy_handler:
             self.ntfy_handler.stop()
@@ -851,6 +886,128 @@ class GSCropCameraCapture:
             self.logger.error(f"Failed to save buffer to file: {e}")
         
         return frames_saved
+
+    def _start_status_reporting(self):
+        """Start background status reporting thread."""
+        self.status_update_active = True
+        self.status_update_thread = threading.Thread(target=self._status_update_worker, daemon=True)
+        self.status_update_thread.start()
+        self.logger.info("Status reporting started")
+    
+    def _stop_status_reporting(self):
+        """Stop background status reporting."""
+        self.status_update_active = False
+        if self.status_update_thread and self.status_update_thread.is_alive():
+            self.status_update_thread.join(timeout=2)
+        
+        # Remove status file
+        try:
+            if os.path.exists(STATUS_FILE):
+                os.remove(STATUS_FILE)
+        except:
+            pass
+        
+        self.logger.info("Status reporting stopped")
+    
+    def _status_update_worker(self):
+        """Background worker to update status file periodically."""
+        while self.status_update_active and not stop_event.is_set():
+            try:
+                self._write_status_file()
+                time.sleep(2.0)  # Update every 2 seconds
+            except Exception as e:
+                self.logger.debug(f"Error updating status file: {e}")
+                time.sleep(1.0)
+    
+    def _get_system_info(self) -> Dict[str, float]:
+        """Get current system information."""
+        try:
+            cpu_percent = psutil.cpu_percent(interval=None) if PSUTIL_AVAILABLE else 0.0
+            memory = psutil.virtual_memory() if PSUTIL_AVAILABLE else None
+            disk = psutil.disk_usage('/') if PSUTIL_AVAILABLE else None
+            
+            return {
+                'cpu_percent': cpu_percent,
+                'memory_percent': memory.percent if memory else 0.0,
+                'disk_usage_percent': disk.percent if disk else 0.0
+            }
+        except Exception:
+            return {
+                'cpu_percent': 0.0,
+                'memory_percent': 0.0,
+                'disk_usage_percent': 0.0
+            }
+    
+    def _write_status_file(self):
+        """Write current status to shared memory file."""
+        try:
+            # Calculate current status
+            current_time = time.time()
+            uptime = current_time - self.service_start_time
+            
+            # LSL status
+            lsl_connected = self.lsl_outlet is not None
+            samples_per_second = 0.0
+            if uptime > 0 and self.lsl_samples_sent > 0:
+                samples_per_second = self.lsl_samples_sent / uptime
+            
+            # Buffer status
+            buffer_size = len(self.rolling_buffer)
+            buffer_utilization = (buffer_size / self.buffer_max_frames) * 100 if self.buffer_max_frames > 0 else 0
+            
+            # Recording status
+            recording_duration = 0
+            if self.recording_active and self.start_time:
+                recording_duration = current_time - self.start_time
+            
+            # Video status
+            video_stats = {}
+            if self.video_recorder:
+                video_stats = self.video_recorder.get_stats()
+            
+            # Build status data
+            status_data = {
+                'service_running': True,
+                'uptime': uptime,
+                'lsl_status': {
+                    'connected': lsl_connected,
+                    'samples_sent': self.lsl_samples_sent,
+                    'samples_per_second': samples_per_second,
+                    'last_sample': self.last_lsl_sample
+                },
+                'buffer_status': {
+                    'current_size': buffer_size,
+                    'max_size': self.buffer_max_frames,
+                    'utilization_percent': buffer_utilization,
+                    'oldest_frame_age': 0  # Could be calculated if needed
+                },
+                'recording_status': {
+                    'active': self.recording_active,
+                    'current_file': str(self.output_dir) if self.recording_active else None,
+                    'frames_recorded': self.frame_count,
+                    'duration': recording_duration
+                },
+                'video_status': {
+                    'recording': video_stats.get('recording', False),
+                    'current_file': video_stats.get('current_file'),
+                    'duration': video_stats.get('duration', 0)
+                },
+                'trigger_status': {
+                    'last_trigger_type': self.last_trigger_type,
+                    'last_trigger_time': self.last_trigger_time,
+                    'trigger_count': self.trigger_count
+                },
+                'system_info': self._get_system_info()
+            }
+            
+            # Write to file atomically
+            temp_file = STATUS_FILE + ".tmp"
+            with open(temp_file, 'w') as f:
+                json.dump(status_data, f)
+            os.rename(temp_file, STATUS_FILE)
+            
+        except Exception as e:
+            self.logger.debug(f"Error writing status file: {e}")
 
 
 def signal_handler(sig, frame):

@@ -1,74 +1,70 @@
-# Main Executables
+# Binary Scripts and Utilities
 
-This directory contains the core executable files for the IMX296 camera capture system.
+This directory contains executable scripts and utilities for the IMX296 camera system.
 
-## Executables
+## Core Scripts
 
-### `run_imx296_capture.py`
-- **Purpose**: Main launcher script for the IMX296 camera capture system
-- **Features**:
-  - System initialization and validation
-  - Camera device detection and reset
-  - GScrop script execution management
-  - Environment setup and configuration loading
-  - Graceful error handling and logging
-- **Usage**: Primary entry point for running the camera system
-- **Requirements**: Proper conda environment activation
+### Status Monitor
+- **`status_monitor.py`** - Real-time terminal UI for monitoring camera service status
+  - Shows LSL streaming status, buffer utilization, recording status, and system info
+  - Minimal processor overhead using Python curses
+  - Updates every second with live data
 
-### `GScrop`
-- **Purpose**: Core camera capture script using GScrop (Global Shutter Crop) method
-- **Features**:
-  - Hardware-level cropping using media-ctl
-  - High-speed frame capture (400x400@100fps)
-  - Frame markers generation for precise timing
-  - Raw video output with timestamp metadata
-- **Usage**: Called by the main capture system (not typically run directly)
-- **Requirements**: IMX296 camera hardware, proper media device configuration
+### Service Launcher
+- **`start_camera_with_monitor.py`** - Launch camera service with optional status monitor
+  - Multiple launch modes: service only, with monitor, or monitor only
+  - Handles process management and cleanup
+  - Integration with systemd services
 
-## Usage
+## Usage Examples
 
-### Starting the Camera System
+### Start camera service only:
 ```bash
-# Activate the conda environment and run
-/path/to/conda/envs/dog_track/bin/python bin/run_imx296_capture.py
-
-# Or from within the activated environment
-python bin/run_imx296_capture.py
+python bin/start_camera_with_monitor.py
 ```
 
-### Configuration
-- Ensure `config/config.yaml` is properly configured
-- Verify camera hardware is connected and detected
-- Check that all dependencies are installed
-
-### Output
-- **Logs**: Written to `logs/` directory
-- **Recordings**: Saved to `recordings/yyyy_mm_dd/video/` structure
-- **Markers**: Frame timing data in `/dev/shm/camera_markers.txt`
-
-## Integration
-
-### Components Used
-- **LSL Streaming**: 3-channel real-time data stream
-- **ntfy.sh**: Remote control via smartphone notifications
-- **Video Recording**: MKV format with organized folder structure
-- **System Monitoring**: Real-time status and diagnostics
-
-### Service Integration
-- Can be run as systemd service for automatic startup
-- Integrates with desktop dashboard for GUI control
-- Supports remote monitoring and control
-
-## Troubleshooting
-
-### Common Issues
-1. **Camera not detected**: Run `scripts/diagnose_camera.sh`
-2. **Permission errors**: Check user groups and device permissions
-3. **Import errors**: Verify conda environment and dependencies
-4. **GScrop failures**: Check media device configuration
-
-### Debug Mode
+### Start camera service with status monitor:
 ```bash
-# Run with debug logging
-DEBUG=1 python bin/run_imx296_capture.py
+python bin/start_camera_with_monitor.py --monitor
+```
+
+### Start status monitor only (service must be running):
+```bash
+python bin/start_camera_with_monitor.py --monitor-only
+# or directly:
+python bin/status_monitor.py
+```
+
+## Status Monitor Display
+
+The status monitor shows:
+- **Service Status**: Running/stopped, uptime
+- **LSL Streaming**: Connection status, sample rate, channel data
+- **Rolling Buffer**: Current size, utilization percentage with progress bar
+- **Recording Status**: Active/inactive, frames recorded, duration
+- **Video Recording**: Status and file information
+- **Trigger Status**: Last trigger type, time, total count
+- **System Info**: CPU, memory, and disk usage
+
+## Controls
+
+In the status monitor:
+- **'q'** - Quit
+- **'r'** - Force refresh
+- **'c'** - Clear screen
+
+## Technical Details
+
+- Status data is shared via `/dev/shm/imx296_status.json`
+- Monitor updates every 1 second
+- Service writes status every 2 seconds
+- Minimal overhead design for production use
+
+## Systemd Integration
+
+Use the provided service file for automatic startup with status monitor:
+```bash
+sudo cp setup/imx296-camera-monitor.service /etc/systemd/system/
+sudo systemctl enable imx296-camera-monitor
+sudo systemctl start imx296-camera-monitor
 ``` 
