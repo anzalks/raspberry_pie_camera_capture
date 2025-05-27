@@ -2,402 +2,52 @@
 # shellcheck disable=SC2154
 # (silence shellcheck wrt $cam1 environment variable)
 
-# Enable debug output
-set -x
+if [[ $# -lt 4 ]];  then  echo "Format: [narrow=1] [cam1=1] $0 width height framerate ms [us]"; exit;  fi
+if [[ "$(( $1 % 2 ))" -eq 1 ]];  then echo "width has to be even"; exit;  fi
+if [[ "$(( $2 % 2 ))" -eq 1 ]];  then echo "height has to be even"; exit;  fi
 
-# Exit on any errors to ensure proper cleanup
-trap 'cleanup_and_exit' ERR
-
-# Cleanup function to handle errors gracefully
-cleanup_and_exit() {
-    local exit_code=$?
-    echo "Error occurred (code $exit_code). Cleaning up and exiting." >&2
-    
-    # Clean up temp files if needed
-    if [[ -f "$MARKERS_FILE" ]]; then
-        echo "Camera acquisition failed!" >> "$MARKERS_FILE" 
-        echo "Recording failed with error code $exit_code" >> "$MARKERS_FILE"
-    fi
-    
-    # Kill any background processes that might be running
-    for pid in "${BACKGROUND_PIDS[@]}"; do
-        kill "$pid" &>/dev/null || true
-    done
-    
-    exit $exit_code
-}
-
-# Validate input
-if [[ $# -lt 4 ]];  then  echo "Format: [narrow=1] [cam1=1] $0 width height framerate ms [us] [output_path]"; exit 1;  fi
-if [[ "$(( $1 % 2 ))" -eq 1 ]];  then echo "width has to be even"; exit 2;  fi
-if [[ "$(( $2 % 2 ))" -eq 1 ]];  then echo "height has to be even"; exit 2;  fi
-
-# Get parameters
-WIDTH="$1"
-HEIGHT="$2"
-FRAMERATE="$3"
-DURATION_MS="$4"
-
-# Track background processes
-declare -a BACKGROUND_PIDS=()
-
-# Validate camera settings
-if (( WIDTH > 1440 )) || (( HEIGHT > 1080 )); then
-    echo "ERROR: Resolution ${WIDTH}x${HEIGHT} exceeds maximum camera resolution (1440x1080)" >&2
-    exit 3
-fi
-
-if (( WIDTH * HEIGHT > 1440 * 1080 )); then
-    echo "ERROR: Resolution ${WIDTH}x${HEIGHT} exceeds maximum pixel count (1440x1080)" >&2
-    exit 3
-fi
-
-if (( FRAMERATE > 200 )); then
-    echo "ERROR: Frame rate $FRAMERATE exceeds maximum recommended value (200)" >&2
-    exit 3
-fi
-
-# Output important parameters
-echo "Starting capture: ${WIDTH}x${HEIGHT} @ ${FRAMERATE}fps for ${DURATION_MS}ms" >&2
-
-# Set up shutter parameter if provided
-SHTR=""; if [[ $# -gt 4 ]]; then SHTR="--shutter"; fi
-
-# Set up output path (optional parameter 6)
-OUTPUT_BASE="/dev/shm"
-if [[ $# -gt 5 ]]; then 
-    OUTPUT_PATH="$6"
-    OUTPUT_DIR="$(dirname "$OUTPUT_PATH")"
-    mkdir -p "$OUTPUT_DIR"
-else
-    OUTPUT_PATH=""
-fi
-
-# Create markers file for LSL synchronization
-MARKERS_FILE="/dev/shm/camera_markers.txt"
-echo "Starting recording" > "$MARKERS_FILE"
-echo "CONFIG: ${WIDTH}x${HEIGHT}@${FRAMERATE}fps" >> "$MARKERS_FILE"
-echo "Markers file created at $MARKERS_FILE" >&2
-chmod 666 "$MARKERS_FILE" 2>/dev/null || true
-
-# Always write every frame, regardless of FPS
-echo "Full frame recording mode: Writing every frame to markers file" >&2
-echo "WRITE_MODE: FULL" >> "$MARKERS_FILE"
-
-# Check for Bookworm OS
-workaround=""; 
-if [[ "" != "$(grep '=bookworm' /etc/os-release)" ]]; then 
-    workaround="--no-raw"
-fi
-
-# Set AWB mode based on environment variable
-AWB_PARAM=""
-if [[ "$no_awb" == "1" ]]; then
-    echo "AWB disabled per request" >&2
-else
-    AWB_PARAM="--awb auto"
-    echo "Using automatic white balance" >&2
-fi
-
-# Detect Pi version and set device ID
-d=10; 
-if [[ "" != "$(grep "Revision.*: ...17.$" /proc/cpuinfo)" ]]; then 
-    if [[ "$cam1" == "" ]]; then 
-        d=10
-    else 
-        d=11
-    fi
-fi
-
-# Find and configure the media device
-MEDIA_DEVICE=""
+export SHTR=""; if [[ $# -gt 4 ]]; then SHTR="--shutter"; fi
+export workaround=""; if [[ "" != "$(grep '=bookworm' /etc/os-release)" ]]; then workaround="--no-raw"; fi
+export d=10; if [[ "" != "$(grep "Revision.*: ...17.$" /proc/cpuinfo)" ]]; then if [[ "$cam1" == "" ]]; then d=10; else d=11; fi; fi
 
 # ENHANCEMENT: Dynamic device detection with unlimited scalability
-# Previously limited to /dev/media0-5, now scans ALL available media devices
-# This supports systems with any number of cameras (1 to unlimited)
 # Get all available media devices dynamically (no hardcoded limits)
 MEDIA_DEVICES=($(ls /dev/media* 2>/dev/null | sort -V))
 
 if [ ${#MEDIA_DEVICES[@]} -eq 0 ]; then
     echo "ERROR: No media devices found in /dev/media*" >&2
-    echo "ERROR: No media devices found in /dev/media*" >> "$MARKERS_FILE"
-    exit 4
+    exit 1
 fi
 
 echo "Found ${#MEDIA_DEVICES[@]} media device(s): ${MEDIA_DEVICES[*]}" >&2
-echo "AVAILABLE_DEVICES: ${MEDIA_DEVICES[*]}" >> "$MARKERS_FILE"
 
 # Try to configure each available media device
+CONFIGURED=false
 for media_dev in "${MEDIA_DEVICES[@]}"; do
     echo "Trying media device $media_dev" >&2
-    if media-ctl -d "$media_dev" --set-v4l2 "'imx296 $d-001a':0 [fmt:SBGGR10_1X10/${WIDTH}x${HEIGHT} crop:($(( (1440 - WIDTH) / 2 )),$(( (1088 - HEIGHT) / 2 )))/${WIDTH}x$HEIGHT]" -v 2>/dev/null; then
-        MEDIA_DEVICE="$media_dev"
-        echo "Successfully configured media device: $MEDIA_DEVICE" >&2
-        echo "MEDIA_DEVICE: $MEDIA_DEVICE" >> "$MARKERS_FILE"
+    media-ctl -d "$media_dev" --set-v4l2 "'imx296 $d-001a':0 [fmt:SBGGR10_1X10/${1}x${2} crop:($(( (1440 - $1) / 2 )),$(( (1088 - $2) / 2 )))/${1}x$2]" -v
+    if [ $? -eq 0 ]; then
+        echo "Successfully configured media device: $media_dev" >&2
+        CONFIGURED=true
         break
     else
         echo "Failed to configure $media_dev, trying next..." >&2
     fi
 done
 
-if [[ -z "$MEDIA_DEVICE" ]]; then
+if [ "$CONFIGURED" = false ]; then
     echo "ERROR: Could not configure any media device" >&2
-    echo "ERROR: Could not configure any media device" >> "$MARKERS_FILE"
-    exit 4
+    exit 1
 fi
 
-# Check if camera is detected
 libcamera-hello --list-cameras ; echo
-if [ $? -ne 0 ]; then
-    echo "ERROR: Camera not detected by libcamera-hello" >&2
-    echo "ERROR: Camera not detected by libcamera-hello" >> "$MARKERS_FILE"
-    exit 5
-fi
-
-# Prepare for recording
 rm -f /dev/shm/tst.pts
 
-# Setup pipes for frame counting
-FIFO="/dev/shm/camera_fifo"
-rm -f "$FIFO"
-mkfifo "$FIFO"
-chmod 666 "$FIFO" 2>/dev/null || true
-
-# Record start time for precise duration tracking
-START_TIME=$(date +%s.%N)
-echo "Recording start time: $START_TIME" >> "$MARKERS_FILE"
-
-# Create a separate file for threaded write operations
-MARKERS_TEMP_FILE="/dev/shm/camera_markers_temp.txt"
-echo "Initializing temporary markers file" > "$MARKERS_TEMP_FILE"
-chmod 666 "$MARKERS_TEMP_FILE" 2>/dev/null || true
-
-# Function to process output and detect frames
-process_output() {
-    local line="$1"
-    local frame_num="$2"
-    # Echo to stderr for debugging
-    echo "$line" >&2
-    
-    # Check for errors
-    if [[ "$line" == *"ERROR"* || "$line" == *"error"* || "$line" == *"failed"* ]]; then
-        echo "ERROR: $line" >> "$MARKERS_TEMP_FILE"
-    fi
-
-    # Check for various frame indicators
-    if [[ "$line" == *"frame"* || "$line" == *"Frame"* ]]; then
-        # Try to extract frame number if present
-        local detected_frame
-        if [[ "$line" =~ frame[^0-9]*([0-9]+) ]]; then
-            detected_frame="${BASH_REMATCH[1]}"
-        else
-            # If no frame number in output, increment our counter
-            detected_frame=$((frame_num + 1))
-        fi
-        
-        # Always write every frame with timestamp
-        local timestamp=$(date +%s.%N)
-        echo "$detected_frame $timestamp" >> "$MARKERS_TEMP_FILE"
-        
-        return $detected_frame
-    fi
-    return $frame_num
-}
-
-# Function for thread to periodically merge marker files
-merge_marker_files() {
-    local source_file="$1"
-    local target_file="$2"
-    local interval="$3"
-    
-    echo "Starting marker file merging thread (PID: $$)" >&2
-    
-    while true; do
-        # Check if source file exists and has data
-        if [[ -f "$source_file" && -s "$source_file" ]]; then
-            # Append new content to main markers file
-            cat "$source_file" >> "$target_file"
-            # Clear temp file but keep it for writing
-            echo "" > "$source_file"
-        fi
-        sleep "$interval"
-    done
-}
-
-# Start a background thread for merging marker files (every 0.1s)
-merge_marker_files "$MARKERS_TEMP_FILE" "$MARKERS_FILE" 0.1 &
-MERGE_PID=$!
-BACKGROUND_PIDS+=("$MERGE_PID")
-echo "Started marker merging thread (PID: $MERGE_PID)" >&2
-
-# Always use optimal buffer settings regardless of FPS
-EXTRA_PARAMS="--buffer-count=6"
-
-# Start recording based on Pi version
 if [[ "" != "$(grep "Revision.*: ...17.$" /proc/cpuinfo)" ]]
 then
-    # Raspberry Pi 5 - use rpicam-vid
-    if [[ -n "$OUTPUT_PATH" ]]; then
-        OUTPUT_FILE="${OUTPUT_PATH}.mp4"
-    else
-        OUTPUT_FILE="/dev/shm/tst${cam1:+1}.mp4"
-    fi
-    
-    echo "Starting rpicam-vid with output to $OUTPUT_FILE" >&2
-    
-    # Start rpicam-vid with configurable AWB and tuned parameters
-    # Add --verbose for more frame info
-    # Use --timeout for full duration control in ms
-    RPICAM_CMD="rpicam-vid $workaround --verbose ${cam1:+--camera 1} \
-        --width $WIDTH --height $HEIGHT \
-        --denoise cdn_off --framerate $FRAMERATE \
-        $AWB_PARAM --timeout $DURATION_MS \
-        --quality 75 $EXTRA_PARAMS \
-        $SHTR $5 -o $OUTPUT_FILE -n"
-    
-    echo "Command: $RPICAM_CMD" >&2
-    echo "COMMAND: $RPICAM_CMD" >> "$MARKERS_FILE"
-    
-    # Execute command and capture output with error checking
-    frame_num=0
-    set +e  # Temporarily disable exit on error for eval
-    eval "$RPICAM_CMD" 2>&1 | while read -r line; do
-        process_output "$line" "$frame_num"
-        frame_num=$?
-        
-        # Check for errors in output
-        if [[ "$line" == *"ERROR"* || "$line" == *"failed"* || "$line" == *"Failed"* ]]; then
-            echo "ERROR: $line" >> "$MARKERS_TEMP_FILE"
-            echo "Camera error detected!" >&2
-        fi
-    done
-    
-    RPICAM_EXIT_CODE=${PIPESTATUS[0]}
-    set -e  # Re-enable exit on error
-    
-    if [ $RPICAM_EXIT_CODE -ne 0 ]; then
-        echo "ERROR: rpicam-vid exited with code $RPICAM_EXIT_CODE" >&2
-        echo "ERROR: rpicam-vid exited with code $RPICAM_EXIT_CODE" >> "$MARKERS_FILE"
-        cleanup_and_exit
-    fi
+  rpicam-vid "$workaround" ${cam1:+--camera 1} --width "$1" --height "$2" --denoise cdn_off --framerate "$3" -t "$4" "$SHTR" "$5" -o /dev/shm/tst${cam1:+1}.mp4 -n ; echo 
+  ~/venv/bin/python ~/rpicam-apps/utils/timestamp.py --plot ${narrow:+--narrow} /dev/shm/tst${cam1:+1}.mp4
 else
-    # Older Raspberry Pi - use libcamera-vid with PTS file
-    if [[ -n "$OUTPUT_PATH" ]]; then
-        OUTPUT_FILE="${OUTPUT_PATH}.h264"
-    else
-        OUTPUT_FILE="/dev/shm/tst.h264"
-    fi
-    
-    echo "Starting libcamera-vid with output to $OUTPUT_FILE" >&2
-    
-    # Start libcamera-vid with configurable AWB and tuned parameters
-    # Add --verbose for more frame info
-    # Use -t for full duration control in ms
-    LIBCAM_CMD="libcamera-vid $workaround --verbose \
-        --width $WIDTH --height $HEIGHT \
-        --denoise cdn_off --framerate $FRAMERATE \
-        $AWB_PARAM --save-pts /dev/shm/tst.pts \
-        -t $DURATION_MS --quality 75 $EXTRA_PARAMS \
-        $SHTR $5 -o $OUTPUT_FILE -n"
-        
-    echo "Command: $LIBCAM_CMD" >&2
-    echo "COMMAND: $LIBCAM_CMD" >> "$MARKERS_FILE"
-    
-    # Execute the command and process output for frame markers with error checking
-    frame_num=0
-    set +e  # Temporarily disable exit on error for eval
-    eval "$LIBCAM_CMD" 2>&1 | while read -r line; do
-        process_output "$line" "$frame_num"
-        frame_num=$?
-        
-        # Check for errors in output
-        if [[ "$line" == *"ERROR"* || "$line" == *"failed"* || "$line" == *"Failed"* ]]; then
-            echo "ERROR: $line" >> "$MARKERS_TEMP_FILE"
-            echo "Camera error detected!" >&2
-        fi
-    done
-    
-    LIBCAM_EXIT_CODE=${PIPESTATUS[0]}
-    set -e  # Re-enable exit on error
-    
-    if [ $LIBCAM_EXIT_CODE -ne 0 ]; then
-        echo "ERROR: libcamera-vid exited with code $LIBCAM_EXIT_CODE" >&2
-        echo "ERROR: libcamera-vid exited with code $LIBCAM_EXIT_CODE" >> "$MARKERS_FILE"
-        cleanup_and_exit
-    fi
-    
-    # Run PTS analysis
-    if command -v ptsanalyze > /dev/null; then
-        rm -f tstamps.csv && ptsanalyze /dev/shm/tst.pts
-        
-        # Copy PTS data to markers file for LSL sync
-        if [[ -f "/dev/shm/tst.pts" ]]; then
-            # Process PTS file in a background thread
-            {
-                echo "Starting PTS processing thread" >&2
-                echo "Processing PTS file to markers file" >> "$MARKERS_FILE"
-                cat /dev/shm/tst.pts | while read -r pts_line; do
-                    if [[ -n "$pts_line" && "$pts_line" =~ ^([0-9]+)[^0-9]+([0-9.]+) ]]; then
-                        # Write every frame with accurate timestamp
-                        echo "${BASH_REMATCH[1]} ${BASH_REMATCH[2]}" >> "$MARKERS_FILE"
-                    fi
-                done
-                echo "PTS processing complete" >> "$MARKERS_FILE"
-            } &
-            PTS_PID=$!
-            BACKGROUND_PIDS+=("$PTS_PID")
-            echo "Started PTS processing thread (PID: $PTS_PID)" >&2
-            wait $PTS_PID
-        fi
-    fi
+  libcamera-vid "$workaround" --width "$1" --height "$2" --denoise cdn_off --framerate "$3" --save-pts /dev/shm/tst.pts -t "$4" "$SHTR" "$5" -o /dev/shm/tst.h264 -n ; echo 
+  rm -f tstamps.csv && ptsanalyze /dev/shm/tst.pts
 fi
-
-# Kill the marker merging thread
-if [[ -n "$MERGE_PID" ]]; then
-    kill $MERGE_PID &>/dev/null || true
-    echo "Stopped marker merging thread" >&2
-    
-    # Final merge of any remaining data
-    if [[ -f "$MARKERS_TEMP_FILE" && -s "$MARKERS_TEMP_FILE" ]]; then
-        cat "$MARKERS_TEMP_FILE" >> "$MARKERS_FILE"
-    fi
-    rm -f "$MARKERS_TEMP_FILE"
-fi
-
-# Record end time and calculate actual duration
-END_TIME=$(date +%s.%N)
-ELAPSED_MS=$(echo "($END_TIME - $START_TIME) * 1000" | bc)
-echo "Recording end time: $END_TIME" >> "$MARKERS_FILE"
-echo "Recording elapsed time: $ELAPSED_MS ms" >> "$MARKERS_FILE"
-echo "Actual frame rate: $(echo "($frame_num / $ELAPSED_MS) * 1000" | bc)" >> "$MARKERS_FILE"
-
-# Verify output file was created
-if [[ -n "$OUTPUT_FILE" && ! -f "$OUTPUT_FILE" ]]; then
-    echo "ERROR: Output file was not created: $OUTPUT_FILE" >&2
-    echo "ERROR: Output file was not created: $OUTPUT_FILE" >> "$MARKERS_FILE"
-    exit 6
-fi
-
-# Check if file size is reasonable
-if [[ -f "$OUTPUT_FILE" ]]; then
-    FILE_SIZE=$(stat -c%s "$OUTPUT_FILE")
-    echo "Output file size: $FILE_SIZE bytes" >> "$MARKERS_FILE"
-    
-    if [ "$FILE_SIZE" -lt 1000 ]; then
-        echo "WARNING: Output file is very small. Recording may have failed." >&2
-        echo "WARNING: Output file is very small. Recording may have failed." >> "$MARKERS_FILE"
-    fi
-    
-    # Make file readable to prevent corruption
-    chmod 444 "$OUTPUT_FILE" 2>/dev/null || true
-fi
-
-echo "Recording complete. Output saved to: $OUTPUT_FILE" >&2
-echo "Frame markers saved to: $MARKERS_FILE" >&2
-echo "Total frames detected: $(grep -v "Starting\|Recording\|CONFIG\|COMMAND\|ERROR\|MEDIA_DEVICE" "$MARKERS_FILE" | wc -l)" >&2
-echo "Actual duration: ${ELAPSED_MS}ms (requested: ${DURATION_MS}ms)" >&2
-echo "All frames: $frame_num, Frame rate: $(echo "($frame_num / $ELAPSED_MS) * 1000" | bc) fps" >&2
-
-# Disable debug output
-set +x 
-set +x 
