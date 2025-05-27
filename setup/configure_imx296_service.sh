@@ -44,6 +44,52 @@ EOL
 
 echo "Camera configuration file created at $CONFIG_DIR/camera_config.yaml"
 
+# Auto-detect media device with IMX296 camera
+auto_detect_media_device() {
+    local detected_device=""
+    local available_devices=($(ls /dev/media* 2>/dev/null | sort -V))
+    
+    if [ ${#available_devices[@]} -eq 0 ]; then
+        echo "WARNING: No media devices found" >&2
+        return 1
+    fi
+    
+    echo "Scanning ${#available_devices[@]} media devices for IMX296 camera..." >&2
+    
+    for device in "${available_devices[@]}"; do
+        if [ -e "$device" ]; then
+            if media-ctl -d "$device" -p 2>/dev/null | grep -qi "imx296"; then
+                detected_device="$device"
+                echo "Found IMX296 camera on: $detected_device" >&2
+                break
+            fi
+        fi
+    done
+    
+    if [ -n "$detected_device" ]; then
+        echo "$detected_device"
+        return 0
+    else
+        echo "ERROR: No IMX296 camera found on any media device" >&2
+        echo "Available devices were: ${available_devices[*]}" >&2
+        return 1
+    fi
+}
+
+# Try to auto-detect media device, fallback to default
+MEDIA_DEV=$(auto_detect_media_device)
+if [ $? -ne 0 ]; then
+    echo "Falling back to default media device..." >&2
+    MEDIA_DEV="/dev/media0"
+fi
+
+# Check if media1 exists for additional ISP configuration
+if [ -e "/dev/media1" ]; then
+    echo "Additional media device found: /dev/media1 (for ISP)" >&2
+    # Use media1 for ISP if available
+    media-ctl -d /dev/media1 -p 2>/dev/null || echo "media1 not accessible"
+fi
+
 # Create a service script to properly configure and start the camera
 cat > "$SCRIPT_DIR/imx296_service_start.sh" << EOL
 #!/bin/bash
@@ -56,11 +102,48 @@ OUTPUT_DIR="/tmp/recordings"
 mkdir -p "\$OUTPUT_DIR"
 chmod 777 "\$OUTPUT_DIR"
 
-# Configure media pipeline
-MEDIA_DEV="/dev/media0"
-if [ -e "/dev/media1" ]; then
-  # Use media1 for ISP if available
-  media-ctl -d /dev/media1 -p
+# Auto-detect media device
+auto_detect_media_device() {
+    local detected_device=""
+    local available_devices=(\$(ls /dev/media* 2>/dev/null | sort -V))
+    
+    if [ \${#available_devices[@]} -eq 0 ]; then
+        echo "WARNING: No media devices found" >&2
+        return 1
+    fi
+    
+    for device in "\${available_devices[@]}"; do
+        if [ -e "\$device" ]; then
+            if media-ctl -d "\$device" -p 2>/dev/null | grep -qi "imx296"; then
+                detected_device="\$device"
+                echo "Found IMX296 camera on: \$detected_device" >&2
+                break
+            fi
+        fi
+    done
+    
+    if [ -n "\$detected_device" ]; then
+        echo "\$detected_device"
+        return 0
+    else
+        echo "ERROR: No IMX296 camera found" >&2
+        return 1
+    fi
+}
+
+# Configure media pipeline with detected device
+MEDIA_DEV=\$(auto_detect_media_device)
+if [ \$? -ne 0 ]; then
+    echo "Falling back to default media device..." >&2
+    MEDIA_DEV="/dev/media0"
+fi
+
+echo "Using media device: \$MEDIA_DEV"
+
+# Check for additional ISP device
+if [ -e "/dev/media1" ] && [ "\$MEDIA_DEV" != "/dev/media1" ]; then
+  echo "Using additional ISP device: /dev/media1"
+  media-ctl -d /dev/media1 -p 2>/dev/null || true
 fi
 
 # Set format on the sensor
@@ -91,15 +174,57 @@ OUTPUT_DIR="/tmp/imx296_test"
 mkdir -p "\$OUTPUT_DIR"
 chmod 777 "\$OUTPUT_DIR"
 
-# Configure media pipeline
-MEDIA_DEV="/dev/media0"
+# Auto-detect media device with IMX296
+auto_detect_media_device() {
+    local detected_device=""
+    local available_devices=(\$(ls /dev/media* 2>/dev/null | sort -V))
+    
+    if [ \${#available_devices[@]} -eq 0 ]; then
+        echo "WARNING: No media devices found" >&2
+        return 1
+    fi
+    
+    echo "Scanning \${#available_devices[@]} media devices for IMX296..."
+    
+    for device in "\${available_devices[@]}"; do
+        if [ -e "\$device" ]; then
+            if media-ctl -d "\$device" -p 2>/dev/null | grep -qi "imx296"; then
+                detected_device="\$device"
+                echo "Found IMX296 camera on: \$detected_device"
+                break
+            fi
+        fi
+    done
+    
+    if [ -n "\$detected_device" ]; then
+        echo "\$detected_device"
+        return 0
+    else
+        echo "ERROR: No IMX296 camera found on any media device" >&2
+        return 1
+    fi
+}
+
+# Configure media pipeline with dynamic detection
+MEDIA_DEV=\$(auto_detect_media_device)
+if [ \$? -ne 0 ]; then
+    echo "Falling back to default media device..." >&2
+    MEDIA_DEV="/dev/media0"
+fi
+
+echo "Using media device: \$MEDIA_DEV"
+
+# Configure the camera
 media-ctl -d \$MEDIA_DEV --set-v4l2 '"imx296":0[fmt:SBGGR10_1X10/400x400]'
 media-ctl -d \$MEDIA_DEV --set-v4l2 '"*rp1_csi2":0[fmt:SBGGR10_1X10/400x400]'
 
 # Test with direct capture
 CAMERA_DEV=\$(v4l2-ctl --list-devices | grep -A 1 "imx296" | grep "/dev/video" | head -1 | xargs)
 if [ -z "\$CAMERA_DEV" ]; then
+  echo "No specific IMX296 video device found, using /dev/video0"
   CAMERA_DEV="/dev/video0"
+else
+  echo "Found IMX296 video device: \$CAMERA_DEV"
 fi
 
 echo "Testing direct h264 capture with ffmpeg..."

@@ -25,6 +25,7 @@ import collections
 import json
 from pathlib import Path
 from typing import Dict, Any, Optional
+import glob
 
 # Optional system monitoring
 try:
@@ -229,10 +230,23 @@ class GSCropCameraCapture:
         device_pattern = media_config.get('device_pattern', '/dev/media%d')
         entity_pattern = media_config.get('entity_pattern', 'imx296')
         
-        # Search for media devices
+        # Dynamic search for media devices using glob
         detected_device = None
-        for i in range(10):  # Check media0 through media9
-            device_path = device_pattern % i
+        
+        # Use glob to find all media devices dynamically
+        media_devices = glob.glob('/dev/media*')
+        media_devices.sort()  # Sort for consistent ordering
+        
+        self.logger.info(f"Scanning {len(media_devices)} media devices: {media_devices}")
+        
+        for device_path in media_devices:
+            # Skip non-numeric media devices (like mediaX)
+            try:
+                device_num = int(device_path.split('media')[-1])
+            except ValueError:
+                self.logger.debug(f"Skipping non-numeric device: {device_path}")
+                continue
+                
             if os.path.exists(device_path):
                 try:
                     # Use media-ctl to check if IMX296 is present

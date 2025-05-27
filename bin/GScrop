@@ -109,13 +109,27 @@ if [[ "" != "$(grep "Revision.*: ...17.$" /proc/cpuinfo)" ]]; then
     fi
 fi
 
-# Find and configure the media device
+# Find and configure the media device with dynamic detection
 MEDIA_DEVICE=""
-for((m=0; m<=5; ++m))
+echo "Scanning for available media devices..." >&2
+
+# Get all available media devices dynamically
+AVAILABLE_MEDIA_DEVICES=($(ls /dev/media* 2>/dev/null | sort -V))
+
+if [ ${#AVAILABLE_MEDIA_DEVICES[@]} -eq 0 ]; then
+    echo "ERROR: No media devices found" >&2
+    echo "ERROR: No media devices found" >> "$MARKERS_FILE"
+    exit 4
+fi
+
+echo "Found ${#AVAILABLE_MEDIA_DEVICES[@]} media devices: ${AVAILABLE_MEDIA_DEVICES[*]}" >&2
+
+# Try each available media device
+for media_dev in "${AVAILABLE_MEDIA_DEVICES[@]}"
 do
-    echo "Trying media device /dev/media$m" >&2
-    if media-ctl -d /dev/media$m --set-v4l2 "'imx296 $d-001a':0 [fmt:SBGGR10_1X10/${WIDTH}x${HEIGHT} crop:($(( (1440 - WIDTH) / 2 )),$(( (1088 - HEIGHT) / 2 )))/${WIDTH}x$HEIGHT]" -v 2>/dev/null; then
-        MEDIA_DEVICE="/dev/media$m"
+    echo "Trying media device $media_dev" >&2
+    if media-ctl -d "$media_dev" --set-v4l2 "'imx296 $d-001a':0 [fmt:SBGGR10_1X10/${WIDTH}x${HEIGHT} crop:($(( (1440 - WIDTH) / 2 )),$(( (1088 - HEIGHT) / 2 )))/${WIDTH}x$HEIGHT]" -v 2>/dev/null; then
+        MEDIA_DEVICE="$media_dev"
         echo "Successfully configured media device: $MEDIA_DEVICE" >&2
         echo "MEDIA_DEVICE: $MEDIA_DEVICE" >> "$MARKERS_FILE"
         break
@@ -124,6 +138,7 @@ done
 
 if [[ -z "$MEDIA_DEVICE" ]]; then
     echo "ERROR: Could not configure any media device" >&2
+    echo "Available media devices were: ${AVAILABLE_MEDIA_DEVICES[*]}" >&2
     echo "ERROR: Could not configure any media device" >> "$MARKERS_FILE"
     exit 4
 fi

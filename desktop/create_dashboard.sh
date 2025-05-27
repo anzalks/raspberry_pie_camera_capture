@@ -229,21 +229,46 @@ def get_status():
 
 @app.route('/api/configure')
 def configure_camera():
-    """Configure the camera with correct settings"""
+    """Configure the camera with correct settings using dynamic device detection"""
     try:
-        # Run the configuration script
+        # Find IMX296 camera dynamically
+        media_device = None
+        import glob
+        media_devices = glob.glob('/dev/media*')
+        media_devices.sort()
+        
+        for device in media_devices:
+            try:
+                # Check if this device has IMX296
+                result = subprocess.run(
+                    ["media-ctl", "-d", device, "-p"],
+                    capture_output=True, text=True, timeout=5
+                )
+                if 'imx296' in result.stdout.lower():
+                    media_device = device
+                    break
+            except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
+                continue
+        
+        if not media_device:
+            return jsonify({
+                "success": False,
+                "message": "No IMX296 camera found on any media device"
+            })
+        
+        # Configure the camera using the detected media device
         subprocess.run(
-            ["sudo", "media-ctl", "-d", "/dev/media0", "--set-v4l2", '"imx296":0[fmt:SBGGR10_1X10/400x400]'],
+            ["sudo", "media-ctl", "-d", media_device, "--set-v4l2", '"imx296":0[fmt:SBGGR10_1X10/400x400]'],
             check=False, shell=True
         )
         subprocess.run(
-            ["sudo", "media-ctl", "-d", "/dev/media0", "--set-v4l2", '"*rp1_csi2":0[fmt:SBGGR10_1X10/400x400]'],
+            ["sudo", "media-ctl", "-d", media_device, "--set-v4l2", '"*rp1_csi2":0[fmt:SBGGR10_1X10/400x400]'],
             check=False, shell=True
         )
         
         return jsonify({
             "success": True,
-            "message": "Camera configured with native 400x400 SBGGR10_1X10 format"
+            "message": f"Camera configured with native 400x400 SBGGR10_1X10 format on {media_device}"
         })
     except Exception as e:
         logger.error(f"Error configuring camera: {e}")
@@ -557,4 +582,48 @@ echo "   sudo systemctl enable imx296_dashboard.service"
 echo "   sudo systemctl start imx296_dashboard.service"
 echo ""
 echo "3. Access the dashboard at:"
-echo "   http://[raspberry-pi-ip]:8080" 
+echo "   http://[raspberry-pi-ip]:8080"
+
+# Camera Status Check with dynamic device detection
+section_open "Camera Status"
+
+# Find IMX296 camera dynamically
+MEDIA_DEVICE=""
+AVAILABLE_MEDIA_DEVICES=($(ls /dev/media* 2>/dev/null | sort -V))
+
+if [ ${#AVAILABLE_MEDIA_DEVICES[@]} -eq 0 ]; then
+    echo "<p class='error'>No media devices found</p>"
+else
+    echo "<p>Scanning ${#AVAILABLE_MEDIA_DEVICES[@]} media devices...</p>"
+    
+    for media_dev in "${AVAILABLE_MEDIA_DEVICES[@]}"; do
+        if media-ctl -d "$media_dev" -p 2>/dev/null | grep -qi "imx296"; then
+            MEDIA_DEVICE="$media_dev"
+            echo "<p class='success'>Found IMX296 camera on $MEDIA_DEVICE</p>"
+            break
+        fi
+    done
+    
+    if [ -z "$MEDIA_DEVICE" ]; then
+        echo "<p class='warning'>IMX296 camera not detected on any media device</p>"
+        # Use first available media device for topology check
+        MEDIA_DEVICE="${AVAILABLE_MEDIA_DEVICES[0]}"
+    fi
+fi
+
+# Show camera topology if media device is available
+if [ -n "$MEDIA_DEVICE" ]; then
+    echo "<h4>Camera Topology ($MEDIA_DEVICE):</h4>"
+    echo "<pre>"
+    run_command_with_fallback \
+        ["media-ctl", "--device=$MEDIA_DEVICE", "--print-topology"] \
+        "Camera topology information"
+    echo "</pre>"
+    
+    echo "<h4>Camera V4L2 Settings:</h4>"
+    echo "<pre>"
+    run_command_with_fallback \
+        ["media-ctl", "--device=$MEDIA_DEVICE", "--get-v4l2", '"imx296":0'] \
+        "Camera V4L2 settings"
+    echo "</pre>"
+fi 

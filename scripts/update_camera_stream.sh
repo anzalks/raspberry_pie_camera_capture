@@ -29,6 +29,8 @@ import logging
 import numpy as np
 import json
 from datetime import datetime
+import glob
+import sys
 
 # Configure logging
 logging.basicConfig(
@@ -119,12 +121,20 @@ class IMX296CameraStream:
     def _configure_media_pipeline(self):
         """Configure media pipeline for IMX296 camera using media-ctl"""
         try:
-            # Find the media device
-            media_dev = "/dev/media0"
-            if os.path.exists("/dev/media1"):
+            # Auto-detect media device
+            media_dev = self.auto_detect_media_device()
+            if not media_dev:
+                logger.error("Falling back to default media device")
+                media_dev = "/dev/media0"
+            
+            logger.info(f"Using media device: {media_dev}")
+            
+            # Check for additional ISP device
+            if os.path.exists("/dev/media1") and media_dev != "/dev/media1":
+                logger.info("Using additional ISP device: /dev/media1")
                 # Also check media1 for ISP
-                subprocess.run(["media-ctl", "-d", "/dev/media1", "-p"], 
-                              check=False, capture_output=True)
+                subprocess.run(["media-ctl", "-d", "/dev/media1", "-p"],
+                              capture_output=True, timeout=5)
             
             # Configure sensor format
             subprocess.run(
@@ -143,6 +153,33 @@ class IMX296CameraStream:
         except Exception as e:
             logger.error(f"Failed to configure media pipeline: {e}")
             return False
+
+    def auto_detect_media_device(self):
+        """Dynamically detect media device with IMX296 camera."""
+        available_devices = sorted(glob.glob('/dev/media*'))
+        
+        if not available_devices:
+            logger.warning("WARNING: No media devices found")
+            return None
+        
+        logger.info(f"Scanning {len(available_devices)} media devices for IMX296 camera...")
+        
+        for device in available_devices:
+            if os.path.exists(device):
+                try:
+                    result = subprocess.run(
+                        ["media-ctl", "-d", device, "-p"],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if 'imx296' in result.stdout.lower():
+                        logger.info(f"Found IMX296 camera on: {device}")
+                        return device
+                except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
+                    continue
+        
+        logger.error("ERROR: No IMX296 camera found on any media device")
+        logger.error(f"Available devices were: {available_devices}")
+        return None
 
     def _find_camera_device(self):
         """Find the IMX296 camera device"""

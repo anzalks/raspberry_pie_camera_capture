@@ -15,6 +15,7 @@ import subprocess
 import logging
 import shutil
 from pathlib import Path
+import glob
 
 # Dynamic path detection - works regardless of installation location
 script_path = Path(__file__).resolve()
@@ -47,35 +48,146 @@ logger.info(f"  Bin directory: {bin_dir}")
 logger.info(f"  Working directory: {Path.cwd()}")
 logger.info(f"  Original CWD: {original_cwd}")
 
-def check_camera_devices():
-    """Check if camera devices are available."""
-    logger.info("Checking camera devices...")
+def check_camera_hardware():
+    """Check if IMX296 camera hardware is available with dynamic device detection."""
+    logger = logging.getLogger('camera_check')
     
-    # Check for video devices
-    video_devices = []
-    for i in range(10):
-        dev_path = f"/dev/video{i}"
-        if os.path.exists(dev_path):
-            video_devices.append(dev_path)
+    try:
+        # Dynamic media device detection
+        media_devices = glob.glob('/dev/media*')
+        media_devices.sort()
+        
+        logger.info(f"Checking {len(media_devices)} media devices for IMX296 camera")
+        
+        imx296_found = False
+        for device_path in media_devices:
+            # Skip non-numeric devices
+            try:
+                device_num = int(device_path.split('media')[-1])
+            except ValueError:
+                continue
+                
+            if os.path.exists(device_path):
+                try:
+                    result = subprocess.run([
+                        'media-ctl', '-d', device_path, '-p'
+                    ], capture_output=True, text=True, timeout=5)
+                    
+                    if 'imx296' in result.stdout.lower():
+                        logger.info(f"IMX296 camera found on {device_path}")
+                        imx296_found = True
+                        break
+                        
+                except (subprocess.TimeoutExpired, FileNotFoundError):
+                    continue
+        
+        if not imx296_found:
+            logger.warning("IMX296 camera not detected via media-ctl")
+            
+        # Dynamic video device detection
+        video_devices = glob.glob('/dev/video*')
+        video_devices.sort()
+        
+        logger.info(f"Available video devices: {video_devices}")
+        
+        for device_path in video_devices:
+            # Skip non-numeric devices
+            try:
+                device_num = int(device_path.split('video')[-1])
+            except ValueError:
+                continue
+                
+            if os.path.exists(device_path):
+                try:
+                    result = subprocess.run([
+                        'v4l2-ctl', '-d', device_path, '--list-formats-ext'
+                    ], capture_output=True, text=True, timeout=3)
+                    
+                    if result.returncode == 0:
+                        logger.info(f"Video device {device_path} is accessible")
+                        
+                except (subprocess.TimeoutExpired, FileNotFoundError):
+                    continue
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"Camera hardware check failed: {e}")
+        return False
+
+def find_project_root():
+    """Find project root directory dynamically."""
+    current = Path(__file__).resolve()
     
-    if not video_devices:
-        logger.error("No video devices found!")
+    # Look for key project files to identify root
+    key_files = ['config/config.yaml', 'src/imx296_gs_capture', 'bin/GScrop']
+    
+    for parent in [current.parent.parent, current.parent, current]:
+        if all((parent / key_file).exists() for key_file in key_files):
+            return parent
+    
+    # Fallback to parent directory
+    return current.parent.parent
+
+def check_dependencies():
+    """Check if all required dependencies are available with dynamic detection."""
+    logger = logging.getLogger('deps_check')
+    
+    missing_deps = []
+    
+    # Check Python packages
+    try:
+        import yaml
+        import requests
+        import psutil
+    except ImportError as e:
+        missing_deps.append(f"Python package: {e}")
+    
+    # Check LSL
+    try:
+        import pylsl
+        logger.info(f"LSL available: {pylsl.__version__}")
+    except ImportError:
+        missing_deps.append("pylsl (Lab Streaming Layer)")
+    
+    # Check system tools with dynamic detection
+    import subprocess
+    system_tools = ['media-ctl', 'v4l2-ctl', 'ffmpeg']
+    
+    for tool in system_tools:
+        try:
+            result = subprocess.run(['which', tool], capture_output=True, text=True)
+            if result.returncode == 0:
+                logger.info(f"{tool} found at: {result.stdout.strip()}")
+            else:
+                missing_deps.append(f"System tool: {tool}")
+        except FileNotFoundError:
+            missing_deps.append(f"System tool: {tool}")
+    
+    # Dynamic libcamera detection
+    libcamera_tools = ['libcamera-hello', 'rpicam-hello', 'libcamera-vid', 'rpicam-vid']
+    libcamera_found = False
+    
+    for tool in libcamera_tools:
+        try:
+            result = subprocess.run(['which', tool], capture_output=True, text=True)
+            if result.returncode == 0:
+                logger.info(f"Libcamera tool found: {tool} at {result.stdout.strip()}")
+                libcamera_found = True
+                break
+        except FileNotFoundError:
+            continue
+    
+    if not libcamera_found:
+        missing_deps.append("libcamera tools (libcamera-hello/rpicam-hello)")
+    
+    if missing_deps:
+        logger.error("Missing dependencies:")
+        for dep in missing_deps:
+            logger.error(f"  - {dep}")
         return False
     
-    logger.info(f"Found video devices: {video_devices}")
-    
-    # Check if media devices exist
-    media_devices = []
-    for i in range(10):
-        dev_path = f"/dev/media{i}"
-        if os.path.exists(dev_path):
-            media_devices.append(dev_path)
-    
-    if not media_devices:
-        logger.warning("No media devices found. This might be a problem for hardware cropping.")
-    else:
-        logger.info(f"Found media devices: {media_devices}")
-    
+    logger.info("All dependencies available")
     return True
 
 def check_gscrop_script():
@@ -221,7 +333,7 @@ def main():
         return 1
     
     # Check camera devices
-    if not check_camera_devices():
+    if not check_camera_hardware():
         logger.warning("No camera devices found, but will try to proceed anyway")
     
     # Reset camera devices for clean start

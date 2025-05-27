@@ -1,6 +1,7 @@
 # IMX296 Global Shutter Camera Configuration
 # Author: Anzal KS <anzal.ks@gmail.com>
 # Date: May 23, 2025
+# Optimized for Raspberry Pi deployment
 
 # System paths and tools
 system:
@@ -24,14 +25,32 @@ camera:
   # Automatic camera detection
   auto_detect: true
   media_ctl:
-    device_pattern: "/dev/media%d"
+    device_pattern: "/dev/media%d"  # Will auto-detect all available media devices dynamically
     entity_pattern: "imx296"
     bayer_format: "SBGGR10_1X10"  # Raw Bayer format for IMX296
+  
+  # Pi-specific optimizations
+  pi_optimizations:
+    # Use GPU memory for camera processing
+    gpu_memory_mb: 128
+    # Pi-optimized buffer sizes  
+    capture_buffer_size: 32
+    # Enable hardware acceleration
+    use_gpu_encoding: true
+    # Pi-specific format preferences
+    preferred_formats: ["SBGGR10_1X10", "MJPEG"]
+    # Thermal management
+    monitor_temperature: true
+    cpu_temp_threshold: 75  # Celsius
+    throttling_protection: true
 
 # RAM buffer settings for pre-trigger storage
 buffer:
   duration_seconds: 15
   max_frames: 1500  # 15 seconds at 100fps
+  # Pi-specific buffer optimizations
+  use_shared_memory: true  # Use /dev/shm for fast access
+  buffer_to_ram: true      # Keep buffer in RAM to protect SD card
 
 # LSL stream configuration - Independent streaming
 lsl:
@@ -43,6 +62,11 @@ lsl:
     - "frame_number"    # Sequential frame counter
     - "trigger_time"    # Unix timestamp when trigger occurred
     - "trigger_type"    # 0=none, 1=keyboard, 2=ntfy
+  # Pi-specific LSL optimizations
+  pi_optimizations:
+    sample_rate_limit: 100      # Match camera FPS
+    compression_level: 1        # Light compression for Pi CPU
+    use_local_networking: true  # Optimize for local Pi networking
 
 # Recording settings
 recording:
@@ -50,17 +74,74 @@ recording:
   video_format: "mkv"      # Container format (more robust than MP4)
   codec: "mjpeg"          # Use MJPEG codec for better compatibility
   quality: 90             # JPEG quality 0-100
+  # Pi-specific recording optimizations
+  pi_optimizations:
+    # Use fast storage paths for temporary files
+    temp_storage_paths: ["/dev/shm", "/tmp"]
+    # Buffer recordings in RAM before SD card write
+    ram_buffer_duration: 30  # seconds
+    # SD card protection
+    batch_writes: true
+    compress_logs: true
+    log_rotation_mb: 10
 
 # ntfy.sh notifications for remote control
 ntfy:
   server: "https://ntfy.sh"
   topic: "raspie-camera-dawg-123"
   poll_interval_sec: 2
+  # Pi-specific ntfy optimizations
+  pi_optimizations:
+    # Adaptive polling based on power status
+    poll_interval_battery: 10    # When on battery/low power
+    poll_interval_powered: 2     # When powered
+    connection_pooling: true     # Use efficient HTTP connections
 
 # Logging configuration
 logging:
-  level: "DEBUG"  # Set to DEBUG for more verbose output
-  console: true
+  level: "INFO"
   file: "logs/imx296_capture.log"
-  max_size_mb: 10
-  backup_count: 5 
+  max_size_mb: 50
+  backup_count: 3
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  # Pi-specific logging optimizations
+  pi_optimizations:
+    log_to_tmpfs: true          # Use /dev/shm for high-frequency logs
+    batch_log_writes: true      # Reduce SD card writes
+    compress_old_logs: true     # Save SD card space
+
+# Pi-specific performance monitoring
+pi_monitoring:
+  # Enable Pi hardware monitoring
+  enable_monitoring: true
+  metrics:
+    cpu_temperature: true
+    gpu_temperature: true
+    throttling_status: true
+    voltage_status: true
+    memory_usage: true
+  # Performance thresholds
+  thresholds:
+    cpu_temp_warning: 70      # Celsius
+    cpu_temp_critical: 80     # Celsius
+    memory_usage_warning: 80  # Percentage
+  # Automatic optimization
+  auto_optimization:
+    thermal_management: true
+    cpu_scaling: "performance"  # For consistent camera performance
+    gpu_freq_min: 500          # MHz
+
+# Pi-specific cleanup settings
+pi_cleanup:
+  # Services to stop before camera operation
+  conflicting_services: ["motion", "mjpg-streamer", "picamera"]
+  # Pi-specific cleanup operations
+  cleanup_operations:
+    clear_gpu_memory: true
+    reset_camera_modules: true
+    clear_pi_caches: true
+  # Cache directories to clean
+  cache_directories:
+    - "/var/cache/fontconfig"
+    - "/tmp/.X11-unix"
+    - "/dev/shm/pulse*" 

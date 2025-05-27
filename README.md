@@ -4,7 +4,7 @@
 **Repository**: https://github.com/anzalks/raspberry_pie_camera_capture  
 **License**: MIT
 
-A comprehensive high-performance camera capture system for IMX296 Global Shutter cameras with **dynamic path compatibility**, automatic detection, independent LSL streaming, remote control, and advanced cleanup capabilities.
+A comprehensive high-performance camera capture system for IMX296 Global Shutter cameras with **enhanced dynamic path compatibility**, automatic detection, independent LSL streaming, remote control, and advanced cleanup capabilities.
 
 ## 🎯 Overview
 
@@ -16,15 +16,16 @@ This system provides a complete solution for IMX296 Global Shutter camera captur
 - **Professional video recording** with MKV output
 - **Real-time status monitoring** with terminal UI
 - **Comprehensive cleanup system** for conflict-free deployment
-- **🔄 Dynamic Path Compatibility** - Works on any user, device, or installation location
+- **🔄 Enhanced Dynamic Path Compatibility** - Works on any user, device, or installation location
+- **🛡️ Enhanced Installation System** - Robust error handling and permission management
 
 **Total codebase**: 9,577 lines across Python, Shell, and configuration files  
 **Test coverage**: 38/38 tests passing (100% success rate)
 
 ## ✅ Features
 
-### 🔄 Dynamic Path Compatibility (MAJOR UPDATE)
-This system now features **complete path portability** - it works seamlessly regardless of installation location, username, or device:
+### 🔄 Enhanced Dynamic Path Compatibility (MAJOR UPDATE)
+This system now features **complete path portability** with enhanced robustness - it works seamlessly regardless of installation location, username, or device:
 
 **✅ Universal Installation**:
 - Works on any username (`pi`, `dawg`, `ubuntu`, `anzal`, etc.)
@@ -32,23 +33,25 @@ This system now features **complete path portability** - it works seamlessly reg
 - Works on any Raspberry Pi device or Linux system
 - No hardcoded paths to specific users or directories
 
-**✅ Auto-Detection Technology**:
-- **Dynamic Project Root**: Detected from actual script locations
-- **Dynamic User Context**: Multi-fallback user detection (`getent`/`whoami`/`$USER`)
-- **Dynamic Service Generation**: Systemd services created with detected paths
-- **Dynamic Config Loading**: Searches multiple config locations intelligently
+**✅ Enhanced Auto-Detection Technology**:
+- **Smart Project Root Detection**: Multi-method path validation and detection
+- **Robust User Context**: Enhanced multi-fallback user detection with validation
+- **Intelligent Service Generation**: Systemd services with smart path detection
+- **Adaptive Config Loading**: Searches multiple config locations with fallbacks
 
-**✅ Migration Features**:
+**✅ Enhanced Migration Features**:
 - **Seamless Device Transfer**: `git clone` + `install.sh` on any device
 - **User Account Changes**: Works when moved between user accounts
 - **Directory Relocation**: Functions correctly in any filesystem location
 - **CI/CD Ready**: Perfect for automated deployments and containers
+- **Error Recovery**: Automatic fallback methods for failed operations
 
-**✅ Backward Compatibility**:
-- Existing installations continue working unchanged
-- All original functionality preserved
-- No configuration file changes required
-- Same command-line interface
+**✅ Enhanced Installation Robustness**:
+- **Smart Package Management**: Graceful handling of missing packages
+- **Multiple Detection Methods**: Fallback mechanisms for all components
+- **Enhanced Permission Handling**: Comprehensive ownership and permission management
+- **Desktop Integration**: Multi-method desktop shortcut creation with fallbacks
+- **Enhanced Error Handling**: Continues installation even if some components fail
 
 ### 🎥 Core Camera System
 - **IMX296 Global Shutter Integration**: Hardware-level cropping via media-ctl
@@ -99,51 +102,86 @@ This system now features **complete path portability** - it works seamlessly reg
 - **File Management**: Cleans shared memory, configs, cache files
 - **Multi-Mode Operation**: Cleanup-only, verify-only, combined modes
 
-## 🚀 Installation
+## 🚀 Enhanced Installation
 
-### Quick Install (Dynamic Path Compatible)
+### Quick Install (Enhanced Dynamic Path Compatible)
 
-The installation system now works on **any user, any device, any location**:
+The **enhanced installation system** now features robust error handling, smart fallbacks, and comprehensive permission management:
 
 ```bash
 # Clone repository anywhere
 git clone https://github.com/anzalks/raspberry_pie_camera_capture.git
 cd raspberry_pie_camera_capture
 
-# Run dynamic installation script (works for any user)
+# Run enhanced dynamic installation script (works for any user)
 sudo ./setup/install.sh
 ```
 
-### Installation Features
+### Enhanced Installation Features
 
-**✅ Dynamic Path Compatibility**:
-- Auto-detects installation location from script directory
-- Dynamic user detection via `getent`/`whoami` with multiple fallbacks
-- All paths calculated relative to detected project root
-- Systemd services generated with dynamic paths at install time
-- Works when moved between users, devices, or filesystem locations
+**✅ Smart Package Management**:
+- Intelligent package detection with alternative names (v4l-utils/v4l2-utils)
+- Graceful handling of missing packages with fallback methods
+- Core vs. optional package classification for robust installation
+- Enhanced error recovery with multiple installation attempts
 
-**✅ Raspberry Pi Bookworm Compatibility**:
-- Fixed package names (`v4l-utils` vs `v4l2-utils`)
-- Proper liblsl build from source with cmake error handling
-- Fixed pylsl symlink creation for all architectures
-- Enhanced error handling with graceful fallbacks
+**✅ Enhanced User Detection**:
+- Multi-method user detection with validation
+- Automatic home directory creation and validation
+- Enhanced ownership fixing with recursive and alternative methods
+- Smart group detection and permission management
 
-**✅ Automatic Detection**:
-- Camera hardware detection with libcamera
-- Python version compatibility (3.9+)
-- Architecture-specific library linking
-- Missing package graceful handling
+**✅ Robust LSL Installation**:
+- Multiple liblsl detection methods (ldconfig, common paths, build from source)
+- Enhanced build process with preferred version selection
+- Comprehensive symlink creation for all architectures
+- Multiple verification methods for pylsl functionality
 
-**✅ Complete Setup**:
-- Virtual environment with proper permissions
-- Systemd service installation with dynamic paths
-- Desktop shortcut creation
-- Configuration file setup with unique ntfy topics
+**✅ Enhanced Desktop Integration**:
+- Multi-language desktop directory detection (English, Spanish, French, Russian)
+- Multiple fallback methods for desktop shortcut creation
+- Application menu integration with automatic updates
+- Enhanced permission setting with 4 different methods
+
+**✅ Smart Service Management**:
+- Intelligent systemd service creation with existence checking
+- Dynamic path updating for existing services
+- Enhanced service validation and error handling
+- Comprehensive service installation with monitoring
+
+**✅ Enhanced Configuration Management**:
+- Smart camera device detection with media-ctl integration
+- Unique ntfy topic generation based on hostname and project
+- Dynamic path substitution in configuration files
+- Enhanced ownership and permission management
+
+**✅ Comprehensive Testing and Validation**:
+- Multi-method Python dependency testing
+- Enhanced LSL functionality verification with fallback fixes
+- Camera hardware detection with detailed reporting
+- Real-time installation status reporting with color-coded messages
+
+### Enhanced Installation Process
+
+The installation script now provides enhanced feedback and error handling:
+
+```bash
+[INFO] Installing for user: dawg1
+[INFO] User home: /home/dawg1
+[INFO] Project location: /home/dawg1/Downloads/insha_rpie/raspberry_pie_camera_capture
+[SUCCESS] Python 3 interpreter (python3) installed successfully
+[SUCCESS] liblsl found in system libraries: liblsl.so.1.16 => /usr/local/lib/liblsl.so
+[SUCCESS] Enhanced liblsl symlinks created
+[SUCCESS] pylsl installed successfully
+[SUCCESS] Enhanced script permissions set
+[SUCCESS] Enhanced desktop shortcut created: /home/dawg1/Desktop/IMX296-Camera.desktop
+[SUCCESS] Enhanced IMX296 camera configuration complete
+[SUCCESS] Enhanced installation script completed successfully!
+```
 
 ### Manual Installation (Alternative)
 
-If the automated script fails:
+If the automated script needs customization:
 
 ```bash
 # Install system dependencies manually
@@ -152,87 +190,123 @@ sudo apt install -y python3 python3-pip python3-venv python3-dev \
   libcamera-apps ffmpeg git build-essential cmake pkg-config \
   libboost-dev libboost-thread-dev
 
-# Build liblsl from source
+# Build liblsl from source with enhanced configuration
 cd /tmp
 git clone https://github.com/sccn/liblsl.git
 cd liblsl
+git checkout v1.16.2  # Use stable version
 mkdir build && cd build
-cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local -DLSL_BUNDLED_BOOST=ON
+cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local \
+         -DLSL_BUNDLED_BOOST=ON \
+         -DLSL_UNIXFOLDERS=ON \
+         -DLSL_NO_FANCY_LIBNAME=ON \
+         -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc) && sudo make install
 sudo ldconfig
 
-# Setup Python environment
+# Setup Python environment with enhanced permissions
 cd raspberry_pie_camera_capture
 python3 -m venv --system-site-packages .venv
+.venv/bin/pip install --upgrade pip setuptools wheel
 .venv/bin/pip install pylsl>=1.16.0 pyyaml>=6.0 requests>=2.28.0 psutil>=5.9.0
+
+# Create enhanced liblsl symlinks
+PYTHON_VER=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+PYLSL_DIR=".venv/lib/python${PYTHON_VER}/site-packages/pylsl"
+mkdir -p "$PYLSL_DIR/lib"
+ln -sf /usr/local/lib/liblsl.so "$PYLSL_DIR/liblsl.so"
+ln -sf /usr/local/lib/liblsl.so "$PYLSL_DIR/liblsl64.so"
+ln -sf /usr/local/lib/liblsl.so "$PYLSL_DIR/lib/liblsl.so"
 ```
 
-### Troubleshooting Installation
+### Enhanced Troubleshooting
 
-**LSL Library Issues**:
+**Enhanced LSL Library Troubleshooting**:
 ```bash
-# Verify liblsl installation
+# Multiple verification methods
 ldconfig -p | grep liblsl
+find /usr -name "liblsl.so*" 2>/dev/null
+ldd .venv/lib/python*/site-packages/pylsl/*.so
 
-# Fix pylsl symlinks manually
-PYLSL_DIR=.venv/lib/python3.*/site-packages/pylsl
-mkdir -p $PYLSL_DIR/lib
-ln -sf /usr/local/lib/liblsl.so $PYLSL_DIR/liblsl64.so
+# Enhanced symlink repair
+python3 -c "
+import sys
+import os
+from pathlib import Path
+
+python_ver = f'{sys.version_info.major}.{sys.version_info.minor}'
+pylsl_dir = Path(f'.venv/lib/python{python_ver}/site-packages/pylsl')
+lib_paths = ['/usr/local/lib/liblsl.so', '/usr/lib/liblsl.so']
+
+for lib_path in lib_paths:
+    if os.path.exists(lib_path):
+        print(f'Creating symlinks for {lib_path}')
+        os.makedirs(pylsl_dir / 'lib', exist_ok=True)
+        for name in ['liblsl.so', 'liblsl64.so', 'lib/liblsl.so']:
+            symlink = pylsl_dir / name
+            symlink.unlink(missing_ok=True)
+            symlink.symlink_to(lib_path)
+        break
+"
 ```
 
-**Package Installation Failures**:
+**Enhanced Permission Troubleshooting**:
 ```bash
-# Check available package names
-apt-cache search v4l-utils
-apt-cache search libboost
+# Fix comprehensive permissions
+sudo chown -R $(whoami):$(id -gn) .venv
+find .venv -type d -exec chmod u+rwx {} \;
+find .venv -type f -exec chmod u+rw {} \;
+find bin -name "*.py" -exec chmod +x {} \;
+find bin -name "*.sh" -exec chmod +x {} \;
 
-# Alternative V4L tools
-sudo apt install -y media-ctl-tools  # If v4l-utils unavailable
+# Fix desktop shortcut with multiple methods
+chmod +x ~/Desktop/IMX296-Camera.desktop 2>/dev/null || \
+chmod 755 ~/Desktop/IMX296-Camera.desktop 2>/dev/null || \
+sudo chmod +x ~/Desktop/IMX296-Camera.desktop
 ```
 
-### Post-Installation
+**Enhanced Package Installation Issues**:
+```bash
+# Alternative package detection
+apt-cache search v4l | grep utils
+apt-cache search boost | grep dev
+apt-cache search camera | grep lib
 
-After successful installation:
+# Manual package installation with alternatives
+sudo apt install -y v4l-utils || sudo apt install -y v4l2-utils
+sudo apt install -y libboost-all-dev || sudo apt install -y libboost-dev
+```
+
+### Post-Installation Verification
+
+After successful installation, verify with enhanced checks:
 
 ```bash
 # Reboot to load camera drivers
 sudo reboot
 
-# Test installation
+# Enhanced verification tests
 libcamera-hello --list-cameras
-python3 -c "import pylsl; print('LSL working')"
+python3 -c "
+import pylsl
+print(f'✓ pylsl version: {pylsl.__version__}')
+info = pylsl.StreamInfo('test', 'Test', 1, 100, 'float32', 'test')
+outlet = pylsl.StreamOutlet(info)
+print('✓ LSL stream creation successful')
+"
+
+# Check enhanced desktop integration
+ls -la ~/Desktop/IMX296-Camera.desktop
+ls -la ~/.local/share/applications/imx296-camera.desktop
+
+# Verify enhanced services
+sudo systemctl status imx296-camera --no-pager
+sudo systemctl status imx296-camera-monitor --no-pager
 ```
 
-### 2. Clean Start (Recommended)
+## 📋 Usage
 
-For new installations or after system updates:
-
-```bash
-# Clean start with status monitor (recommended)
-./bin/clean_start_camera.sh -m
-
-# Clean start without monitor
-./bin/clean_start_camera.sh
-
-# Cleanup only (don't start)
-./bin/clean_start_camera.sh -c
-
-# Verify system state
-./bin/clean_start_camera.sh -v
-```
-
-### 3. Traditional Start
-
-```bash
-# Direct execution
-python3 bin/run_imx296_capture.py
-
-# With status monitor
-python3 bin/start_camera_with_monitor.py --monitor
-
-# As systemd service
-sudo systemctl start imx296-camera
-```
+### 1. System Startup
 
 ## ⚙️ Configuration
 
@@ -643,3 +717,13 @@ Complete production-ready solution with 9,577 lines of code
 38/38 tests passing • Real-time performance • Enterprise features
 
 *Built by Anzal KS • Camera systems that just work™*
+
+## 🔧 Enhanced Pi-Specific Features
+
+### Dynamic Device Detection
+- **Unlimited Media Devices**: No hardcoded limits - automatically detects all available `/dev/media*` devices
+- **Smart IMX296 Detection**: Scans all media devices to find the one with IMX296 camera
+- **Automatic Fallback**: Falls back to `/dev/media0` if auto-detection fails
+- **Detailed Logging**: Comprehensive device scanning and detection reports
+
+### Pi Hardware Optimizations
