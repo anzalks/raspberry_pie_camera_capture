@@ -97,7 +97,34 @@ rm -f "$MARKERS_DIR/tst.pts"
 if [[ "" != "$(grep "Revision.*: ...17.$" /proc/cpuinfo)" ]]
 then
   rpicam-vid "$workaround" ${cam1:+--camera 1} --width "$1" --height "$2" --denoise cdn_off --framerate "$3" -t "$4" "$SHTR" "$5" -o "$MARKERS_DIR/tst${cam1:+1}.mp4" -n ; echo 
-  ~/venv/bin/python ~/rpicam-apps/utils/timestamp.py --plot ${narrow:+--narrow} "$MARKERS_DIR/tst${cam1:+1}.mp4"
+  
+  # Find python path flexibly
+  PYTHON_PATH=""
+  if [[ -f "$HOME/venv/bin/python" ]]; then
+    PYTHON_PATH="$HOME/venv/bin/python"
+  elif [[ -f "./venv/bin/python" ]]; then
+    PYTHON_PATH="./venv/bin/python"
+  elif [[ -f "/home/$(logname)/venv/bin/python" ]] 2>/dev/null; then
+    PYTHON_PATH="/home/$(logname)/venv/bin/python"
+  else
+    PYTHON_PATH="python3"
+  fi
+  
+  # Find timestamp script flexibly
+  TIMESTAMP_SCRIPT=""
+  if [[ -f "$HOME/rpicam-apps/utils/timestamp.py" ]]; then
+    TIMESTAMP_SCRIPT="$HOME/rpicam-apps/utils/timestamp.py"
+  elif [[ -f "./rpicam-apps/utils/timestamp.py" ]]; then
+    TIMESTAMP_SCRIPT="./rpicam-apps/utils/timestamp.py"
+  elif [[ -f "/home/$(logname)/rpicam-apps/utils/timestamp.py" ]] 2>/dev/null; then
+    TIMESTAMP_SCRIPT="/home/$(logname)/rpicam-apps/utils/timestamp.py"
+  fi
+  
+  if [[ -n "$TIMESTAMP_SCRIPT" ]]; then
+    "$PYTHON_PATH" "$TIMESTAMP_SCRIPT" --plot ${narrow:+--narrow} "$MARKERS_DIR/tst${cam1:+1}.mp4"
+  else
+    echo "Timestamp analysis script not found, skipping plot generation" >&2
+  fi
 else
   libcamera-vid "$workaround" --width "$1" --height "$2" --denoise cdn_off --framerate "$3" --save-pts "$MARKERS_DIR/tst.pts" -t "$4" "$SHTR" "$5" -o "$MARKERS_DIR/tst.h264" -n ; echo 
   rm -f tstamps.csv && ptsanalyze "$MARKERS_DIR/tst.pts"
