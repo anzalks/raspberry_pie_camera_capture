@@ -2,6 +2,52 @@
 
 This repository contains a high-performance camera capture system designed for the IMX296 global shutter camera on Raspberry Pi, with Lab Streaming Layer (LSL) integration for precise frame timing. The system consists of a shell script (`GScrop`) for camera control and a Python script (`simple_camera_lsl.py`) for LSL streaming.
 
+## Overview
+
+**IMX296 Global Shutter Camera System for Raspberry Pi**
+
+This system provides high-speed video recording (up to 200fps) with LSL streaming capabilities for scientific and research applications. The system automatically detects unlimited cameras and handles permission requirements gracefully without requiring sudo access.
+
+## Key Features
+
+- **Unlimited Camera Support**: Dynamic detection of all available cameras (no hardcoded limits)
+- **No Sudo Required**: Graceful fallback to /tmp if /dev/shm access is limited
+- **LSL Streaming**: Real-time frame synchronization with Lab Streaming Layer
+- **High-Speed Recording**: Up to 200fps with global shutter technology
+- **Cross-Platform**: Works on Raspberry Pi 4/5 and CM4 systems
+- **User-Friendly**: Automatic permission detection with helpful guidance
+
+## Quick Start
+
+1. **Basic Recording** (no special permissions needed):
+   ```bash
+   ./GScrop 1440 1088 60 5000    # 60fps for 5 seconds
+   ```
+
+2. **With LSL Streaming**:
+   ```bash
+   python simple_camera_lsl.py --config-width 1440 --config-height 1088 --config-fps 60 --duration 5
+   ```
+
+## Permission Requirements
+
+### Automatic Handling ✅
+The system automatically:
+- Detects writable directories (/dev/shm or falls back to /tmp)
+- Checks user permissions for camera access
+- Provides helpful hints for permission issues
+
+### Optional Optimizations
+For best performance (entirely optional):
+```bash
+# Add user to video group (one-time setup)
+sudo usermod -a -G video $USER
+# Then logout and login again
+
+# Optional: Ensure /dev/shm is writable for better performance
+sudo chmod 1777 /dev/shm
+```
+
 ## System Overview
 
 The system is designed to:
@@ -97,24 +143,18 @@ python simple_camera_lsl.py [options]
 
 ## How It Works
 
-### Capture Process
+1. **Dynamic Device Detection**: Automatically finds all available media devices (`/dev/media*`)
+2. **Permission-Aware Operation**: Uses /dev/shm if available, /tmp otherwise
+3. **Media Configuration**: Sets up camera parameters via media-ctl
+4. **Video Recording**: Captures high-speed video with frame synchronization
+5. **LSL Streaming**: Real-time frame markers for lab equipment integration
 
-1. `simple_camera_lsl.py` parses command line arguments and validates camera settings
-2. It launches `GScrop` as a subprocess with the requested parameters
-3. `GScrop` configures the camera hardware via media-ctl and libcamera/rpicam tools
-4. Video recording starts while frame markers are written to `/dev/shm/camera_markers.txt`
-5. Multithreaded processing monitors the markers file and queues frames for LSL streaming
-6. The LSL worker thread processes frames from the queue and sends them to the LSL outlet
-7. Video is saved to the specified output path or auto-generated location
-8. Statistics on frame capture performance are reported on completion
+## LSL Integration
 
-### Frame Synchronization
-
-The system uses two methods for frame timing:
-1. **Markers File**: `/dev/shm/camera_markers.txt` contains frame numbers and timestamps
-2. **PTS File**: Presentation timestamps directly from the camera (when available)
-
-Frame timing data is streamed via LSL with a single channel containing frame numbers.
+1. **Markers File**: Automatically created in accessible location (`/dev/shm` or `/tmp`)
+2. **Frame Synchronization**: Each frame gets precise timestamp markers
+3. **Real-Time Streaming**: Frame data sent via LSL for lab integration
+4. **Cross-Platform**: Compatible with LSL ecosystem
 
 ## Example Usage
 
@@ -151,27 +191,25 @@ Based on the hardware capabilities of the IMX296 camera, these configurations pr
 
 ## Troubleshooting
 
-### Common Issues
+### Permission Issues
+If you see permission warnings:
+```bash
+# Add user to video group
+sudo usermod -a -G video $USER
+# Logout and login again
+```
 
-#### Low Frame Capture Rate
-- Reduce resolution or frame rate
-- Ensure proper cooling of the Raspberry Pi
-- Make sure no other processes are using the camera
-- Try disabling AWB with `--no-awb`
+### Camera Not Detected
+```bash
+# Check camera connection
+lsmod | grep imx296
+# Should show camera driver loaded
+```
 
-#### No LSL Data
-- Check if pylsl is installed correctly
-- Verify LSL receiver is configured to match the stream name
-- Check logs for errors in marker file creation
-
-#### "Media device not found" Error
-- Verify camera connection
-- Check if camera is recognized: `libcamera-hello --list-cameras`
-- Try rebooting the Raspberry Pi
-
-#### Permission Issues
-- Ensure scripts are executable: `chmod +x GScrop`
-- Check permissions on /dev/shm: `sudo chmod 777 /dev/shm`
+### Performance Optimization
+- Uses /dev/shm (RAM disk) for temporary files when available
+- Falls back to /tmp if /dev/shm is not accessible
+- Automatic permission detection prevents script failures
 
 ## Implementation Details
 

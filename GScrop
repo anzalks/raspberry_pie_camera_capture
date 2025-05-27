@@ -10,44 +10,87 @@ export SHTR=""; if [[ $# -gt 4 ]]; then SHTR="--shutter"; fi
 export workaround=""; if [[ "" != "$(grep '=bookworm' /etc/os-release)" ]]; then workaround="--no-raw"; fi
 export d=10; if [[ "" != "$(grep "Revision.*: ...17.$" /proc/cpuinfo)" ]]; then if [[ "$cam1" == "" ]]; then d=10; else d=11; fi; fi
 
+# Check and create /dev/shm if needed (without sudo)
+if [[ ! -d "/dev/shm" ]]; then
+    echo "INFO: /dev/shm not available, using /tmp for markers file" >&2
+    MARKERS_DIR="/tmp"
+else
+    # Test write permissions to /dev/shm
+    if ! touch "/dev/shm/test_write_$$" 2>/dev/null; then
+        echo "INFO: /dev/shm not writable, using /tmp for markers file" >&2
+        echo "HINT: To fix this, run: sudo chmod 1777 /dev/shm" >&2
+        MARKERS_DIR="/tmp"
+    else
+        rm -f "/dev/shm/test_write_$$"
+        MARKERS_DIR="/dev/shm"
+    fi
+fi
+
+# Create markers file for LSL synchronization (simple version)
+MARKERS_FILE="$MARKERS_DIR/camera_markers.txt"
+echo "Starting recording" > "$MARKERS_FILE"
+echo "CONFIG: ${1}x${2}@${3}fps" >> "$MARKERS_FILE"
+chmod 666 "$MARKERS_FILE" 2>/dev/null || true
+echo "Markers file: $MARKERS_FILE" >&2
+
+# Check if user is in video group (camera access)
+if ! groups | grep -q "video\|camera"; then
+    echo "WARNING: User not in 'video' group. Camera access may fail." >&2
+    echo "HINT: Add user to video group: sudo usermod -a -G video \$USER" >&2
+    echo "HINT: Then logout and login again for changes to take effect" >&2
+fi
+
 # ENHANCEMENT: Dynamic device detection with unlimited scalability
 # Get all available media devices dynamically (no hardcoded limits)
 MEDIA_DEVICES=($(ls /dev/media* 2>/dev/null | sort -V))
 
 if [ ${#MEDIA_DEVICES[@]} -eq 0 ]; then
     echo "ERROR: No media devices found in /dev/media*" >&2
+    echo "HINT: Make sure camera is connected and drivers are loaded" >&2
+    echo "HINT: Try: lsmod | grep imx296" >&2
     exit 1
 fi
 
 echo "Found ${#MEDIA_DEVICES[@]} media device(s): ${MEDIA_DEVICES[*]}" >&2
 
+# Check media device permissions
+for media_dev in "${MEDIA_DEVICES[@]}"; do
+    if [[ ! -r "$media_dev" ]]; then
+        echo "WARNING: Cannot read $media_dev (permission denied)" >&2
+        echo "HINT: Check device permissions or add user to video group" >&2
+    fi
+done
+
 # Try to configure each available media device
 CONFIGURED=false
 for media_dev in "${MEDIA_DEVICES[@]}"; do
     echo "Trying media device $media_dev" >&2
-    media-ctl -d "$media_dev" --set-v4l2 "'imx296 $d-001a':0 [fmt:SBGGR10_1X10/${1}x${2} crop:($(( (1440 - $1) / 2 )),$(( (1088 - $2) / 2 )))/${1}x$2]" -v
-    if [ $? -eq 0 ]; then
+    if media-ctl -d "$media_dev" --set-v4l2 "'imx296 $d-001a':0 [fmt:SBGGR10_1X10/${1}x${2} crop:($(( (1440 - $1) / 2 )),$(( (1088 - $2) / 2 )))/${1}x$2]" -v 2>/dev/null; then
         echo "Successfully configured media device: $media_dev" >&2
+        echo "MEDIA_DEVICE: $media_dev" >> "$MARKERS_FILE"
         CONFIGURED=true
         break
     else
-        echo "Failed to configure $media_dev, trying next..." >&2
+        echo "Failed to configure $media_dev (may need permissions), trying next..." >&2
     fi
 done
 
 if [ "$CONFIGURED" = false ]; then
     echo "ERROR: Could not configure any media device" >&2
+    echo "HINT: Ensure user has camera permissions (video group)" >&2
+    echo "HINT: Check if camera drivers are loaded: lsmod | grep imx296" >&2
+    echo "HINT: Try running: sudo usermod -a -G video \$USER" >&2
     exit 1
 fi
 
 libcamera-hello --list-cameras ; echo
-rm -f /dev/shm/tst.pts
+rm -f "$MARKERS_DIR/tst.pts"
 
 if [[ "" != "$(grep "Revision.*: ...17.$" /proc/cpuinfo)" ]]
 then
-  rpicam-vid "$workaround" ${cam1:+--camera 1} --width "$1" --height "$2" --denoise cdn_off --framerate "$3" -t "$4" "$SHTR" "$5" -o /dev/shm/tst${cam1:+1}.mp4 -n ; echo 
-  ~/venv/bin/python ~/rpicam-apps/utils/timestamp.py --plot ${narrow:+--narrow} /dev/shm/tst${cam1:+1}.mp4
+  rpicam-vid "$workaround" ${cam1:+--camera 1} --width "$1" --height "$2" --denoise cdn_off --framerate "$3" -t "$4" "$SHTR" "$5" -o "$MARKERS_DIR/tst${cam1:+1}.mp4" -n ; echo 
+  ~/venv/bin/python ~/rpicam-apps/utils/timestamp.py --plot ${narrow:+--narrow} "$MARKERS_DIR/tst${cam1:+1}.mp4"
 else
-  libcamera-vid "$workaround" --width "$1" --height "$2" --denoise cdn_off --framerate "$3" --save-pts /dev/shm/tst.pts -t "$4" "$SHTR" "$5" -o /dev/shm/tst.h264 -n ; echo 
-  rm -f tstamps.csv && ptsanalyze /dev/shm/tst.pts
+  libcamera-vid "$workaround" --width "$1" --height "$2" --denoise cdn_off --framerate "$3" --save-pts "$MARKERS_DIR/tst.pts" -t "$4" "$SHTR" "$5" -o "$MARKERS_DIR/tst.h264" -n ; echo 
+  rm -f tstamps.csv && ptsanalyze "$MARKERS_DIR/tst.pts"
 fi

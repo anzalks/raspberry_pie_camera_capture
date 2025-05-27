@@ -41,7 +41,16 @@ stop_event = threading.Event()
 camera_process = None
 lsl_outlet = None
 lsl_data = []  # Store LSL data
-MARKERS_FILE = "/dev/shm/camera_markers.txt"
+
+# Dynamic markers file detection (no sudo required)
+def get_markers_file():
+    """Get the appropriate markers file path based on available permissions"""
+    if os.path.exists("/dev/shm") and os.access("/dev/shm", os.W_OK):
+        return "/dev/shm/camera_markers.txt"
+    else:
+        return "/tmp/camera_markers.txt"
+
+MARKERS_FILE = get_markers_file()
 
 # Queue for frame data processing
 frame_queue = Queue(maxsize=10000)  # Large capacity queue
@@ -318,61 +327,68 @@ def monitor_markers_file():
     except Exception:
         logger.warning(f"LSL queue still has approximately {frame_queue.qsize()} items remaining")
 
-def monitor_pts_file(pts_file="/dev/shm/tst.pts"):
-    """Directly monitor the PTS file for frame timestamps"""
-    global stop_event, frame_queue
+def monitor_pts_file(pts_file=None):
+    """Monitor the PTS file created by libcamera for older Pi versions"""
+    global stop_event, lsl_data, frame_queue
     
-    logger.info(f"Starting to monitor PTS file: {pts_file}")
+    # Auto-detect PTS file location
+    if pts_file is None:
+        if os.path.exists("/dev/shm") and os.access("/dev/shm", os.W_OK):
+            pts_file = "/dev/shm/tst.pts"
+        else:
+            pts_file = "/tmp/tst.pts"
     
-    if not os.path.exists(pts_file):
-        logger.warning(f"PTS file {pts_file} does not exist yet, waiting...")
-        
-    last_pos = 0
-    last_frame = 0
+    logger.info(f"Monitoring PTS file: {pts_file}")
+    
+    # Wait for the PTS file to be created
+    start_time = time.time()
+    while not stop_event.is_set() and not os.path.exists(pts_file):
+        time.sleep(0.1)
+        if time.time() - start_time > 10.0:  # 10 second timeout
+            logger.warning(f"PTS file {pts_file} not created within timeout")
+            return
+    
+    if stop_event.is_set():
+        return
+    
+    logger.info(f"Found PTS file: {pts_file}")
+    
     processed_frames = 0
     
-    while not stop_event.is_set():
-        # Check if file exists yet
-        if not os.path.exists(pts_file):
-            time.sleep(0.1)
-            continue
-            
-        try:
-            with open(pts_file, 'r') as f:
-                f.seek(last_pos)
-                new_lines = f.readlines()
+    try:
+        with open(pts_file, 'r') as f:
+            while not stop_event.is_set():
+                line = f.readline()
+                if not line:
+                    time.sleep(0.001)  # Very short sleep to avoid busy waiting
+                    continue
                 
-                if new_lines:
-                    last_pos = f.tell()
-                    
-                    for line in new_lines:
-                        line = line.strip()
-                        if not line:
-                            continue
+                # Parse PTS line format: frame_number timestamp
+                parts = line.strip().split()
+                if len(parts) >= 2:
+                    try:
+                        frame_num = int(parts[0])
+                        timestamp = float(parts[1])
+                        
+                        # Add to queue for LSL processing
+                        try:
+                            frame_queue.put_nowait((frame_num, timestamp))
+                            processed_frames += 1
                             
-                        # PTS files typically have format like: "42: 1684567890.123456"
-                        if ':' in line:
-                            try:
-                                parts = line.split(':', 1)
-                                frame_num = int(parts[0].strip())
-                                timestamp = float(parts[1].strip())
-                                
-                                if frame_num > last_frame:
-                                    # Add to processing queue instead of direct processing
-                                    frame_queue.put((frame_num, timestamp))
-                                    last_frame = frame_num
-                                    processed_frames += 1
-                                    
-                                    if processed_frames % 1000 == 0:
-                                        logger.debug(f"Added {processed_frames} frames from PTS to processing queue")
-                                        
-                            except (ValueError, IndexError) as e:
-                                logger.debug(f"Error parsing PTS line '{line}': {e}")
-        except Exception as e:
-            logger.warning(f"Error reading PTS file: {e}")
-            
-        # Reduced sleep time for better responsiveness
-        time.sleep(0.001)
+                            if processed_frames % 100 == 0:
+                                logger.debug(f"PTS monitor processed {processed_frames} frames")
+                        except:
+                            # Queue is full, skip this frame
+                            pass
+                    except (ValueError, IndexError):
+                        # Skip invalid lines
+                        continue
+                
+                # Small delay to prevent excessive CPU usage
+                time.sleep(0.001)
+    
+    except Exception as e:
+        logger.error(f"Error monitoring PTS file: {e}")
     
     logger.info(f"Stopped monitoring PTS file after processing {processed_frames} frames")
 
@@ -509,6 +525,66 @@ def validate_camera_config(width, height, fps):
     
     return True, "Configuration appears to be within camera capabilities"
 
+def check_system_requirements():
+    """
+    Check system requirements for camera operation (no sudo required)
+    Provides helpful guidance if permissions are lacking
+    """
+    logger.info("Checking system requirements...")
+    
+    # Check if markers file location is accessible
+    markers_dir = os.path.dirname(MARKERS_FILE)
+    if os.path.exists(markers_dir) and os.access(markers_dir, os.W_OK):
+        logger.debug(f"Markers directory {markers_dir} is accessible and writable")
+    else:
+        logger.warning(f"Markers directory {markers_dir} may not be accessible")
+        logger.info("HINT: If using /dev/shm, ensure it's mounted and writable")
+        logger.info("HINT: Alternative: Script will automatically use /tmp if /dev/shm unavailable")
+    
+    # Test file creation/deletion without sudo
+    try:
+        test_file = os.path.join(markers_dir, 'test_file_' + str(os.getpid()))
+        with open(test_file, 'w') as f:
+            f.write('test')
+        os.remove(test_file)
+        logger.debug(f"Successfully tested file operations in {markers_dir}")
+    except Exception as e:
+        logger.warning(f"Cannot perform file operations in {markers_dir}: {e}")
+        logger.info("HINT: Check directory permissions or disk space")
+    
+    # Check user groups for camera access
+    try:
+        import grp
+        user_groups = [g.gr_name for g in grp.getgrall() if os.getenv('USER', 'unknown') in g.gr_mem]
+        if 'video' in user_groups or 'camera' in user_groups:
+            logger.debug("User is in video/camera group - camera access should work")
+        else:
+            logger.warning("User not in 'video' or 'camera' group - camera access may fail")
+            logger.info("HINT: Add user to video group: sudo usermod -a -G video $USER")
+            logger.info("HINT: Then logout and login again for changes to take effect")
+    except Exception:
+        logger.debug("Could not check user groups")
+    
+    # Check for camera devices (no special permissions needed for listing)
+    try:
+        video_devices = [f"/dev/video{i}" for i in range(10) if os.path.exists(f"/dev/video{i}")]
+        media_devices = [f"/dev/media{i}" for i in range(10) if os.path.exists(f"/dev/media{i}")]
+        
+        if video_devices:
+            logger.debug(f"Found video devices: {video_devices}")
+        else:
+            logger.warning("No video devices found")
+            
+        if media_devices:
+            logger.debug(f"Found media devices: {media_devices}")
+        else:
+            logger.warning("No media devices found")
+            logger.info("HINT: Ensure camera is connected and drivers loaded")
+    except Exception as e:
+        logger.warning(f"Could not check for camera devices: {e}")
+    
+    logger.info("System requirements check completed")
+
 def main():
     """Main function"""
     global lsl_outlet, stop_event, lsl_data, MARKERS_FILE, frame_queue
@@ -558,25 +634,8 @@ def main():
     if is_windows:
         logger.warning("Running on Windows - some features may not work properly")
     
-    # Check file system permissions
-    if not is_windows:
-        try:
-            # Check if /dev/shm exists and is writable
-            if not os.path.exists('/dev/shm'):
-                logger.error("/dev/shm directory not found - may be missing or not mounted")
-            elif not os.access('/dev/shm', os.W_OK):
-                logger.error("/dev/shm directory is not writable - check permissions")
-            else:
-                logger.debug("/dev/shm directory exists and is writable")
-                
-            # Try to create and remove a test file
-            test_file = '/dev/shm/test_file'
-            with open(test_file, 'w') as f:
-                f.write('test')
-            os.unlink(test_file)
-            logger.debug("Successfully created and removed test file in /dev/shm")
-        except Exception as e:
-            logger.warning(f"File system permission check failed: {e}")
+    # Check system requirements
+    check_system_requirements()
     
     # Test markers file if requested
     if args.test_markers:
