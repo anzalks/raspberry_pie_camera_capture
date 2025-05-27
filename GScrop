@@ -84,36 +84,114 @@ rm -f "$MARKERS_DIR/tst.pts"
 
 if [[ "" != "$(grep "Revision.*: ...17.$" /proc/cpuinfo)" ]]
 then
-  rpicam-vid "$workaround" ${cam1:+--camera 1} --width "$1" --height "$2" --denoise cdn_off --framerate "$3" -t "$4" "$SHTR" "$5" -o "$MARKERS_DIR/tst${cam1:+1}.mp4" -n ; echo 
+  # Record video and output frame timestamps to stdout for real-time LSL streaming
+  rpicam-vid "$workaround" ${cam1:+--camera 1} --width "$1" --height "$2" --denoise cdn_off --framerate "$3" -t "$4" "$SHTR" "$5" --save-pts "$MARKERS_DIR/tst.pts" -o "$MARKERS_DIR/tst${cam1:+1}.mp4" -n &
+  RPICAM_PID=$!
   
-  # Find python path flexibly
+  # Stream frame timestamps in real-time while recording
+  if [[ -n "$STREAM_LSL" ]]; then
+    # Wait briefly for PTS file to be created
+    sleep 0.5
+    # Monitor PTS file and output frame timestamps to stdout for Python script
+    tail -f "$MARKERS_DIR/tst.pts" 2>/dev/null | while read -r line; do
+      if [[ -n "$line" ]]; then
+        # Parse PTS format and output frame_number timestamp for LSL
+        frame_num=$(echo "$line" | awk '{print NR}')
+        timestamp=$(echo "$line" | awk '{print $2/1000000}')
+        echo "FRAME_DATA:$frame_num:$timestamp"
+      fi
+    done &
+    TAIL_PID=$!
+  fi
+  
+  # Wait for recording to complete
+  wait $RPICAM_PID
+  
+  # Stop tail process if it's running
+  if [[ -n "$TAIL_PID" ]]; then
+    kill $TAIL_PID 2>/dev/null || true
+  fi
+  
+  # Optional: Still create markers file for debugging
+  if [[ -f "$MARKERS_DIR/tst.pts" ]]; then
+    echo "Converting PTS to markers format..." >&2
+    awk '{print NR " " $2/1000000}' "$MARKERS_DIR/tst.pts" >> "$MARKERS_FILE"
+    echo "Added $(wc -l < "$MARKERS_DIR/tst.pts") frame timestamps to markers file" >&2
+  fi
+  
+  # Find python path flexibly - check virtual environment first
   PYTHON_PATH=""
-  if [[ -f "$HOME/venv/bin/python" ]]; then
-    PYTHON_PATH="$HOME/venv/bin/python"
-  elif [[ -f "./venv/bin/python" ]]; then
+  if [[ -f "./venv/bin/python" ]]; then
     PYTHON_PATH="./venv/bin/python"
-  elif [[ -f "/home/$(logname)/venv/bin/python" ]] 2>/dev/null; then
-    PYTHON_PATH="/home/$(logname)/venv/bin/python"
+  elif [[ -f "$HOME/venv/bin/python" ]]; then
+    PYTHON_PATH="$HOME/venv/bin/python"
+  elif [[ -f "/home/$(whoami)/venv/bin/python" ]] 2>/dev/null; then
+    PYTHON_PATH="/home/$(whoami)/venv/bin/python"
   else
     PYTHON_PATH="python3"
   fi
   
-  # Find timestamp script flexibly
+  # Find timestamp script flexibly - check multiple locations
   TIMESTAMP_SCRIPT=""
+  # Check user's home directory first
   if [[ -f "$HOME/rpicam-apps/utils/timestamp.py" ]]; then
     TIMESTAMP_SCRIPT="$HOME/rpicam-apps/utils/timestamp.py"
+  # Check current directory
   elif [[ -f "./rpicam-apps/utils/timestamp.py" ]]; then
     TIMESTAMP_SCRIPT="./rpicam-apps/utils/timestamp.py"
-  elif [[ -f "/home/$(logname)/rpicam-apps/utils/timestamp.py" ]] 2>/dev/null; then
-    TIMESTAMP_SCRIPT="/home/$(logname)/rpicam-apps/utils/timestamp.py"
+  # Check system installations
+  elif [[ -f "/usr/share/rpicam-apps/utils/timestamp.py" ]]; then
+    TIMESTAMP_SCRIPT="/usr/share/rpicam-apps/utils/timestamp.py"
+  elif [[ -f "/opt/rpicam-apps/utils/timestamp.py" ]]; then
+    TIMESTAMP_SCRIPT="/opt/rpicam-apps/utils/timestamp.py"
+  # Check for any rpicam-apps installation
+  elif find /usr -name "timestamp.py" -path "*/rpicam-apps/*" 2>/dev/null | head -1 | read -r found_script; then
+    TIMESTAMP_SCRIPT="$found_script"
   fi
   
   if [[ -n "$TIMESTAMP_SCRIPT" ]]; then
-    "$PYTHON_PATH" "$TIMESTAMP_SCRIPT" --plot ${narrow:+--narrow} "$MARKERS_DIR/tst${cam1:+1}.mp4"
+    echo "Using timestamp script: $TIMESTAMP_SCRIPT" >&2
+    # Save plot to file instead of displaying interactively to avoid GUI hang
+    "$PYTHON_PATH" "$TIMESTAMP_SCRIPT" --plot --output "$MARKERS_DIR/timestamp_plot.png" ${narrow:+--narrow} "$MARKERS_DIR/tst${cam1:+1}.mp4" 2>/dev/null || \
+    "$PYTHON_PATH" "$TIMESTAMP_SCRIPT" --plot ${narrow:+--narrow} "$MARKERS_DIR/tst${cam1:+1}.mp4" 2>/dev/null || \
+    echo "Timestamp analysis completed but plot generation failed" >&2
   else
     echo "Timestamp analysis script not found, skipping plot generation" >&2
   fi
 else
-  libcamera-vid "$workaround" --width "$1" --height "$2" --denoise cdn_off --framerate "$3" --save-pts "$MARKERS_DIR/tst.pts" -t "$4" "$SHTR" "$5" -o "$MARKERS_DIR/tst.h264" -n ; echo 
-  rm -f tstamps.csv && ptsanalyze "$MARKERS_DIR/tst.pts"
+  libcamera-vid "$workaround" --width "$1" --height "$2" --denoise cdn_off --framerate "$3" --save-pts "$MARKERS_DIR/tst.pts" -t "$4" "$SHTR" "$5" -o "$MARKERS_DIR/tst.h264" -n &
+  LIBCAM_PID=$!
+  
+  # Stream frame timestamps in real-time while recording
+  if [[ -n "$STREAM_LSL" ]]; then
+    # Wait briefly for PTS file to be created
+    sleep 0.5
+    # Monitor PTS file and output frame timestamps to stdout for Python script
+    tail -f "$MARKERS_DIR/tst.pts" 2>/dev/null | while read -r line; do
+      if [[ -n "$line" ]]; then
+        # Parse PTS format and output frame_number timestamp for LSL
+        frame_num=$(echo "$line" | awk '{print NR}')
+        timestamp=$(echo "$line" | awk '{print $2/1000000}')
+        echo "FRAME_DATA:$frame_num:$timestamp"
+      fi
+    done &
+    TAIL_PID=$!
+  fi
+  
+  # Wait for recording to complete
+  wait $LIBCAM_PID
+  
+  # Stop tail process if it's running
+  if [[ -n "$TAIL_PID" ]]; then
+    kill $TAIL_PID 2>/dev/null || true
+  fi
+  
+  # Convert PTS file to markers file format for LSL
+  if [[ -f "$MARKERS_DIR/tst.pts" ]]; then
+    echo "Converting PTS to markers format..." >&2
+    awk '{print NR " " $2/1000000}' "$MARKERS_DIR/tst.pts" >> "$MARKERS_FILE"
+    echo "Added $(wc -l < "$MARKERS_DIR/tst.pts") frame timestamps to markers file" >&2
+  fi
+  
+  rm -f tstamps.csv && ptsanalyze "$MARKERS_DIR/tst.pts" 2>/dev/null || echo "ptsanalyze not available" >&2
 fi

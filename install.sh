@@ -105,6 +105,7 @@ pip install pylsl
 echo "Installing additional LSL utilities..."
 pip install pyxdf # LSL data format handling
 pip install scipy numpy # For data analysis
+pip install matplotlib # For plotting and visualization
 
 # Make scripts executable
 echo "Making scripts executable..."

@@ -409,6 +409,9 @@ def run_gscrop_script(width, height, fps, duration_ms, exposure_us=None, output_
     # Add environment variables for camera selection
     env = os.environ.copy()
     
+    # Enable real-time LSL streaming
+    env["STREAM_LSL"] = "1"
+    
     # Add cam1 if using second camera
     if os.environ.get("cam1"):
         env["cam1"] = "1"
@@ -443,11 +446,15 @@ def run_gscrop_script(width, height, fps, duration_ms, exposure_us=None, output_
         return None
 
 def monitor_process_output(pipe, name):
-    """Monitor a process output pipe and log the results"""
+    """Monitor a process output pipe and log the results, parsing frame data for LSL"""
+    global frame_queue
+    
     if pipe is None:
         logger.warning(f"No {name} pipe to monitor")
         return
-        
+    
+    frames_processed = 0
+    
     for line in iter(pipe.readline, b''):
         if stop_event.is_set():
             break
@@ -456,14 +463,41 @@ def monitor_process_output(pipe, name):
         if not line_str:
             continue
         
-        # Log the output based on content
+        # Check for frame data from GScrop
+        if line_str.startswith("FRAME_DATA:") and name == "stdout":
+            try:
+                # Parse FRAME_DATA:frame_num:timestamp format
+                parts = line_str.split(":")
+                if len(parts) == 3:
+                    frame_num = int(parts[1])
+                    timestamp = float(parts[2])
+                    
+                    # Add to queue for LSL processing
+                    try:
+                        frame_queue.put_nowait((frame_num, timestamp))
+                        frames_processed += 1
+                        
+                        if frames_processed % 100 == 0:
+                            logger.debug(f"Real-time LSL: processed {frames_processed} frames")
+                    except:
+                        # Queue is full, skip this frame
+                        pass
+                        
+            except (ValueError, IndexError) as e:
+                logger.debug(f"Error parsing frame data: {line_str} - {e}")
+            continue
+        
+        # Log the output based on content (non-frame data)
         if "error" in line_str.lower() or "ERROR" in line_str:
             logger.error(f"GScrop {name}: {line_str}")
         elif "warning" in line_str.lower() or "WARNING" in line_str:
             logger.warning(f"GScrop {name}: {line_str}")
-        else:
+        elif "FRAME_DATA:" not in line_str:  # Don't log frame data as regular output
             logger.debug(f"GScrop {name}: {line_str}")
             
+    if frames_processed > 0:
+        logger.info(f"Real-time LSL monitoring finished: processed {frames_processed} frames")
+    
     logger.debug(f"End of {name} pipe monitoring")
 
 def validate_camera_config(width, height, fps):
@@ -770,12 +804,12 @@ def main():
             logger.error("Failed to start GScrop script")
             return 1
             
-        # Start markers file monitoring thread
-        logger.info("Starting markers file monitoring on separate thread")
-        markers_thread = threading.Thread(target=monitor_markers_file, daemon=True)
-        markers_thread.start()
+        # Start LSL worker thread for real-time processing
+        logger.info("Starting LSL worker thread for real-time frame processing")
+        lsl_thread = threading.Thread(target=lsl_worker_thread, daemon=True)
+        lsl_thread.start()
         
-        # Start PTS monitoring if requested - also on separate thread
+        # Start PTS monitoring if requested (legacy support)
         pts_thread = None
         if args.direct_pts:
             logger.info("Starting PTS file monitoring on separate thread")
@@ -785,6 +819,7 @@ def main():
         
         # Wait for camera process to finish or Ctrl+C
         logger.info(f"Recording started with duration: {args.duration} seconds. Press Ctrl+C to stop earlier.")
+        logger.info("Real-time LSL streaming enabled - frame data will be streamed as it's captured")
         
         # Monitor LSL data collection
         frames_count = 0

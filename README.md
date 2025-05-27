@@ -1,266 +1,171 @@
-# Raspberry Pi IMX296 Camera Capture System
+# IMX296 Camera Recorder with LSL
 
-This repository contains a high-performance camera capture system designed for the IMX296 global shutter camera on Raspberry Pi, with Lab Streaming Layer (LSL) integration for precise frame timing. The system consists of a shell script (`GScrop`) for camera control and a Python script (`simple_camera_lsl.py`) for LSL streaming.
+A comprehensive solution for recording from IMX296 global shutter cameras on Raspberry Pi with Lab Streaming Layer (LSL) integration for real-time frame synchronization.
 
-## ✅ System Status: **WORKING PERFECTLY!**
+## Features
 
-**Latest Test Results (May 27, 2025):**
-- ✅ **Entity Auto-Discovery**: Successfully found "imx296 11-001a" on /dev/media0
-- ✅ **Camera Configuration**: Media device configured successfully
-- ✅ **Video Recording**: 63 frames recorded at 100fps (400x900 resolution)
-- ✅ **High Quality**: H.264 encoding with excellent compression (1123.37 kb/s)
-- ✅ **No Sudo Required**: Works perfectly without administrator privileges
+- **Real-time LSL Streaming**: Frame timestamps are streamed live during recording
+- **Automatic Camera Detection**: Finds IMX296 entities across all media devices
+- **Permission-free Operation**: Uses local directories, no sudo required
+- **Flexible Camera Support**: Works with single or dual camera setups
+- **High-performance Recording**: Optimized for high frame rates and resolutions
+- **Cross-platform LSL**: Compatible with LSL ecosystem for multi-modal data collection
 
-## Overview
+## Dependencies
 
-**IMX296 Global Shutter Camera System for Raspberry Pi**
+### System packages (auto-installed):
+- `rpicam-apps` or `libcamera-apps` (camera control)
+- `media-ctl` and `v4l-utils` (media device management)
+- `cmake`, `build-essential` (for building liblsl)
 
-This system provides high-speed video recording (up to 200fps) with LSL streaming capabilities for scientific and research applications. The system automatically detects unlimited cameras and handles permission requirements gracefully without requiring sudo access.
+### Python packages (auto-installed):
+- `pylsl` (LSL streaming)
+- `pyxdf` (LSL data format)
+- `numpy`, `scipy` (data processing)
+- `matplotlib` (plotting and visualization)
 
-## Key Features
+## Installation
 
-- **Unlimited Camera Support**: Dynamic detection of all available cameras (no hardcoded limits)
-- **No Sudo Required**: Graceful fallback to /tmp if /dev/shm access is limited
-- **LSL Streaming**: Real-time frame synchronization with Lab Streaming Layer
-- **High-Speed Recording**: Up to 200fps with global shutter technology
-- **Cross-Platform**: Works on Raspberry Pi 4/5 and CM4 systems
-- **User-Friendly**: Automatic permission detection with helpful guidance
+Run the installation script as root:
 
-## Quick Start
-
-⚠️ **IMPORTANT: DO NOT USE SUDO** - Run all commands as regular user:
-
-1. **Basic Recording** (no special permissions needed):
-   ```bash
-   ./GScrop 400 900 100 1000    # 100fps for 1 second (TESTED ✅)
-   ```
-
-2. **With LSL Streaming**:
-   ```bash
-   python simple_camera_lsl.py --config-width 400 --config-height 900 --config-fps 100 --duration 5
-   ```
-
-3. **Wrong way** (will cause permission issues):
-   ```bash
-   sudo ./GScrop 400 900 100 1000  # ❌ DON'T DO THIS
-   ```
-
-## Permission Requirements
-
-### Automatic Handling ✅
-The system automatically:
-- Detects writable directories (/dev/shm or falls back to /tmp)
-- Checks user permissions for camera access
-- Provides helpful hints for permission issues
-
-### Optional Optimizations
-For best performance (entirely optional):
 ```bash
-# Add user to video group (one-time setup)
-sudo usermod -a -G video $USER
-# Then logout and login again
-
-# Optional: Ensure /dev/shm is writable for better performance
-sudo chmod 1777 /dev/shm
+sudo ./install.sh
 ```
 
-## System Overview
+This automatically:
+- Installs system dependencies (camera tools, build tools)
+- Builds liblsl from source
+- Creates Python virtual environment
+- Installs Python dependencies including matplotlib
+- Makes scripts executable
+- Verifies camera tool availability
 
-The system is designed to:
+## Usage
 
-1. Capture high-speed video from an IMX296 global shutter camera
-2. Stream frame timing data via LSL for synchronization with other data streams
-3. Record video efficiently at frame rates up to 200 FPS
-4. Optimize performance using multithreaded processing
+### Quick Start
 
-## Requirements
-
-### Hardware
-- Raspberry Pi 4B or Raspberry Pi 5 (recommended for higher framerates)
-- IMX296 global shutter camera compatible with Raspberry Pi
-- Sufficient cooling for the Raspberry Pi during high-speed capture
-
-### Software Dependencies
-- Raspberry Pi OS (Bullseye or Bookworm)
-- Python 3.7+
-- pylsl (Lab Streaming Layer for Python)
-- libcamera tools (typically pre-installed on Raspberry Pi OS)
-
-To install Python dependencies:
+Activate the virtual environment:
 ```bash
-pip install pylsl
+source venv/bin/activate
 ```
 
-## Scripts
-
-### GScrop
-
-`GScrop` is a shell script that configures and controls the IMX296 camera using the Raspberry Pi's native camera tools.
-
-#### Features:
-- Camera configuration for specific resolution and frame rate
-- Exposure control
-- Auto White Balance (AWB) control
-- Multithreaded frame marker generation for synchronization
-- Support for both Raspberry Pi 4 and 5 with different camera backends
-
-#### Usage:
-```bash
-./GScrop width height framerate duration_ms [exposure_us] [output_path]
-```
-
-#### Parameters:
-- `width`: Camera resolution width (must be even number, max 1440)
-- `height`: Camera resolution height (must be even number, max 1080)
-- `framerate`: Target frame rate (up to 200 FPS)
-- `duration_ms`: Recording duration in milliseconds (0 for unlimited)
-- `exposure_us`: (Optional) Exposure time in microseconds
-- `output_path`: (Optional) Path to save the video file
-
-#### Environment Variables:
-- `cam1=1`: Use second camera (if available)
-- `narrow=1`: Use narrow field of view (preview mode)
-- `no_awb=1`: Disable Auto White Balance
-
-### simple_camera_lsl.py
-
-Python script that runs `GScrop` and streams frame timing via LSL.
-
-#### Features:
-- Command line interface for camera settings
-- LSL streaming of frame timing data
-- Multithreaded processing with queue system
-- Real-time monitoring of camera performance
-- Detailed logging and error handling
-
-#### Usage:
-```bash
-python simple_camera_lsl.py [options]
-```
-
-#### Command Line Options:
-- `--width`: Camera width (default: 400)
-- `--height`: Camera height (default: 400) 
-- `--fps`: Target frame rate (default: 100)
-- `--exposure`: Exposure time in microseconds (optional)
-- `--duration`: Recording duration in seconds (default: 10)
-- `--output`: Output video file path (default: auto-generated)
-- `--lsl-name`: LSL stream name (default: IMX296Camera)
-- `--lsl-type`: LSL stream type (default: Video)
-- `--cam1`: Use camera 1 instead of camera 0
-- `--preview`: Show camera preview during recording
-- `--verbose`: Enable verbose logging
-- `--debug`: Enable debug mode with extensive logging
-- `--test-markers`: Test markers file creation and monitoring
-- `--no-awb`: Disable AWB adjustments
-- `--direct-pts`: Directly use PTS file for frame timing
-- `--force`: Force camera configuration even if it might not work
-- `--queue-size`: Size of the frame processing queue (default: 10000)
-
-## How It Works
-
-1. **Dynamic Device Detection**: Automatically finds all available media devices (`/dev/media*`)
-2. **Permission-Aware Operation**: Uses /dev/shm if available, /tmp otherwise
-3. **Media Configuration**: Sets up camera parameters via media-ctl
-4. **Video Recording**: Captures high-speed video with frame synchronization
-5. **LSL Streaming**: Real-time frame markers for lab equipment integration
-
-## LSL Integration
-
-1. **Markers File**: Automatically created in accessible location (`/dev/shm` or `/tmp`)
-2. **Frame Synchronization**: Each frame gets precise timestamp markers
-3. **Real-Time Streaming**: Frame data sent via LSL for lab integration
-4. **Cross-Platform**: Compatible with LSL ecosystem
-
-## Example Usage
-
-### Basic Recording (100 FPS):
+Basic recording with real-time LSL:
 ```bash
 python simple_camera_lsl.py --width 400 --height 400 --fps 100 --duration 30
 ```
 
-### High-Speed Recording (200 FPS):
+Direct camera testing:
 ```bash
-python simple_camera_lsl.py --width 320 --height 240 --fps 200 --duration 10 --no-awb
+./GScrop 400 400 100 10000  # width height fps duration_ms
 ```
 
-### Custom Output Path:
+### Advanced Usage
+
+High-speed recording:
 ```bash
-python simple_camera_lsl.py --width 640 --height 480 --fps 90 --output /home/pi/videos/experiment1
+python simple_camera_lsl.py --width 320 --height 240 --fps 200 --duration 15
 ```
 
-### Second Camera:
+Custom exposure:
 ```bash
-python simple_camera_lsl.py --width 400 --height 400 --fps 100 --cam1
+python simple_camera_lsl.py --width 400 --height 400 --fps 100 --exposure 5000 --duration 30
 ```
 
-## Recommended Configurations
+Dual camera setup:
+```bash
+python simple_camera_lsl.py --cam1 --width 400 --height 400 --fps 100
+```
 
-Based on the hardware capabilities of the IMX296 camera, these configurations provide optimal performance:
+## Real-time LSL Streaming
 
-| Resolution | FPS | Use Case |
-|------------|-----|----------|
-| 320x240    | 200 | Maximum frame rate |
-| 400x400    | 100 | Balanced performance |
-| 640x480    | 90  | Standard resolution |
-| 800x600    | 60  | Higher quality |
+The system now provides **real-time frame synchronization** by:
+
+1. **GScrop script** captures video and streams frame timestamps to stdout
+2. **Python script** reads timestamps in real-time and immediately streams to LSL
+3. **No file delays** - frame data is processed as it's captured
+4. **Low latency** - minimal delay between frame capture and LSL transmission
+
+### LSL Stream Format
+
+- **Stream Name**: `IMX296Camera` (configurable)
+- **Stream Type**: `Video`
+- **Channel Count**: 1 (frame numbers)
+- **Sample Rate**: Matches camera FPS
+- **Data Format**: Frame numbers as double64
+
+## Supported Configurations
+
+| Resolution | Max FPS | Use Case |
+|------------|---------|----------|
+| 400x400    | 100     | Balanced performance |
+| 640x480    | 90      | Standard VGA |
+| 320x240    | 200     | High-speed capture |
+| 800x600    | 60      | High resolution |
+
+## Output Files
+
+All files are saved to local directories:
+
+- **Videos**: `./output/tst.mp4` (or `tst.h264` for older systems)
+- **Recordings**: `./recordings/YYYY-MM-DD/` (when using Python script)
+- **Markers**: `./output/camera_markers.txt` (debugging)
+- **Plots**: `./output/timestamp_plot.png` (if available)
 
 ## Troubleshooting
 
-### Permission Issues
-If you see permission warnings:
+### Camera Not Found
 ```bash
-# Add user to video group
+# Check camera connection
+lsmod | grep imx296
+
+# List media devices  
+ls /dev/media*
+
+# Test camera directly
+rpicam-vid --list-cameras
+```
+
+### Permission Issues
+The system automatically uses local directories to avoid permission problems. If issues persist:
+
+```bash
+# Ensure user is in video group
 sudo usermod -a -G video $USER
 # Logout and login again
 ```
 
-### Camera Not Detected
-```bash
-# Check camera connection
-lsmod | grep imx296
-# Should show camera driver loaded
-```
+### No LSL Data
+- Ensure `pylsl` is installed in the virtual environment
+- Check that `STREAM_LSL=1` environment variable is set
+- Verify camera is actually recording (check video file size)
 
-### Performance Optimization
-- Uses /dev/shm (RAM disk) for temporary files when available
-- Falls back to /tmp if /dev/shm is not accessible
-- Automatic permission detection prevents script failures
+## Technical Details
 
-## Implementation Details
+### Camera Entity Detection
+The system automatically scans all `/dev/media*` devices to find IMX296 entities, supporting configurations like:
+- `imx296 10-001a` 
+- `imx296 11-001a`
+- And others without hardcoded limits
 
-### Multithreaded Design
+### Real-time Processing Pipeline
+1. `rpicam-vid` captures video + PTS timestamps
+2. `tail -f` monitors PTS file in real-time  
+3. Frame data streamed via stdout: `FRAME_DATA:frame_num:timestamp`
+4. Python script parses stdout and pushes to LSL immediately
+5. LSL worker thread handles high-throughput streaming
 
-The system uses multiple threads to optimize performance:
-1. **Main Thread**: Controls overall execution and monitoring
-2. **Markers Monitor Thread**: Reads the markers file and queues frames
-3. **LSL Worker Thread**: Processes frames from queue and sends to LSL
-4. **GScrop Thread**: Manages marker file writing in the background
+### Frame Synchronization
+- Frame numbers start from 1
+- Timestamps in seconds (converted from microseconds)
+- LSL timestamps use system time for synchronization
+- Minimal latency between capture and LSL transmission
 
-### LSL Integration
+## Author
 
-Frame timing data is streamed using LSL with:
-- Stream name: Configurable, default "IMX296Camera"
-- Stream type: Configurable, default "Video"
-- Single channel: Frame number
-- Timestamp: Accurate camera frame timestamp
-
-### Frame Processing Pipeline
-
-1. Camera hardware captures frames
-2. Frame timestamps are written to markers file by GScrop
-3. Monitor thread reads new markers and queues frames
-4. LSL worker processes frames from queue
-5. LSL outlet streams frame data to network
-
-## Performance Considerations
-
-- For frame rates above 120 FPS, use lower resolutions (320x240 or 400x400)
-- The system can buffer up to 10000 frames in the queue (configurable)
-- Higher resolutions require more bandwidth and processing power
-- The Raspberry Pi 5 performs significantly better at high frame rates
-- Using /dev/shm (RAM disk) for temporary files improves performance
+**Anzal KS**  
+Email: anzal.ks@gmail.com  
+GitHub: https://github.com/anzalks/
 
 ## License
 
-This project is released under the MIT License. 
+This project is open source. Please maintain attribution when using or modifying. 
