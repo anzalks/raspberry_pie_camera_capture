@@ -65,50 +65,60 @@ def signal_handler(sig, frame):
         camera_process.terminate()
 
 def create_lsl_outlet(name="IMX296Camera", stream_type="Video", fps=100):
-    """Create LSL outlet for camera metadata"""
+    """Create LSL outlet for camera metadata - sends only frame numbers with timestamps"""
     if not LSL_AVAILABLE:
         logger.warning("pylsl not available, skipping LSL outlet creation")
         return None
         
     try:
         logger.info(f"Creating LSL outlet: {name}")
-        # Create stream info with only one channel for frame numbers
+        # Create stream info with minimal customization - only frame numbers
         info = pylsl.StreamInfo(
             name=name,
             type=stream_type,
             channel_count=1,  # Only frame number
-            nominal_srate=fps,
-            channel_format=pylsl.cf_double64,
-            source_id='imx296_camera'
+            nominal_srate=fps  # Match camera frame rate
+            # Using defaults for: channel_format, source_id
         )
         
-        # Add channel descriptions
+        # Add minimal channel description
         channels = info.desc().append_child("channels")
         channels.append_child("channel").append_child_value("label", "FrameNumber")
         
-        # Create and return the outlet with larger chunk size for better throughput
-        # This allows sending multiple samples at once for higher performance
-        outlet = pylsl.StreamOutlet(info, chunk_size=64, max_buffered=fps*8)
-        logger.info(f"LSL outlet '{name}' created")
+        # Create outlet with default settings
+        outlet = pylsl.StreamOutlet(info)  # Using all defaults
+        logger.info(f"LSL outlet '{name}' created - sending frame numbers with timestamps")
+        
+        # Log stream specifications for verification
+        logger.info(f"LSL Stream Details:")
+        logger.info(f"  - Stream name: {name}")
+        logger.info(f"  - Stream type: {stream_type}")
+        logger.info(f"  - Channels: 1 (FrameNumber only)")
+        logger.info(f"  - Sample rate: {fps} Hz")
+        logger.info(f"  - Data format: Default LSL format")
+        logger.info(f"  - Timestamps: Generated automatically by LSL (for LabRecorder compatibility)")
+        
         return outlet
     except Exception as e:
         logger.error(f"Failed to create LSL outlet: {e}")
         return None
 
 def push_lsl_sample(frame_number, timestamp=None):
-    """Push a sample to LSL with only frame number"""
+    """Push a frame number sample to LSL - LSL handles timestamps automatically"""
     global lsl_outlet, lsl_data
     
+    # Use current time for internal statistics only
     if timestamp is None:
         timestamp = time.time()
     
-    # Save data for debugging/analysis (still save timestamp internally for stats)
+    # Save data internally for statistics (frame_number and our internal timestamp)
     lsl_data.append([timestamp, float(frame_number)])
     
     if lsl_outlet:
         try:
-            # Only push frame number as the sample
-            lsl_outlet.push_sample([float(frame_number)], timestamp)
+            # Let LSL generate timestamps automatically - this is the standard way
+            # LabRecorder and other LSL apps expect this
+            lsl_outlet.push_sample([float(frame_number)])
         except Exception as e:
             logger.error(f"Error pushing LSL sample: {e}")
 
