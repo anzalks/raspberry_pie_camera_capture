@@ -111,14 +111,32 @@ fi
 
 # Find and configure the media device
 MEDIA_DEVICE=""
-for((m=0; m<=5; ++m))
-do
-    echo "Trying media device /dev/media$m" >&2
-    if media-ctl -d /dev/media$m --set-v4l2 "'imx296 $d-001a':0 [fmt:SBGGR10_1X10/${WIDTH}x${HEIGHT} crop:($(( (1440 - WIDTH) / 2 )),$(( (1088 - HEIGHT) / 2 )))/${WIDTH}x$HEIGHT]" -v 2>/dev/null; then
-        MEDIA_DEVICE="/dev/media$m"
+
+# ENHANCEMENT: Dynamic device detection with unlimited scalability
+# Previously limited to /dev/media0-5, now scans ALL available media devices
+# This supports systems with any number of cameras (1 to unlimited)
+# Get all available media devices dynamically (no hardcoded limits)
+MEDIA_DEVICES=($(ls /dev/media* 2>/dev/null | sort -V))
+
+if [ ${#MEDIA_DEVICES[@]} -eq 0 ]; then
+    echo "ERROR: No media devices found in /dev/media*" >&2
+    echo "ERROR: No media devices found in /dev/media*" >> "$MARKERS_FILE"
+    exit 4
+fi
+
+echo "Found ${#MEDIA_DEVICES[@]} media device(s): ${MEDIA_DEVICES[*]}" >&2
+echo "AVAILABLE_DEVICES: ${MEDIA_DEVICES[*]}" >> "$MARKERS_FILE"
+
+# Try to configure each available media device
+for media_dev in "${MEDIA_DEVICES[@]}"; do
+    echo "Trying media device $media_dev" >&2
+    if media-ctl -d "$media_dev" --set-v4l2 "'imx296 $d-001a':0 [fmt:SBGGR10_1X10/${WIDTH}x${HEIGHT} crop:($(( (1440 - WIDTH) / 2 )),$(( (1088 - HEIGHT) / 2 )))/${WIDTH}x$HEIGHT]" -v 2>/dev/null; then
+        MEDIA_DEVICE="$media_dev"
         echo "Successfully configured media device: $MEDIA_DEVICE" >&2
         echo "MEDIA_DEVICE: $MEDIA_DEVICE" >> "$MARKERS_FILE"
         break
+    else
+        echo "Failed to configure $media_dev, trying next..." >&2
     fi
 done
 
