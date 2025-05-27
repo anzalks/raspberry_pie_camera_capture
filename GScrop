@@ -63,15 +63,66 @@ done
 
 # Try to configure each available media device
 CONFIGURED=false
+IMX296_ENTITY=""
+
+# First, discover the actual IMX296 entity name
+echo "Discovering IMX296 entity names..." >&2
 for media_dev in "${MEDIA_DEVICES[@]}"; do
-    echo "Trying media device $media_dev" >&2
-    if media-ctl -d "$media_dev" --set-v4l2 "'imx296 $d-001a':0 [fmt:SBGGR10_1X10/${1}x${2} crop:($(( (1440 - $1) / 2 )),$(( (1088 - $2) / 2 )))/${1}x$2]" -v 2>/dev/null; then
-        echo "Successfully configured media device: $media_dev" >&2
+    echo "Scanning $media_dev for IMX296 entities:" >&2
+    # Get all entities and look for IMX296
+    entities=$(media-ctl -d "$media_dev" -p 2>/dev/null | grep -i "imx296" | head -5)
+    if [[ -n "$entities" ]]; then
+        echo "Found IMX296 entities in $media_dev:" >&2
+        echo "$entities" >&2
+        # Extract the first entity name
+        IMX296_ENTITY=$(echo "$entities" | head -1 | sed -n "s/.*entity \([0-9]*\): \([^(]*\).*/\2/p" | xargs)
+        if [[ -n "$IMX296_ENTITY" ]]; then
+            echo "Will use entity: '$IMX296_ENTITY'" >&2
+            break
+        fi
+    else
+        echo "No IMX296 entities found in $media_dev" >&2
+    fi
+done
+
+# If no IMX296 entity found, try common alternatives
+if [[ -z "$IMX296_ENTITY" ]]; then
+    echo "No IMX296 entity discovered, trying common entity names..." >&2
+    # Try different possible entity names
+    for media_dev in "${MEDIA_DEVICES[@]}"; do
+        for entity in "imx296 $d-001a" "imx296" "imx296-$d" "sensor" "camera"; do
+            echo "Testing entity '$entity' on $media_dev..." >&2
+            if media-ctl -d "$media_dev" -e "$entity" 2>/dev/null; then
+                IMX296_ENTITY="$entity"
+                echo "Found working entity: '$entity'" >&2
+                break 2
+            fi
+        done
+    done
+fi
+
+# If still no entity, show available entities for debugging
+if [[ -z "$IMX296_ENTITY" ]]; then
+    echo "Could not find IMX296 entity. Available entities:" >&2
+    for media_dev in "${MEDIA_DEVICES[@]}"; do
+        echo "=== $media_dev ===" >&2
+        media-ctl -d "$media_dev" -p 2>/dev/null | grep "entity" | head -10 >&2
+    done
+    echo "ERROR: No IMX296 entity found on any media device" >&2
+    exit 1
+fi
+
+# Now try to configure using the discovered entity
+for media_dev in "${MEDIA_DEVICES[@]}"; do
+    echo "Trying media device $media_dev with entity '$IMX296_ENTITY'" >&2
+    if media-ctl -d "$media_dev" --set-v4l2 "'$IMX296_ENTITY':0 [fmt:SBGGR10_1X10/${1}x${2} crop:($(( (1440 - $1) / 2 )),$(( (1088 - $2) / 2 )))/${1}x$2]" -v 2>/dev/null; then
+        echo "Successfully configured media device: $media_dev with entity: $IMX296_ENTITY" >&2
         echo "MEDIA_DEVICE: $media_dev" >> "$MARKERS_FILE"
+        echo "ENTITY: $IMX296_ENTITY" >> "$MARKERS_FILE"
         CONFIGURED=true
         break
     else
-        echo "Failed to configure $media_dev (may need permissions), trying next..." >&2
+        echo "Failed to configure $media_dev with entity '$IMX296_ENTITY', trying next..." >&2
     fi
 done
 
