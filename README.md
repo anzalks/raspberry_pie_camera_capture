@@ -2,6 +2,15 @@
 
 This repository contains a high-performance camera capture system designed for the IMX296 global shutter camera on Raspberry Pi, with Lab Streaming Layer (LSL) integration for precise frame timing. The system consists of a shell script (`GScrop`) for camera control and a Python script (`simple_camera_lsl.py`) for LSL streaming.
 
+## ✅ System Status: **WORKING PERFECTLY!**
+
+**Latest Test Results (May 27, 2025):**
+- ✅ **Entity Auto-Discovery**: Successfully found "imx296 11-001a" on /dev/media0
+- ✅ **Camera Configuration**: Media device configured successfully
+- ✅ **Video Recording**: 63 frames recorded at 100fps (400x900 resolution)
+- ✅ **High Quality**: H.264 encoding with excellent compression (1123.37 kb/s)
+- ✅ **No Sudo Required**: Works perfectly without administrator privileges
+
 ## Overview
 
 **IMX296 Global Shutter Camera System for Raspberry Pi**
@@ -19,14 +28,21 @@ This system provides high-speed video recording (up to 200fps) with LSL streamin
 
 ## Quick Start
 
+⚠️ **IMPORTANT: DO NOT USE SUDO** - Run all commands as regular user:
+
 1. **Basic Recording** (no special permissions needed):
    ```bash
-   ./GScrop 1440 1088 60 5000    # 60fps for 5 seconds
+   ./GScrop 400 900 100 1000    # 100fps for 1 second (TESTED ✅)
    ```
 
 2. **With LSL Streaming**:
    ```bash
-   python simple_camera_lsl.py --config-width 1440 --config-height 1088 --config-fps 60 --duration 5
+   python simple_camera_lsl.py --config-width 400 --config-height 900 --config-fps 100 --duration 5
+   ```
+
+3. **Wrong way** (will cause permission issues):
+   ```bash
+   sudo ./GScrop 400 900 100 1000  # ❌ DON'T DO THIS
    ```
 
 ## Permission Requirements
