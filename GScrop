@@ -15,14 +15,14 @@ if [[ ! -d "/dev/shm" ]]; then
     echo "INFO: /dev/shm not available, using /tmp for markers file" >&2
     MARKERS_DIR="/tmp"
 else
-    # Test write permissions to /dev/shm
-    if ! touch "/dev/shm/test_write_$$" 2>/dev/null; then
-        echo "INFO: /dev/shm not writable, using /tmp for markers file" >&2
+    # Test write permissions to /dev/shm with a more robust test
+    # Try to create a small video-like file to simulate what rpicam-vid needs
+    if dd if=/dev/zero of="/dev/shm/test_video_$$" bs=1024 count=1 2>/dev/null && rm -f "/dev/shm/test_video_$$" 2>/dev/null; then
+        MARKERS_DIR="/dev/shm"
+    else
+        echo "INFO: /dev/shm not writable for video files, using /tmp for markers file" >&2
         echo "HINT: To fix this, run: sudo chmod 1777 /dev/shm" >&2
         MARKERS_DIR="/tmp"
-    else
-        rm -f "/dev/shm/test_write_$$"
-        MARKERS_DIR="/dev/shm"
     fi
 fi
 
