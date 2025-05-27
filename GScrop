@@ -2,7 +2,7 @@
 # shellcheck disable=SC2154
 # (silence shellcheck wrt $cam1 environment variable)
 
-if [[ $# -lt 4 ]];  then  echo "Format: [narrow=1] [cam1=1] $0 width height framerate ms [us]"; exit;  fi
+if [[ $# -lt 4 ]];  then  echo "Format: [narrow=1] [cam1=1] $0 width height framerate ms [us] [output_path]"; exit;  fi
 if [[ "$(( $1 % 2 ))" -eq 1 ]];  then echo "width has to be even"; exit;  fi
 if [[ "$(( $2 % 2 ))" -eq 1 ]];  then echo "height has to be even"; exit;  fi
 
@@ -13,6 +13,20 @@ export d=10; if [[ "" != "$(grep "Revision.*: ...17.$" /proc/cpuinfo)" ]]; then 
 # Use local output directory
 MARKERS_DIR="./output"
 mkdir -p "$MARKERS_DIR"
+
+# Debug output for troubleshooting
+echo "DEBUG: STREAM_LSL environment variable is: '$STREAM_LSL'" >&2
+echo "DEBUG: Number of arguments: $#" >&2
+echo "DEBUG: All arguments: $*" >&2
+
+# Determine output path - use custom path if provided, otherwise use default
+if [[ $# -gt 5 && -n "$6" ]]; then
+    OUTPUT_PATH="$6"
+    echo "Using custom output path: $OUTPUT_PATH" >&2
+else
+    OUTPUT_PATH="$MARKERS_DIR/tst${cam1:+1}"
+    echo "Using default output path: $OUTPUT_PATH" >&2
+fi
 
 # Create markers file for LSL synchronization (simple version)
 MARKERS_FILE="$MARKERS_DIR/camera_markers.txt"
@@ -86,10 +100,11 @@ if [[ "" != "$(grep "Revision.*: ...17.$" /proc/cpuinfo)" ]]
 then
   if [[ -n "$STREAM_LSL" ]]; then
     # Real-time LSL mode: Don't use --save-pts, stream frame info via stdout instead
+    echo "DEBUG: Using STREAM_LSL mode (rpicam-vid without --save-pts)" >&2
     echo "STREAM_START:$(date +%s.%N)" >&2
     
     # Record video without --save-pts to avoid libav encoder issues
-    rpicam-vid "$workaround" ${cam1:+--camera 1} --width "$1" --height "$2" --denoise cdn_off --framerate "$3" -t "$4" "$SHTR" "$5" -o "$MARKERS_DIR/tst${cam1:+1}.mp4" -n &
+    rpicam-vid "$workaround" ${cam1:+--camera 1} --width "$1" --height "$2" --denoise cdn_off --framerate "$3" -t "$4" "$SHTR" "$5" -o "$OUTPUT_PATH.mp4" -n &
     RPICAM_PID=$!
     
     # Simulate frame timing based on target FPS for real-time LSL
@@ -115,9 +130,11 @@ then
     # Wait for recording to complete
     wait $RPICAM_PID
     echo "STREAM_END:$(date +%s.%N)" >&2
+    echo "DEBUG: STREAM_LSL mode completed - NOT running traditional mode" >&2
   else
     # Traditional mode: Record video with PTS file
-    rpicam-vid "$workaround" ${cam1:+--camera 1} --width "$1" --height "$2" --denoise cdn_off --framerate "$3" -t "$4" "$SHTR" "$5" --save-pts "$MARKERS_DIR/tst.pts" -o "$MARKERS_DIR/tst${cam1:+1}.mp4" -n
+    echo "DEBUG: Using traditional mode (rpicam-vid with --save-pts)" >&2
+    rpicam-vid "$workaround" ${cam1:+--camera 1} --width "$1" --height "$2" --denoise cdn_off --framerate "$3" -t "$4" "$SHTR" "$5" --save-pts "$MARKERS_DIR/tst.pts" -o "$OUTPUT_PATH.mp4" -n
     
     # Convert PTS file to markers file format
     if [[ -f "$MARKERS_DIR/tst.pts" ]]; then
@@ -162,8 +179,8 @@ then
     if [[ -n "$TIMESTAMP_SCRIPT" ]]; then
       echo "Using timestamp script: $TIMESTAMP_SCRIPT" >&2
       # Save plot to file instead of displaying interactively to avoid GUI hang
-      "$PYTHON_PATH" "$TIMESTAMP_SCRIPT" --plot --output "$MARKERS_DIR/timestamp_plot.png" ${narrow:+--narrow} "$MARKERS_DIR/tst${cam1:+1}.mp4" 2>/dev/null || \
-      "$PYTHON_PATH" "$TIMESTAMP_SCRIPT" --plot ${narrow:+--narrow} "$MARKERS_DIR/tst${cam1:+1}.mp4" 2>/dev/null || \
+      "$PYTHON_PATH" "$TIMESTAMP_SCRIPT" --plot --output "$MARKERS_DIR/timestamp_plot.png" ${narrow:+--narrow} "$OUTPUT_PATH.mp4" 2>/dev/null || \
+      "$PYTHON_PATH" "$TIMESTAMP_SCRIPT" --plot ${narrow:+--narrow} "$OUTPUT_PATH.mp4" 2>/dev/null || \
       echo "Timestamp analysis completed but plot generation failed" >&2
     else
       echo "Timestamp analysis script not found, skipping plot generation" >&2
@@ -176,7 +193,7 @@ else
     # Real-time LSL mode for older libcamera
     echo "STREAM_START:$(date +%s.%N)" >&2
     
-    libcamera-vid "$workaround" --width "$1" --height "$2" --denoise cdn_off --framerate "$3" -t "$4" "$SHTR" "$5" -o "$MARKERS_DIR/tst.h264" -n &
+    libcamera-vid "$workaround" --width "$1" --height "$2" --denoise cdn_off --framerate "$3" -t "$4" "$SHTR" "$5" -o "$OUTPUT_PATH.h264" -n &
     LIBCAM_PID=$!
     
     # Simulate frame timing based on target FPS
@@ -201,7 +218,7 @@ else
     echo "STREAM_END:$(date +%s.%N)" >&2
   else
     # Traditional mode
-    libcamera-vid "$workaround" --width "$1" --height "$2" --denoise cdn_off --framerate "$3" --save-pts "$MARKERS_DIR/tst.pts" -t "$4" "$SHTR" "$5" -o "$MARKERS_DIR/tst.h264" -n
+    libcamera-vid "$workaround" --width "$1" --height "$2" --denoise cdn_off --framerate "$3" --save-pts "$MARKERS_DIR/tst.pts" -t "$4" "$SHTR" "$5" -o "$OUTPUT_PATH.h264" -n
     
     # Convert PTS file to markers file format for LSL
     if [[ -f "$MARKERS_DIR/tst.pts" ]]; then

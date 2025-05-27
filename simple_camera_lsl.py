@@ -432,6 +432,12 @@ def run_gscrop_script(width, height, fps, duration_ms, exposure_us=None, output_
     if enable_plot:
         logger.info("Plot generation enabled")
     
+    # Debug output
+    logger.debug(f"Environment variables for GScrop:")
+    for key, value in env.items():
+        if key.startswith(('STREAM_', 'ENABLE_', 'cam', 'narrow', 'no_awb')):
+            logger.debug(f"  {key}={value}")
+    
     try:
         # Start the GScrop script
         camera_process = subprocess.Popen(
@@ -778,6 +784,12 @@ def main():
     if args.output:
         video_path = args.output
     
+    # Ensure the output directory exists
+    output_parent_dir = os.path.dirname(video_path)
+    if output_parent_dir and not os.path.exists(output_parent_dir):
+        os.makedirs(output_parent_dir, exist_ok=True)
+        logger.info(f"Created output directory: {output_parent_dir}")
+    
     # Reset LSL data collector
     lsl_data = []
     
@@ -914,7 +926,13 @@ def main():
             
             # Check for expected video files
             try:
-                expected_video = f"{video_path}.mp4" if os.environ.get("cam1") or (os.path.exists("/proc/cpuinfo") and "Revision.*: ...17.$" in open("/proc/cpuinfo").read()) else f"{video_path}.h264"
+                # Determine file extension based on camera type
+                is_newer_pi = os.path.exists("/proc/cpuinfo") and "Revision.*: ...17.$" in open("/proc/cpuinfo").read()
+                expected_extension = ".mp4" if is_newer_pi else ".h264"
+                expected_video = f"{video_path}{expected_extension}"
+                
+                logger.debug(f"Looking for video file: {expected_video}")
+                
                 if os.path.exists(expected_video):
                     video_size = os.path.getsize(expected_video)
                     logger.info(f"Video file created: {expected_video} ({video_size} bytes)")
@@ -922,12 +940,24 @@ def main():
                         logger.warning("Video file is very small! Recording may have failed.")
                 else:
                     # Try the other extension
-                    alt_video = f"{video_path}.h264" if os.environ.get("cam1") or (os.path.exists("/proc/cpuinfo") and "Revision.*: ...17.$" in open("/proc/cpuinfo").read()) else f"{video_path}.mp4"
+                    alt_extension = ".h264" if is_newer_pi else ".mp4"
+                    alt_video = f"{video_path}{alt_extension}"
+                    logger.debug(f"Primary video file not found, trying: {alt_video}")
+                    
                     if os.path.exists(alt_video):
                         video_size = os.path.getsize(alt_video)
                         logger.info(f"Video file created: {alt_video} ({video_size} bytes)")
                     else:
                         logger.warning(f"No video file was created at {video_path}.[mp4/h264]")
+                        
+                        # List files in output directory for debugging
+                        output_dir = os.path.dirname(video_path) if os.path.dirname(video_path) else "./output"
+                        if os.path.exists(output_dir):
+                            files = os.listdir(output_dir)
+                            logger.debug(f"Files in {output_dir}: {files}")
+                        else:
+                            logger.debug(f"Output directory {output_dir} does not exist")
+                            
             except Exception as e:
                 logger.warning(f"Error checking video file: {e}")
         else:
