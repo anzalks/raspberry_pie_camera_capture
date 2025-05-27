@@ -44,38 +44,13 @@ lsl_data = []  # Store LSL data
 
 # Dynamic markers file detection (no sudo required)
 def get_markers_file():
-    """Get the appropriate markers file path based on available permissions"""
-    import subprocess
+    """Get the appropriate markers file path using local output directory"""
     import os
-    import tempfile
     
-    # Check if /dev/shm exists
-    if not os.path.exists("/dev/shm"):
-        return "/tmp/camera_markers.txt"
-    
-    # Test write permissions to /dev/shm with a more robust test
-    # Try to create a small video-like file to simulate what rpicam-vid needs
-    try:
-        test_file = f"/dev/shm/test_video_{os.getpid()}"
-        # Use dd to create a small test file like GScrop does
-        result = subprocess.run(
-            ["dd", "if=/dev/zero", f"of={test_file}", "bs=1024", "count=1"],
-            capture_output=True, timeout=5
-        )
-        
-        if result.returncode == 0:
-            # Cleanup test file
-            try:
-                os.remove(test_file)
-            except:
-                pass
-            return "/dev/shm/camera_markers.txt"
-        else:
-            return "/tmp/camera_markers.txt"
-            
-    except Exception:
-        # If dd command fails or times out, fall back to /tmp
-        return "/tmp/camera_markers.txt"
+    # Use local output directory instead of system paths
+    output_dir = "./output"
+    os.makedirs(output_dir, exist_ok=True)
+    return os.path.join(output_dir, "camera_markers.txt")
 
 MARKERS_FILE = get_markers_file()
 
@@ -358,12 +333,9 @@ def monitor_pts_file(pts_file=None):
     """Monitor the PTS file created by libcamera for older Pi versions"""
     global stop_event, lsl_data, frame_queue
     
-    # Auto-detect PTS file location
+    # Auto-detect PTS file location using local output directory
     if pts_file is None:
-        if os.path.exists("/dev/shm") and os.access("/dev/shm", os.W_OK):
-            pts_file = "/dev/shm/tst.pts"
-        else:
-            pts_file = "/tmp/tst.pts"
+        pts_file = "./output/tst.pts"
     
     logger.info(f"Monitoring PTS file: {pts_file}")
     
@@ -565,8 +537,8 @@ def check_system_requirements():
         logger.debug(f"Markers directory {markers_dir} is accessible and writable")
     else:
         logger.warning(f"Markers directory {markers_dir} may not be accessible")
-        logger.info("HINT: If using /dev/shm, ensure it's mounted and writable")
-        logger.info("HINT: Alternative: Script will automatically use /tmp if /dev/shm unavailable")
+        logger.info("HINT: All output files are now saved to local './output' directory")
+        logger.info("HINT: This avoids permission issues with system directories")
     
     # Test file creation/deletion without sudo
     try:

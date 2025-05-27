@@ -10,21 +10,9 @@ export SHTR=""; if [[ $# -gt 4 ]]; then SHTR="--shutter"; fi
 export workaround=""; if [[ "" != "$(grep '=bookworm' /etc/os-release)" ]]; then workaround="--no-raw"; fi
 export d=10; if [[ "" != "$(grep "Revision.*: ...17.$" /proc/cpuinfo)" ]]; then if [[ "$cam1" == "" ]]; then d=10; else d=11; fi; fi
 
-# Check and create /dev/shm if needed (without sudo)
-if [[ ! -d "/dev/shm" ]]; then
-    echo "INFO: /dev/shm not available, using /tmp for markers file" >&2
-    MARKERS_DIR="/tmp"
-else
-    # Test write permissions to /dev/shm with a more robust test
-    # Try to create a small video-like file to simulate what rpicam-vid needs
-    if dd if=/dev/zero of="/dev/shm/test_video_$$" bs=1024 count=1 2>/dev/null && rm -f "/dev/shm/test_video_$$" 2>/dev/null; then
-        MARKERS_DIR="/dev/shm"
-    else
-        echo "INFO: /dev/shm not writable for video files, using /tmp for markers file" >&2
-        echo "HINT: To fix this, run: sudo chmod 1777 /dev/shm" >&2
-        MARKERS_DIR="/tmp"
-    fi
-fi
+# Use local output directory
+MARKERS_DIR="./output"
+mkdir -p "$MARKERS_DIR"
 
 # Create markers file for LSL synchronization (simple version)
 MARKERS_FILE="$MARKERS_DIR/camera_markers.txt"
