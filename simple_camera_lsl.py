@@ -391,7 +391,7 @@ def monitor_pts_file(pts_file=None):
     
     logger.info(f"Stopped monitoring PTS file after processing {processed_frames} frames")
 
-def run_gscrop_script(width, height, fps, duration_ms, exposure_us=None, output_path=None, preview=False, no_awb=False):
+def run_gscrop_script(width, height, fps, duration_ms, exposure_us=None, output_path=None, preview=False, no_awb=False, enable_plot=False):
     """Run the GScrop shell script to capture video"""
     global camera_process, stop_event
     
@@ -412,6 +412,10 @@ def run_gscrop_script(width, height, fps, duration_ms, exposure_us=None, output_
     # Enable real-time LSL streaming
     env["STREAM_LSL"] = "1"
     
+    # Enable plotting if requested
+    if enable_plot:
+        env["ENABLE_PLOT"] = "1"
+    
     # Add cam1 if using second camera
     if os.environ.get("cam1"):
         env["cam1"] = "1"
@@ -425,6 +429,8 @@ def run_gscrop_script(width, height, fps, duration_ms, exposure_us=None, output_
         env["no_awb"] = "1"
     
     logger.info(f"Starting GScrop with command: {' '.join(cmd)}")
+    if enable_plot:
+        logger.info("Plot generation enabled")
     
     try:
         # Start the GScrop script
@@ -645,6 +651,7 @@ def main():
     parser.add_argument('--direct-pts', action='store_true', help='Directly use PTS file for frame timing if available')
     parser.add_argument('--force', action='store_true', help='Force camera configuration even if it might not work')
     parser.add_argument('--queue-size', type=int, default=10000, help='Size of the frame processing queue (default: 10000)')
+    parser.add_argument('--plot', action='store_true', help='Enable plotting of frame data')
     args = parser.parse_args()
     
     # Update queue size if specified
@@ -797,7 +804,8 @@ def main():
             args.width, args.height, args.fps,
             duration_ms, exposure, video_path,
             preview=args.preview,
-            no_awb=args.no_awb
+            no_awb=args.no_awb,
+            enable_plot=args.plot
         )
         
         if not camera_proc:
