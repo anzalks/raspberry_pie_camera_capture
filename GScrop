@@ -49,6 +49,10 @@ determine_video_format() {
         fi
     fi
     
+    # Initialize codec arguments
+    CODEC_ARGS=""
+    ENCODER_ARGS=""
+    
     # Determine file extension and codec options
     case "$container" in
         "mkv")
@@ -64,10 +68,10 @@ determine_video_format() {
         "mp4")
             VIDEO_OUTPUT="${base_output}.mp4"
             if [[ -n "$fragmented" ]]; then
-                CODEC_ARGS="--codec libav"  # Use libav for fragmented MP4
+                # For fragmented MP4, we'll set full args later to avoid duplication
                 echo "INFO: Using fragmented MP4 for better reliability" >&2
             else
-                CODEC_ARGS=""  # Default MP4
+                CODEC_ARGS=""  # Default MP4 (hardware encoding)
             fi
             ;;
         "h264")
@@ -81,26 +85,29 @@ determine_video_format() {
             ;;
     esac
     
-    # Add encoder-specific arguments
-    if [[ "$encoder" == "hardware" || "$encoder" == "auto" ]]; then
-        # Use hardware encoding (default for rpicam-vid/libcamera-vid)
+    # Handle encoder-specific arguments and fragmented MP4 special case
+    if [[ "$container" == "mp4" && -n "$fragmented" && -n "$is_newer_pi" ]]; then
+        # Special case: fragmented MP4 - use single codec args to avoid duplication
+        CODEC_ARGS="--codec libav --libav-format mp4 --libav-audio 0"
         ENCODER_ARGS=""
+        export LIBAV_EXTRA_ARGS="-movflags frag_keyframe+empty_moov"
+        echo "INFO: Enabled fragmented MP4 mode for interruption resilience" >&2
+    elif [[ "$encoder" == "hardware" || "$encoder" == "auto" ]]; then
+        # Use hardware encoding (default for rpicam-vid/libcamera-vid)
+        # CODEC_ARGS already set above, don't override
         echo "INFO: Using hardware H.264 encoding (GPU accelerated)" >&2
     elif [[ "$encoder" == "fast" ]]; then
         # Use fast CPU encoding preset
-        ENCODER_ARGS="--codec libav --libav-format h264 --libav-audio 0"
+        if [[ -z "$CODEC_ARGS" ]]; then
+            CODEC_ARGS="--codec libav --libav-format h264 --libav-audio 0"
+        fi
         echo "INFO: Using fast software encoding" >&2
     elif [[ "$encoder" == "software" ]]; then
         # Use high-quality CPU encoding
-        ENCODER_ARGS="--codec libav --libav-format h264 --libav-audio 0"
+        if [[ -z "$CODEC_ARGS" ]]; then
+            CODEC_ARGS="--codec libav --libav-format h264 --libav-audio 0"
+        fi
         echo "INFO: Using software encoding for quality" >&2
-    fi
-    
-    # For fragmented MP4, add specific libav options
-    if [[ "$container" == "mp4" && -n "$fragmented" && -n "$is_newer_pi" ]]; then
-        ENCODER_ARGS="--codec libav --libav-format mp4 --libav-audio 0"
-        export LIBAV_EXTRA_ARGS="-movflags frag_keyframe+empty_moov"
-        echo "INFO: Enabled fragmented MP4 mode for interruption resilience" >&2
     fi
     
     echo "FINAL: Video output: $VIDEO_OUTPUT, codec args: $CODEC_ARGS, encoder args: $ENCODER_ARGS" >&2

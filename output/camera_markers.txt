@@ -1,2 +1,2 @@
 Starting recording
-CONFIG: 400x400@100fps
+CONFIG: 900x600@100fps
