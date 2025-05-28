@@ -1036,22 +1036,30 @@ def main():
                 elapsed = current_time - last_report_time
                 fps_rate = new_frames / elapsed if elapsed > 0 else 0
                 
-                # Calculate expected frames vs actual
+                # Calculate actual performance metrics
                 total_elapsed = current_time - start_time
-                expected_frames = int(total_elapsed * args.fps)
                 
                 if new_frames > 0:
                     logger.info(f"Frame rate: {fps_rate:.1f} FPS ({new_frames} frames in {elapsed:.1f}s)")
+                    
+                    # Show performance vs target
+                    target_fps = args.fps
+                    if abs(fps_rate - target_fps) > target_fps * 0.1:  # More than 10% difference
+                        if fps_rate < target_fps * 0.9:
+                            logger.warning(f"Frame rate below target: {fps_rate:.1f} < {target_fps} FPS")
+                        elif fps_rate > target_fps * 1.1:
+                            logger.info(f"Frame rate above target: {fps_rate:.1f} > {target_fps} FPS")
                 
                 # Only show queue size if there are items being buffered
                 current_queue_size = frame_queue.qsize()
                 if current_queue_size > 0:
                     logger.info(f"Frame buffer: {current_queue_size} frames pending processing")
                 
-                if expected_frames > 0 and current_frames > 0:
-                    capture_ratio = current_frames / expected_frames
-                    logger.info(f"Capture ratio: {capture_ratio:.2f} ({current_frames}/{expected_frames} frames)")
-                elif current_frames == 0 and total_elapsed > 3.0:
+                # Show total frames collected so far
+                if current_frames > 0:
+                    avg_fps = current_frames / total_elapsed if total_elapsed > 0 else 0
+                    logger.info(f"Total captured: {current_frames} frames (avg: {avg_fps:.1f} FPS)")
+                elif total_elapsed > 3.0:
                     logger.warning("No frames captured yet - checking LSL configuration...")
                 
                 frames_count = current_frames
