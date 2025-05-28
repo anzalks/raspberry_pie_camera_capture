@@ -99,7 +99,7 @@ def create_lsl_outlet(name="IMX296Camera", stream_type="Video", fps=100):
         
         # Create outlet with buffering for real-time streaming
         outlet = pylsl.StreamOutlet(info, chunk_size=1, max_buffered=3600)  # 1 hour buffer at 1Hz
-        logger.info(f"✅ LSL outlet '{name}' created successfully")
+        logger.info(f"LSL outlet '{name}' created successfully")
         
         # Log stream specifications for verification
         logger.info(f"LSL Stream Details:")
@@ -139,7 +139,7 @@ def lsl_worker_thread():
     """Thread to process frames from the queue and send to LSL"""
     global frame_queue, stop_event
     
-    logger.info("✅ LSL worker thread started")
+    logger.info("LSL worker thread started")
     frames_processed = 0
     last_report_time = time.time()
     
@@ -600,6 +600,9 @@ def check_system_requirements():
     """
     logger.info("Checking system requirements...")
     
+    # Check LSL setup first
+    check_lsl_setup()
+    
     # Check if markers file location is accessible
     markers_dir = os.path.dirname(MARKERS_FILE)
     if os.path.exists(markers_dir) and os.access(markers_dir, os.W_OK):
@@ -652,6 +655,138 @@ def check_system_requirements():
         logger.warning(f"Could not check for camera devices: {e}")
     
     logger.info("System requirements check completed")
+
+def check_lsl_setup():
+    """
+    Comprehensive check of LSL installation and setup
+    Verifies all components installed by the install script
+    """
+    logger.info("Checking LSL setup and configuration...")
+    
+    issues_found = []
+    
+    # 1. Check if setup_lsl_env.sh exists
+    setup_script = "./setup_lsl_env.sh"
+    if os.path.exists(setup_script):
+        logger.info(f"LSL environment setup script found: {setup_script}")
+    else:
+        issues_found.append("setup_lsl_env.sh script not found")
+        logger.error("LSL environment setup script missing")
+        logger.info("HINT: Run the install script: sudo ./install.sh")
+    
+    # 2. Check PYLSL_LIB environment variable
+    pylsl_lib = os.environ.get('PYLSL_LIB')
+    if pylsl_lib:
+        logger.info(f"PYLSL_LIB environment variable set: {pylsl_lib}")
+        # Verify the paths exist
+        lib_paths = pylsl_lib.split(':')
+        found_libs = []
+        for path in lib_paths:
+            if os.path.exists(path):
+                found_libs.append(path)
+        
+        if found_libs:
+            logger.info(f"Found liblsl libraries: {found_libs}")
+        else:
+            issues_found.append("PYLSL_LIB paths do not exist")
+            logger.warning("PYLSL_LIB set but no libraries found at specified paths")
+    else:
+        issues_found.append("PYLSL_LIB environment variable not set")
+        logger.warning("PYLSL_LIB environment variable not set")
+        logger.info("HINT: Run 'source ./setup_lsl_env.sh' before using LSL")
+    
+    # 3. Check LD_LIBRARY_PATH
+    ld_lib_path = os.environ.get('LD_LIBRARY_PATH', '')
+    if '/usr/local/lib' in ld_lib_path:
+        logger.info("LD_LIBRARY_PATH includes /usr/local/lib")
+    else:
+        issues_found.append("LD_LIBRARY_PATH missing /usr/local/lib")
+        logger.warning("LD_LIBRARY_PATH does not include /usr/local/lib")
+        logger.info("HINT: Run 'source ./setup_lsl_env.sh' to set library paths")
+    
+    # 4. Check for liblsl library files
+    lib_locations = [
+        "/usr/local/lib/liblsl.so",
+        "/usr/local/lib64/liblsl.so",
+        "/usr/local/lib/liblsl.so.1.16",
+        "/usr/local/lib64/liblsl.so.1.16"
+    ]
+    
+    found_liblsl = []
+    for lib_path in lib_locations:
+        if os.path.exists(lib_path):
+            found_liblsl.append(lib_path)
+    
+    if found_liblsl:
+        logger.info(f"Found liblsl libraries: {found_liblsl}")
+    else:
+        issues_found.append("liblsl library not found")
+        logger.error("liblsl library not found in standard locations")
+        logger.info("HINT: Run install script to build liblsl: sudo ./install.sh")
+    
+    # 5. Check pylsl import
+    if LSL_AVAILABLE:
+        logger.info("pylsl module imported successfully")
+        
+        # Test basic LSL functionality
+        try:
+            # Test library version
+            version = pylsl.library_version()
+            logger.info(f"LSL library version: {version}")
+            
+            # Test creating a basic stream info
+            test_info = pylsl.StreamInfo("test", "test", 1, 100, pylsl.cf_float32, "test")
+            logger.info("LSL StreamInfo creation test: PASSED")
+            
+            # Test creating an outlet (don't keep it)
+            test_outlet = pylsl.StreamOutlet(test_info)
+            del test_outlet  # Clean up immediately
+            logger.info("LSL StreamOutlet creation test: PASSED")
+            
+        except Exception as e:
+            issues_found.append(f"LSL functionality test failed: {e}")
+            logger.error(f"LSL functionality test failed: {e}")
+    else:
+        issues_found.append("pylsl module not available")
+        logger.error("pylsl module not available")
+        if found_liblsl:
+            logger.info("HINT: liblsl found but pylsl import failed - check virtual environment")
+            logger.info("HINT: Activate venv and reinstall: pip install pylsl")
+        else:
+            logger.info("HINT: Run install script first: sudo ./install.sh")
+    
+    # 6. Check virtual environment
+    venv_path = "./venv"
+    if os.path.exists(venv_path):
+        logger.info(f"Virtual environment found: {venv_path}")
+        
+        # Check if we're in the virtual environment
+        if sys.prefix != sys.base_prefix:
+            logger.info("Currently running in virtual environment")
+        else:
+            issues_found.append("Not running in virtual environment")
+            logger.warning("Not running in virtual environment")
+            logger.info("HINT: Activate with: source venv/bin/activate")
+    else:
+        issues_found.append("Virtual environment not found")
+        logger.error("Virtual environment not found")
+        logger.info("HINT: Run install script: sudo ./install.sh")
+    
+    # Summary
+    if issues_found:
+        logger.warning(f"LSL setup issues found ({len(issues_found)}):")
+        for i, issue in enumerate(issues_found, 1):
+            logger.warning(f"  {i}. {issue}")
+        logger.warning("LSL streaming may not work properly")
+        logger.info("Recommended fix steps:")
+        logger.info("  1. Run: sudo ./install.sh")
+        logger.info("  2. Run: source ./setup_lsl_env.sh")
+        logger.info("  3. Run: source venv/bin/activate")
+    else:
+        logger.info("LSL setup verification: ALL CHECKS PASSED")
+        logger.info("LSL streaming should work properly")
+    
+    return len(issues_found) == 0
 
 def main():
     """Main function"""
@@ -853,7 +988,7 @@ def main():
             
         # Start LSL worker thread for real-time processing
         if LSL_AVAILABLE and lsl_outlet:
-            logger.info("🚀 Starting LSL worker thread for real-time frame processing")
+            logger.info("LSL worker thread for real-time frame processing")
             lsl_thread = threading.Thread(target=lsl_worker_thread, daemon=True)
             lsl_thread.start()
         else:
@@ -878,9 +1013,9 @@ def main():
         # Wait for camera process to finish or Ctrl+C
         logger.info(f"Recording started with duration: {args.duration} seconds. Press Ctrl+C to stop earlier.")
         if LSL_AVAILABLE and lsl_outlet:
-            logger.info("✅ Real-time LSL streaming enabled - frame data will be streamed as it's captured")
+            logger.info("Real-time LSL streaming enabled - frame data will be streamed as it's captured")
         else:
-            logger.warning("⚠️  LSL streaming not available - only video recording")
+            logger.warning("LSL streaming not available - only video recording")
         
         # Monitor LSL data collection
         frames_count = 0
@@ -906,15 +1041,15 @@ def main():
                 expected_frames = int(total_elapsed * args.fps)
                 
                 if new_frames > 0:
-                    logger.info(f"📊 Frame rate: {fps_rate:.1f} FPS ({new_frames} frames in {elapsed:.1f}s)")
+                    logger.info(f"Frame rate: {fps_rate:.1f} FPS ({new_frames} frames in {elapsed:.1f}s)")
                 
-                logger.info(f"📈 Queue size: {frame_queue.qsize()}/{frame_queue.maxsize}")
+                logger.info(f"Queue size: {frame_queue.qsize()}/{frame_queue.maxsize}")
                 
                 if expected_frames > 0 and current_frames > 0:
                     capture_ratio = current_frames / expected_frames
-                    logger.info(f"📊 Capture ratio: {capture_ratio:.2f} ({current_frames}/{expected_frames} frames)")
+                    logger.info(f"Capture ratio: {capture_ratio:.2f} ({current_frames}/{expected_frames} frames)")
                 elif current_frames == 0 and total_elapsed > 3.0:
-                    logger.warning("⚠️  No frames captured yet - checking LSL configuration...")
+                    logger.warning("No frames captured yet - checking LSL configuration...")
                 
                 frames_count = current_frames
                 last_report_time = current_time
