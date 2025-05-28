@@ -1043,7 +1043,10 @@ def main():
                 if new_frames > 0:
                     logger.info(f"Frame rate: {fps_rate:.1f} FPS ({new_frames} frames in {elapsed:.1f}s)")
                 
-                logger.info(f"Queue size: {frame_queue.qsize()}/{frame_queue.maxsize}")
+                # Only show queue size if there are items being buffered
+                current_queue_size = frame_queue.qsize()
+                if current_queue_size > 0:
+                    logger.info(f"Frame buffer: {current_queue_size} frames pending processing")
                 
                 if expected_frames > 0 and current_frames > 0:
                     capture_ratio = current_frames / expected_frames
