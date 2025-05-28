@@ -430,9 +430,9 @@ def run_gscrop_script(width, height, fps, duration_ms, exposure_us=None, output_
     if os.environ.get("cam1"):
         env["cam1"] = "1"
     
-    # Add narrow mode if requested
+    # Enable preview if requested
     if preview:
-        env["narrow"] = "1"
+        env["PREVIEW"] = "1"
         
     # Set no AWB flag if requested
     if no_awb:
@@ -445,7 +445,7 @@ def run_gscrop_script(width, height, fps, duration_ms, exposure_us=None, output_
     # Debug output
     logger.debug(f"Environment variables for GScrop:")
     for key, value in env.items():
-        if key.startswith(('STREAM_', 'ENABLE_', 'cam', 'narrow', 'no_awb')):
+        if key.startswith(('STREAM_', 'ENABLE_', 'cam', 'PREVIEW', 'no_awb')):
             logger.debug(f"  {key}={value}")
     
     try:
