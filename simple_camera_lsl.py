@@ -170,14 +170,14 @@ def lsl_worker_thread():
                 
                 # Report frame rate every 5 seconds
                 current_time = time.time()
-                if current_time - last_report_time >= 5.0 and len(frame_window) >= 10:
+                if current_time - last_report_time >= 10.0 and len(frame_window) >= 50:
                     # Calculate frame rate from rolling window
                     window_duration = frame_window[-1][0] - frame_window[0][0]
                     window_frames = len(frame_window)
                     
                     if window_duration > 0:
                         current_fps = (window_frames - 1) / window_duration
-                        logger.info(f"Current frame rate: {current_fps:.1f} FPS (from {window_frames} frames over {window_duration:.1f}s)")
+                        logger.debug(f"LSL processing: {current_fps:.1f} FPS (rolling window)")
                     
                     last_report_time = current_time
                 
@@ -197,11 +197,11 @@ def lsl_worker_thread():
         total_frames = len(frame_window)
         if total_duration > 0:
             final_fps = (total_frames - 1) / total_duration
-            logger.info(f"LSL worker finished: {frames_processed} frames processed, final rate: {final_fps:.1f} FPS")
+            logger.debug(f"LSL worker finished: {frames_processed} frames processed, final rate: {final_fps:.1f} FPS")
         else:
-            logger.info(f"LSL worker finished: {frames_processed} frames processed")
+            logger.debug(f"LSL worker finished: {frames_processed} frames processed")
     else:
-        logger.info(f"LSL worker finished: {frames_processed} frames processed")
+        logger.debug(f"LSL worker finished: {frames_processed} frames processed")
     
     return True  # Always return success
 
@@ -550,8 +550,9 @@ def monitor_process_output(pipe, name):
                         frames_processed += 1
                         total_frames_captured += 1
                         
-                        if frames_processed % 100 == 0:
-                            logger.debug(f"Real-time LSL: processed {frames_processed} frames")
+                        # Remove the frequent debug message
+                        # if frames_processed % 100 == 0:
+                        #     logger.debug(f"Real-time LSL: processed {frames_processed} frames")
                     except Exception as e:
                         # Log any queue errors but don't drop the frame
                         logger.error(f"Failed to queue frame {frame_num}: {e}")
@@ -571,7 +572,7 @@ def monitor_process_output(pipe, name):
             logger.debug(f"GScrop {name}: {line_str}")
             
     if frames_processed > 0:
-        logger.info(f"Real-time LSL monitoring finished: processed {frames_processed} frames")
+        logger.debug(f"Real-time LSL monitoring finished: processed {frames_processed} frames")
     
     logger.debug(f"End of {name} pipe monitoring")
 
@@ -1073,10 +1074,9 @@ def main():
             logger.warning("LSL streaming not available - only video recording")
         
         # Monitor LSL data collection
-        frames_count = 0
-        lsl_frames_count = 0  # Track LSL processed frames separately
         last_report_time = time.time()
         start_time = time.time()
+        last_frame_count = 0
         
         # Wait for recording to complete
         while camera_proc.poll() is None and not stop_event.is_set():
@@ -1085,56 +1085,17 @@ def main():
             # Sleep briefly
             time.sleep(0.1)
             
-            # Periodically report frame count and LSL status
-            if current_time - last_report_time >= 2.0:
-                current_frames = total_frames_captured  # Use actual captured frames
-                current_lsl_frames = len(lsl_data)  # LSL processed frames
-                new_frames = current_frames - frames_count
-                new_lsl_frames = current_lsl_frames - lsl_frames_count
+            # Report capture frame rate every 5 seconds
+            if current_time - last_report_time >= 5.0:
+                current_frames = total_frames_captured  # Actual captured frames
+                new_frames = current_frames - last_frame_count
                 elapsed = current_time - last_report_time
-                fps_rate = new_frames / elapsed if elapsed > 0 else 0
                 
-                # Calculate actual performance metrics
-                total_elapsed = current_time - start_time
+                if new_frames > 0 and elapsed > 0:
+                    capture_fps = new_frames / elapsed
+                    logger.info(f"Capture rate: {capture_fps:.1f} FPS")
                 
-                if new_frames > 0:
-                    logger.info(f"Camera rate: {fps_rate:.1f} FPS ({new_frames} frames in {elapsed:.1f}s)")
-                    
-                    # Show performance vs target
-                    target_fps = args.fps
-                    if abs(fps_rate - target_fps) > target_fps * 0.1:  # More than 10% difference
-                        if fps_rate < target_fps * 0.9:
-                            logger.warning(f"Camera rate below target: {fps_rate:.1f} < {target_fps} FPS")
-                        elif fps_rate > target_fps * 1.1:
-                            logger.info(f"Camera rate above target: {fps_rate:.1f} > {target_fps} FPS")
-                
-                # Show LSL processing status
-                if LSL_AVAILABLE and lsl_outlet and new_lsl_frames > 0:
-                    lsl_fps = new_lsl_frames / elapsed if elapsed > 0 else 0
-                    logger.info(f"LSL streaming: {lsl_fps:.1f} FPS ({new_lsl_frames} processed)")
-                
-                # Only show queue size if there are items being buffered
-                current_queue_size = frame_queue.qsize()
-                if current_queue_size > 0:
-                    logger.info(f"Frame buffer: {current_queue_size} frames pending processing")
-                
-                # Show total frames collected so far
-                if current_frames > 0:
-                    avg_fps = current_frames / total_elapsed if total_elapsed > 0 else 0
-                    logger.info(f"Total captured: {current_frames} frames (avg: {avg_fps:.1f} FPS)")
-                    
-                    # Show LSL efficiency if applicable
-                    if current_lsl_frames > 0:
-                        lsl_efficiency = (current_lsl_frames / current_frames) * 100
-                        if lsl_efficiency < 95:
-                            logger.warning(f"LSL efficiency: {lsl_efficiency:.1f}% ({current_lsl_frames}/{current_frames} frames)")
-                        else:
-                            logger.debug(f"LSL efficiency: {lsl_efficiency:.1f}%")
-                elif total_elapsed > 3.0:
-                    logger.warning("No frames captured yet - checking camera configuration...")
-                
-                frames_count = current_frames
-                lsl_frames_count = current_lsl_frames
+                last_frame_count = current_frames
                 last_report_time = current_time
         
         # Check exit code
