@@ -458,7 +458,7 @@ def monitor_pts_file(pts_file=None):
     
     logger.info(f"Stopped monitoring PTS file after processing {processed_frames} frames")
 
-def run_gscrop_script(width, height, fps, duration_ms, exposure_us=None, output_path=None, preview=False, no_awb=False, enable_plot=False):
+def run_gscrop_script(width, height, fps, duration_ms, exposure_us=None, output_path=None, preview=False, no_awb=False, enable_plot=False, container='auto', encoder='auto', fragmented=False):
     """Run the GScrop shell script to capture video"""
     global camera_process, stop_event
     
@@ -483,6 +483,19 @@ def run_gscrop_script(width, height, fps, duration_ms, exposure_us=None, output_
     if enable_plot:
         env["ENABLE_PLOT"] = "1"
     
+    # Set video format options
+    if container != 'auto':
+        env["VIDEO_CONTAINER"] = container
+        logger.info(f"Using container format: {container}")
+    
+    if encoder != 'auto':
+        env["VIDEO_ENCODER"] = encoder
+        logger.info(f"Using encoder: {encoder}")
+        
+    if fragmented:
+        env["FRAGMENTED_MP4"] = "1"
+        logger.info("Using fragmented MP4 for better reliability")
+    
     # Add cam1 if using second camera
     if os.environ.get("cam1"):
         env["cam1"] = "1"
@@ -502,7 +515,7 @@ def run_gscrop_script(width, height, fps, duration_ms, exposure_us=None, output_
     # Debug output
     logger.debug(f"Environment variables for GScrop:")
     for key, value in env.items():
-        if key.startswith(('STREAM_', 'ENABLE_', 'cam', 'PREVIEW', 'no_awb')):
+        if key.startswith(('STREAM_', 'ENABLE_', 'cam', 'PREVIEW', 'no_awb', 'VIDEO_', 'FRAGMENTED_')):
             logger.debug(f"  {key}={value}")
     
     try:
@@ -928,6 +941,65 @@ def generate_post_recording_plot(video_path, lsl_data):
         logger.error(f"Error generating plot: {e}")
         return False
 
+def recommend_video_format(fps, duration, priority='balanced'):
+    """
+    Recommend optimal video format settings based on recording parameters and priorities
+    
+    Args:
+        fps: Target frame rate
+        duration: Recording duration in seconds
+        priority: 'speed', 'reliability', 'compatibility', or 'balanced'
+    
+    Returns:
+        tuple: (container, encoder, fragmented, rationale)
+    """
+    
+    if priority == 'speed':
+        # Prioritize fastest encoding
+        if fps > 100:
+            return 'h264', 'hardware', False, "Raw H.264 with hardware encoding for maximum speed at high FPS"
+        else:
+            return 'mkv', 'hardware', False, "MKV with hardware encoding for good speed and reliability"
+            
+    elif priority == 'reliability':
+        # Prioritize against corruption
+        if duration > 60:  # Long recordings
+            return 'mkv', 'hardware', False, "MKV container is most resilient to interruption for long recordings"
+        else:
+            return 'mp4', 'hardware', True, "Fragmented MP4 with hardware encoding for reliability"
+            
+    elif priority == 'compatibility':
+        # Prioritize playback compatibility
+        return 'mp4', 'hardware', True, "Fragmented MP4 for maximum compatibility and reasonable reliability"
+        
+    else:  # balanced
+        # Balance all factors
+        if fps > 120:
+            return 'mkv', 'hardware', False, "MKV for high FPS reliability with hardware encoding"
+        elif duration > 30:
+            return 'mkv', 'hardware', False, "MKV for good reliability on medium-length recordings"
+        else:
+            return 'mp4', 'hardware', True, "Fragmented MP4 for short recordings with good compatibility"
+
+def log_format_recommendations():
+    """Log information about video format choices"""
+    logger.info("Video Format Guide:")
+    logger.info("  📁 Container Formats:")
+    logger.info("    • MKV: Most reliable, streams metadata (best for interruption recovery)")
+    logger.info("    • MP4: Most compatible, but can corrupt on interruption")
+    logger.info("    • H.264: Fastest, raw format, largest files")
+    logger.info("  🎬 Encoder Options:")
+    logger.info("    • hardware: GPU accelerated H.264 (fastest)")
+    logger.info("    • fast: CPU with speed optimizations")
+    logger.info("    • software: CPU encoding (highest quality)")
+    logger.info("  🔧 Special Options:")
+    logger.info("    • --fragmented: Makes MP4 more reliable (writes metadata during recording)")
+    logger.info("  💡 Quick recommendations:")
+    logger.info("    • High FPS (>100): --container mkv --encoder hardware")
+    logger.info("    • Long recordings (>30s): --container mkv")
+    logger.info("    • Maximum compatibility: --container mp4 --fragmented")
+    logger.info("    • Maximum speed: --container h264 --encoder hardware")
+
 def main():
     """Main function"""
     global lsl_outlet, stop_event, lsl_data, MARKERS_FILE, frame_queue
@@ -956,6 +1028,12 @@ def main():
     parser.add_argument('--force', action='store_true', help='Force camera configuration even if it might not work')
     parser.add_argument('--queue-size', type=int, default=10000, help='Size of the frame processing queue (default: 10000)')
     parser.add_argument('--plot', action='store_true', help='Enable plotting of frame data')
+    parser.add_argument('--container', type=str, choices=['mkv', 'mp4', 'h264', 'auto'], default='auto', 
+                       help='Video container format: mkv (most reliable), mp4 (compatible), h264 (fastest), auto (default: auto)')
+    parser.add_argument('--encoder', type=str, choices=['hardware', 'software', 'fast', 'auto'], default='auto',
+                       help='Encoder type: hardware (GPU accelerated), software (CPU), fast (speed optimized), auto (default: auto)')
+    parser.add_argument('--fragmented', action='store_true', 
+                       help='Use fragmented MP4 (more reliable than standard MP4)')
     args = parser.parse_args()
     
     # Update queue size if specified
@@ -1092,6 +1170,38 @@ def main():
     lsl_data = []
     total_frames_captured = 0  # Reset frame counter
     
+    # Handle video format recommendations
+    container = args.container
+    encoder = args.encoder
+    fragmented = args.fragmented
+    
+    # If user chose 'auto', provide intelligent recommendations
+    if container == 'auto' or encoder == 'auto':
+        recommended_container, recommended_encoder, recommended_fragmented, rationale = recommend_video_format(
+            args.fps, args.duration, priority='balanced'
+        )
+        
+        if container == 'auto':
+            container = recommended_container
+            logger.info(f"Auto-selected container: {container}")
+            
+        if encoder == 'auto':
+            encoder = recommended_encoder
+            logger.info(f"Auto-selected encoder: {encoder}")
+            
+        if not fragmented and recommended_fragmented:
+            fragmented = recommended_fragmented
+            logger.info("Auto-enabled fragmented MP4 for better reliability")
+            
+        logger.info(f"Format rationale: {rationale}")
+    
+    # Log format information if verbose
+    if args.verbose or args.debug:
+        log_format_recommendations()
+    
+    # Log final format choices
+    logger.info(f"Video format: container={container}, encoder={encoder}, fragmented={fragmented}")
+    
     # Calculate appropriate exposure time if not specified
     exposure = args.exposure
     if exposure is None:
@@ -1116,7 +1226,10 @@ def main():
             duration_ms, exposure, video_path,
             preview=args.preview,
             no_awb=args.no_awb,
-            enable_plot=args.plot
+            enable_plot=args.plot,
+            container=container,
+            encoder=encoder,
+            fragmented=fragmented
         )
         
         if not camera_proc:
@@ -1256,18 +1369,23 @@ def main():
                     else:
                         logger.info(f"Capture rate within target range: {actual_fps:.1f} FPS")
             
-            # Check for expected video files
+            # Check for expected video files with multiple possible extensions
             try:
-                # Determine file extension based on camera type
-                is_newer_pi = os.path.exists("/proc/cpuinfo") and "Revision.*: ...17.$" in open("/proc/cpuinfo").read()
-                expected_extension = ".mp4" if is_newer_pi else ".h264"
-                expected_video = f"{video_path}{expected_extension}"
+                # Possible extensions based on container choices
+                possible_extensions = [".mkv", ".mp4", ".h264"]
+                found_video = None
                 
-                logger.debug(f"Looking for video file: {expected_video}")
+                for ext in possible_extensions:
+                    test_path = f"{video_path}{ext}"
+                    logger.debug(f"Looking for video file: {test_path}")
+                    
+                    if os.path.exists(test_path):
+                        found_video = test_path
+                        break
                 
-                if os.path.exists(expected_video):
-                    video_size = os.path.getsize(expected_video)
-                    logger.info(f"Video file created: {expected_video} ({video_size} bytes)")
+                if found_video:
+                    video_size = os.path.getsize(found_video)
+                    logger.info(f"Video file created: {found_video} ({video_size} bytes)")
                     if video_size < 1000:
                         logger.warning("Video file is very small! Recording may have failed.")
                     else:
@@ -1275,28 +1393,23 @@ def main():
                         if args.plot and lsl_data:
                             generate_post_recording_plot(video_path, lsl_data)
                 else:
-                    # Try the other extension
-                    alt_extension = ".h264" if is_newer_pi else ".mp4"
-                    alt_video = f"{video_path}{alt_extension}"
-                    logger.debug(f"Primary video file not found, trying: {alt_video}")
+                    logger.warning(f"No video file was created with expected extensions: {possible_extensions}")
                     
-                    if os.path.exists(alt_video):
-                        video_size = os.path.getsize(alt_video)
-                        logger.info(f"Video file created: {alt_video} ({video_size} bytes)")
-                        # Generate plot if requested, using actual video path without extension
-                        if args.plot and lsl_data:
-                            generate_post_recording_plot(video_path, lsl_data)
-                    else:
-                        logger.warning(f"No video file was created at {video_path}.[mp4/h264]")
+                    # List files in output directory for debugging
+                    output_dir = os.path.dirname(video_path) if os.path.dirname(video_path) else "./output"
+                    if os.path.exists(output_dir):
+                        files = os.listdir(output_dir)
+                        logger.debug(f"Files in {output_dir}: {files}")
                         
-                        # List files in output directory for debugging
-                        output_dir = os.path.dirname(video_path) if os.path.dirname(video_path) else "./output"
-                        if os.path.exists(output_dir):
-                            files = os.listdir(output_dir)
-                            logger.debug(f"Files in {output_dir}: {files}")
+                        # Look for any video files with the base name
+                        base_name = os.path.basename(video_path)
+                        matching_files = [f for f in files if f.startswith(base_name)]
+                        if matching_files:
+                            logger.info(f"Found files with base name '{base_name}': {matching_files}")
                         else:
-                            logger.debug(f"Output directory {output_dir} does not exist")
-                            
+                            logger.debug(f"No files found with base name '{base_name}'")
+                    else:
+                        logger.debug(f"Output directory {output_dir} does not exist")
             except Exception as e:
                 logger.warning(f"Error checking video file: {e}")
         else:

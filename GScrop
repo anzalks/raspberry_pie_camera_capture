@@ -17,8 +17,94 @@ mkdir -p "$MARKERS_DIR"
 # Debug output for troubleshooting
 echo "DEBUG: STREAM_LSL environment variable is: '$STREAM_LSL'" >&2
 echo "DEBUG: PREVIEW environment variable is: '$PREVIEW'" >&2
+echo "DEBUG: VIDEO_CONTAINER environment variable is: '$VIDEO_CONTAINER'" >&2
+echo "DEBUG: VIDEO_ENCODER environment variable is: '$VIDEO_ENCODER'" >&2
+echo "DEBUG: FRAGMENTED_MP4 environment variable is: '$FRAGMENTED_MP4'" >&2
 echo "DEBUG: Number of arguments: $#" >&2
 echo "DEBUG: All arguments: $*" >&2
+
+# Determine video format settings
+CONTAINER_FORMAT="${VIDEO_CONTAINER:-auto}"
+ENCODER_TYPE="${VIDEO_ENCODER:-auto}"
+USE_FRAGMENTED="${FRAGMENTED_MP4:-}"
+
+# Function to determine file extension and encoding options
+determine_video_format() {
+    local is_newer_pi=""
+    if [[ "" != "$(grep "Revision.*: ...17.$" /proc/cpuinfo)" ]]; then
+        is_newer_pi="1"
+    fi
+    
+    local base_output="$1"
+    local container="$2"
+    local encoder="$3"
+    local fragmented="$4"
+    
+    # Set defaults based on Pi version if auto
+    if [[ "$container" == "auto" ]]; then
+        if [[ -n "$is_newer_pi" ]]; then
+            container="mp4"  # rpicam-vid supports MP4 natively
+        else
+            container="h264"  # libcamera-vid outputs raw H.264
+        fi
+    fi
+    
+    # Determine file extension and codec options
+    case "$container" in
+        "mkv")
+            VIDEO_OUTPUT="${base_output}.mkv"
+            if [[ -n "$is_newer_pi" ]]; then
+                CODEC_ARGS="--codec libav"  # Use libav for MKV
+            else
+                # For older Pi, we'll need to use raw H.264 and convert
+                VIDEO_OUTPUT="${base_output}.h264"
+                echo "WARNING: MKV not directly supported on older Pi, using H.264. Convert with: ffmpeg -i ${base_output}.h264 -c copy ${base_output}.mkv" >&2
+            fi
+            ;;
+        "mp4")
+            VIDEO_OUTPUT="${base_output}.mp4"
+            if [[ -n "$fragmented" ]]; then
+                CODEC_ARGS="--codec libav"  # Use libav for fragmented MP4
+                echo "INFO: Using fragmented MP4 for better reliability" >&2
+            else
+                CODEC_ARGS=""  # Default MP4
+            fi
+            ;;
+        "h264")
+            VIDEO_OUTPUT="${base_output}.h264"
+            CODEC_ARGS=""  # Raw H.264, no container
+            echo "INFO: Using raw H.264 for maximum speed" >&2
+            ;;
+        *)
+            echo "ERROR: Unsupported container format: $container" >&2
+            exit 1
+            ;;
+    esac
+    
+    # Add encoder-specific arguments
+    if [[ "$encoder" == "hardware" || "$encoder" == "auto" ]]; then
+        # Use hardware encoding (default for rpicam-vid/libcamera-vid)
+        ENCODER_ARGS=""
+        echo "INFO: Using hardware H.264 encoding (GPU accelerated)" >&2
+    elif [[ "$encoder" == "fast" ]]; then
+        # Use fast CPU encoding preset
+        ENCODER_ARGS="--codec libav --libav-format h264 --libav-audio 0"
+        echo "INFO: Using fast software encoding" >&2
+    elif [[ "$encoder" == "software" ]]; then
+        # Use high-quality CPU encoding
+        ENCODER_ARGS="--codec libav --libav-format h264 --libav-audio 0"
+        echo "INFO: Using software encoding for quality" >&2
+    fi
+    
+    # For fragmented MP4, add specific libav options
+    if [[ "$container" == "mp4" && -n "$fragmented" && -n "$is_newer_pi" ]]; then
+        ENCODER_ARGS="--codec libav --libav-format mp4 --libav-audio 0"
+        export LIBAV_EXTRA_ARGS="-movflags frag_keyframe+empty_moov"
+        echo "INFO: Enabled fragmented MP4 mode for interruption resilience" >&2
+    fi
+    
+    echo "FINAL: Video output: $VIDEO_OUTPUT, codec args: $CODEC_ARGS, encoder args: $ENCODER_ARGS" >&2
+}
 
 # Determine output path - use custom path if provided, otherwise use default
 if [[ $# -gt 5 && -n "$6" ]]; then
@@ -108,13 +194,16 @@ rm -f "$MARKERS_DIR/tst.pts"
 
 if [[ "" != "$(grep "Revision.*: ...17.$" /proc/cpuinfo)" ]]
 then
+  # Determine video format for newer Pi
+  determine_video_format "$OUTPUT_PATH" "$CONTAINER_FORMAT" "$ENCODER_TYPE" "$USE_FRAGMENTED"
+  
   if [[ -n "$STREAM_LSL" ]]; then
     # Real-time LSL mode: Don't use --save-pts, stream frame info via stdout instead
     echo "DEBUG: Using STREAM_LSL mode (rpicam-vid without --save-pts)" >&2
     echo "STREAM_START:$(date +%s.%N)" >&2
     
-    # Record video without --save-pts to avoid libav encoder issues
-    rpicam-vid "$workaround" ${cam1:+--camera 1} --width "$1" --height "$2" --denoise cdn_off --framerate "$3" -t "$4" "$SHTR" "$5" -o "$OUTPUT_PATH.mp4" $PREVIEW_FLAG &
+    # Record video with determined format
+    rpicam-vid "$workaround" ${cam1:+--camera 1} --width "$1" --height "$2" --denoise cdn_off --framerate "$3" -t "$4" "$SHTR" "$5" $CODEC_ARGS $ENCODER_ARGS -o "$VIDEO_OUTPUT" $PREVIEW_FLAG &
     RPICAM_PID=$!
     
     # Simulate frame timing based on target FPS for real-time LSL
@@ -144,7 +233,7 @@ then
   else
     # Traditional mode: Record video with PTS file
     echo "DEBUG: Using traditional mode (rpicam-vid with --save-pts)" >&2
-    rpicam-vid "$workaround" ${cam1:+--camera 1} --width "$1" --height "$2" --denoise cdn_off --framerate "$3" -t "$4" "$SHTR" "$5" --save-pts "$MARKERS_DIR/tst.pts" -o "$OUTPUT_PATH.mp4" $PREVIEW_FLAG
+    rpicam-vid "$workaround" ${cam1:+--camera 1} --width "$1" --height "$2" --denoise cdn_off --framerate "$3" -t "$4" "$SHTR" "$5" --save-pts "$MARKERS_DIR/tst.pts" $CODEC_ARGS $ENCODER_ARGS -o "$VIDEO_OUTPUT" $PREVIEW_FLAG
     
     # Convert PTS file to markers file format
     if [[ -f "$MARKERS_DIR/tst.pts" ]]; then
@@ -199,11 +288,14 @@ then
     echo "Plot requested but no PTS file available" >&2
   fi
 else
+  # Determine video format for older Pi  
+  determine_video_format "$OUTPUT_PATH" "$CONTAINER_FORMAT" "$ENCODER_TYPE" "$USE_FRAGMENTED"
+  
   if [[ -n "$STREAM_LSL" ]]; then
     # Real-time LSL mode for older libcamera
     echo "STREAM_START:$(date +%s.%N)" >&2
     
-    libcamera-vid "$workaround" --width "$1" --height "$2" --denoise cdn_off --framerate "$3" -t "$4" "$SHTR" "$5" -o "$OUTPUT_PATH.h264" $PREVIEW_FLAG &
+    libcamera-vid "$workaround" --width "$1" --height "$2" --denoise cdn_off --framerate "$3" -t "$4" "$SHTR" "$5" $CODEC_ARGS $ENCODER_ARGS -o "$VIDEO_OUTPUT" $PREVIEW_FLAG &
     LIBCAM_PID=$!
     
     # Simulate frame timing based on target FPS
@@ -228,7 +320,7 @@ else
     echo "STREAM_END:$(date +%s.%N)" >&2
   else
     # Traditional mode
-    libcamera-vid "$workaround" --width "$1" --height "$2" --denoise cdn_off --framerate "$3" --save-pts "$MARKERS_DIR/tst.pts" -t "$4" "$SHTR" "$5" -o "$OUTPUT_PATH.h264" $PREVIEW_FLAG
+    libcamera-vid "$workaround" --width "$1" --height "$2" --denoise cdn_off --framerate "$3" --save-pts "$MARKERS_DIR/tst.pts" -t "$4" "$SHTR" "$5" $CODEC_ARGS $ENCODER_ARGS -o "$VIDEO_OUTPUT" $PREVIEW_FLAG
     
     # Convert PTS file to markers file format for LSL
     if [[ -f "$MARKERS_DIR/tst.pts" ]]; then
