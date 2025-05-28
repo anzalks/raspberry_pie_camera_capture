@@ -16,9 +16,9 @@ fi
 ACTUAL_USER="${SUDO_USER:-$(logname 2>/dev/null || echo $USER)}"
 ACTUAL_HOME="/home/$ACTUAL_USER"
 
-# Get project directory (where this script is located)
+# Get project directory (where this script is located - keep everything in repo)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+PROJECT_DIR="$SCRIPT_DIR"  # Keep everything in the same directory as the script
 
 echo "Project directory: $PROJECT_DIR"
 echo "Installing for user: $ACTUAL_USER"
@@ -87,8 +87,8 @@ fi
 echo ""
 echo "==== Building LSL Library ===="
 cd "$PROJECT_DIR" || exit 1
-mkdir -p build
-cd build || exit 1
+mkdir -p build_temp  # Use temporary build directory within repo
+cd build_temp || exit 1
 
 # Clone and build liblsl from source with robust error handling
 echo "Cloning liblsl from GitHub..."
@@ -160,7 +160,7 @@ sudo -u "$ACTUAL_USER" python3 -m venv venv || { echo "Failed to create virtual 
 echo "Installing Python dependencies..."
 
 # Create a temporary script to run in the virtual environment
-cat > temp_install.sh << 'EOF'
+cat > "$PROJECT_DIR/temp_install.sh" << 'EOF'
 #!/bin/bash
 source venv/bin/activate
 
@@ -196,15 +196,16 @@ echo "Python package installation complete"
 EOF
 
 # Make the script executable and run it as the actual user
-chmod +x temp_install.sh
+chmod +x "$PROJECT_DIR/temp_install.sh"
+cd "$PROJECT_DIR" || exit 1
 sudo -u "$ACTUAL_USER" ./temp_install.sh || { 
     echo "Python package installation failed"
-    rm -f temp_install.sh
+    rm -f "$PROJECT_DIR/temp_install.sh"
     exit 1
 }
 
 # Clean up
-rm -f temp_install.sh
+rm -f "$PROJECT_DIR/temp_install.sh"
 
 # Set proper ownership for the entire project
 echo "Setting proper file ownership..."
@@ -214,9 +215,16 @@ chown -R "$ACTUAL_USER:$ACTUAL_USER" "$PROJECT_DIR"
 echo "Making scripts executable..."
 chmod +x simple_camera_lsl.py GScrop
 
-# Create LSL environment setup script
+# Clean up temporary build directory
+echo "Cleaning up temporary build files..."
+if [ -d "$PROJECT_DIR/build_temp" ]; then
+    rm -rf "$PROJECT_DIR/build_temp"
+    echo "Removed temporary build directory"
+fi
+
+# Create LSL environment setup script within the repo
 echo "Creating LSL environment setup..."
-cat > setup_lsl_env.sh << 'EOF'
+cat > "$PROJECT_DIR/setup_lsl_env.sh" << 'EOF'
 #!/bin/bash
 # LSL Environment Setup
 # Add this to your ~/.bashrc or run before using LSL
@@ -230,8 +238,8 @@ export LD_LIBRARY_PATH="/usr/local/lib:/usr/local/lib64:$LD_LIBRARY_PATH"
 echo "LSL environment variables set"
 EOF
 
-chmod +x setup_lsl_env.sh
-chown "$ACTUAL_USER:$ACTUAL_USER" setup_lsl_env.sh
+chmod +x "$PROJECT_DIR/setup_lsl_env.sh"
+chown "$ACTUAL_USER:$ACTUAL_USER" "$PROJECT_DIR/setup_lsl_env.sh"
 
 # Test camera detection
 echo ""

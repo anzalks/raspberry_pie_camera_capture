@@ -78,6 +78,7 @@ recordings/
 *_data/
 *_recordings/
 liblsl/
+build_temp/
 
 # Logs
 *.log
