@@ -4,6 +4,7 @@ Simplified IMX296 Camera Recorder with LSL
 ------------------------------------------
 This script uses GScrop shell script to configure and record from an IMX296 global shutter camera
 on Raspberry Pi, streams metadata via LSL, and saves video to a local file.
+Author: Anzal KS (anzal.ks@gmail.com)
 """
 
 import os
@@ -27,6 +28,7 @@ try:
 except ImportError:
     LSL_AVAILABLE = False
     print("Warning: pylsl not installed. LSL streaming will be disabled.")
+    print("HINT: Run 'source ./setup_lsl_env.sh' and ensure liblsl is properly installed")
 
 # ====== Logging setup ======
 logging.basicConfig(
@@ -72,39 +74,51 @@ def create_lsl_outlet(name="IMX296Camera", stream_type="Video", fps=100):
         
     try:
         logger.info(f"Creating LSL outlet: {name}")
-        # Create stream info with minimal customization - only frame numbers
+        # Create stream info with frame number and precise timing
         info = pylsl.StreamInfo(
             name=name,
             type=stream_type,
             channel_count=1,  # Only frame number
-            nominal_srate=fps  # Match camera frame rate
-            # Using defaults for: channel_format, source_id
+            nominal_srate=fps,  # Match camera frame rate
+            channel_format=pylsl.cf_double64,  # Use double precision for frame numbers
+            source_id=f"IMX296_{name}_{int(time.time())}"  # Unique source ID
         )
         
-        # Add minimal channel description
+        # Add channel description for LabRecorder compatibility
         channels = info.desc().append_child("channels")
-        channels.append_child("channel").append_child_value("label", "FrameNumber")
+        ch = channels.append_child("channel")
+        ch.append_child_value("label", "FrameNumber")
+        ch.append_child_value("unit", "count")
+        ch.append_child_value("type", "Frame")
         
-        # Create outlet with default settings
-        outlet = pylsl.StreamOutlet(info)  # Using all defaults
-        logger.info(f"LSL outlet '{name}' created - sending frame numbers with timestamps")
+        # Add metadata for better identification in LabRecorder
+        desc = info.desc()
+        desc.append_child_value("manufacturer", "Anzal_KS")
+        desc.append_child_value("model", "IMX296_GlobalShutter")
+        desc.append_child_value("version", "1.0")
+        
+        # Create outlet with buffering for real-time streaming
+        outlet = pylsl.StreamOutlet(info, chunk_size=1, max_buffered=3600)  # 1 hour buffer at 1Hz
+        logger.info(f"✅ LSL outlet '{name}' created successfully")
         
         # Log stream specifications for verification
         logger.info(f"LSL Stream Details:")
         logger.info(f"  - Stream name: {name}")
         logger.info(f"  - Stream type: {stream_type}")
-        logger.info(f"  - Channels: 1 (FrameNumber only)")
+        logger.info(f"  - Channels: 1 (FrameNumber)")
         logger.info(f"  - Sample rate: {fps} Hz")
-        logger.info(f"  - Data format: Default LSL format")
-        logger.info(f"  - Timestamps: Generated automatically by LSL (for LabRecorder compatibility)")
+        logger.info(f"  - Data format: float64")
+        logger.info(f"  - Source ID: {info.source_id()}")
+        logger.info(f"  - Unique UID: {info.uid()}")
         
         return outlet
     except Exception as e:
         logger.error(f"Failed to create LSL outlet: {e}")
+        logger.error(f"Make sure liblsl is properly installed and PYLSL_LIB is set")
         return None
 
 def push_lsl_sample(frame_number, timestamp=None):
-    """Push a frame number sample to LSL - LSL handles timestamps automatically"""
+    """Push a frame number sample to LSL with precise timestamps"""
     global lsl_outlet, lsl_data
     
     # Use current time for internal statistics only
@@ -116,8 +130,7 @@ def push_lsl_sample(frame_number, timestamp=None):
     
     if lsl_outlet:
         try:
-            # Let LSL generate timestamps automatically - this is the standard way
-            # LabRecorder and other LSL apps expect this
+            # Push sample with LSL-generated timestamp for synchronization
             lsl_outlet.push_sample([float(frame_number)])
         except Exception as e:
             logger.error(f"Error pushing LSL sample: {e}")
@@ -126,7 +139,7 @@ def lsl_worker_thread():
     """Thread to process frames from the queue and send to LSL"""
     global frame_queue, stop_event
     
-    logger.info("LSL worker thread started")
+    logger.info("✅ LSL worker thread started")
     frames_processed = 0
     last_report_time = time.time()
     
@@ -142,11 +155,11 @@ def lsl_worker_thread():
                 
                 frames_processed += 1
                 
-                # Periodic reporting
+                # Periodic reporting for debugging
                 if frames_processed % 100 == 0:
                     current_time = time.time()
                     if current_time - last_report_time >= 5.0:
-                        logger.debug(f"LSL worker processed {frames_processed} frames so far")
+                        logger.info(f"LSL worker processed {frames_processed} frames so far")
                         last_report_time = current_time
                 
                 # Mark task as done
@@ -834,10 +847,25 @@ def main():
             logger.error("Failed to start GScrop script")
             return 1
             
+        # Store the camera process globally for signal handling
+        global camera_process
+        camera_process = camera_proc
+            
         # Start LSL worker thread for real-time processing
-        logger.info("Starting LSL worker thread for real-time frame processing")
-        lsl_thread = threading.Thread(target=lsl_worker_thread, daemon=True)
-        lsl_thread.start()
+        if LSL_AVAILABLE and lsl_outlet:
+            logger.info("🚀 Starting LSL worker thread for real-time frame processing")
+            lsl_thread = threading.Thread(target=lsl_worker_thread, daemon=True)
+            lsl_thread.start()
+        else:
+            logger.warning("LSL not available - frame data will not be streamed")
+        
+        # IMPORTANT: Start markers file monitoring thread for traditional mode support
+        # This acts as a fallback for when STREAM_LSL mode doesn't work properly
+        markers_thread = None
+        if not args.direct_pts:  # Only start if not using PTS monitoring
+            logger.info("Starting markers file monitoring thread (fallback mode)")
+            markers_thread = threading.Thread(target=monitor_markers_file, daemon=True)
+            markers_thread.start()
         
         # Start PTS monitoring if requested (legacy support)
         pts_thread = None
@@ -849,7 +877,10 @@ def main():
         
         # Wait for camera process to finish or Ctrl+C
         logger.info(f"Recording started with duration: {args.duration} seconds. Press Ctrl+C to stop earlier.")
-        logger.info("Real-time LSL streaming enabled - frame data will be streamed as it's captured")
+        if LSL_AVAILABLE and lsl_outlet:
+            logger.info("✅ Real-time LSL streaming enabled - frame data will be streamed as it's captured")
+        else:
+            logger.warning("⚠️  LSL streaming not available - only video recording")
         
         # Monitor LSL data collection
         frames_count = 0
@@ -863,7 +894,7 @@ def main():
             # Sleep briefly
             time.sleep(0.1)
             
-            # Periodically report frame count
+            # Periodically report frame count and LSL status
             if current_time - last_report_time >= 2.0:
                 current_frames = len(lsl_data)
                 new_frames = current_frames - frames_count
@@ -874,12 +905,16 @@ def main():
                 total_elapsed = current_time - start_time
                 expected_frames = int(total_elapsed * args.fps)
                 
-                logger.info(f"Current frame rate: {fps_rate:.1f} FPS ({new_frames} frames in {elapsed:.1f}s)")
-                logger.info(f"Queue size: {frame_queue.qsize()}/{frame_queue.maxsize}")
+                if new_frames > 0:
+                    logger.info(f"📊 Frame rate: {fps_rate:.1f} FPS ({new_frames} frames in {elapsed:.1f}s)")
+                
+                logger.info(f"📈 Queue size: {frame_queue.qsize()}/{frame_queue.maxsize}")
                 
                 if expected_frames > 0 and current_frames > 0:
                     capture_ratio = current_frames / expected_frames
-                    logger.info(f"Capture ratio: {capture_ratio:.2f} ({current_frames}/{expected_frames} frames)")
+                    logger.info(f"📊 Capture ratio: {capture_ratio:.2f} ({current_frames}/{expected_frames} frames)")
+                elif current_frames == 0 and total_elapsed > 3.0:
+                    logger.warning("⚠️  No frames captured yet - checking LSL configuration...")
                 
                 frames_count = current_frames
                 last_report_time = current_time
