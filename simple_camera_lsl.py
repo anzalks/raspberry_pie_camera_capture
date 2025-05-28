@@ -346,12 +346,15 @@ def monitor_markers_file():
                                                     logger.error(f"Failed to queue frame {frame_num}: {e}")
                                                     # Still count as captured since we tried
                                                     total_frames_captured += 1
+                                                
+                                        except ValueError:
+                                            # Second part is not a float timestamp
+                                            logger.debug(f"Invalid timestamp in line: {line}")
                                     except ValueError:
-                                        # Second part is not a float timestamp
-                                        logger.debug(f"Invalid timestamp in line: {line}")
-                            except ValueError:
-                                # First part is not an integer - try other formats
-                                logger.debug(f"Non-numeric frame number in line: {line}")
+                                        # First part is not an integer - try other formats
+                                        logger.debug(f"Non-numeric frame number in line: {line}")
+                            except ValueError as e:
+                                logger.debug(f"Error parsing line '{line}': {e}")
                     
             except Exception as e:
                 logger.warning(f"Error reading markers file: {e}")
