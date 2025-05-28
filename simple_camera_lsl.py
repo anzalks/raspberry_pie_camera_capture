@@ -1164,10 +1164,19 @@ def main():
                 current_frames = total_frames_captured  # Actual captured frames
                 new_frames = current_frames - last_frame_count
                 elapsed = current_time - last_report_time
+                total_elapsed = current_time - start_time
                 
                 if new_frames > 0 and elapsed > 0:
+                    # Show instantaneous rate for this 5-second window
                     capture_fps = new_frames / elapsed
                     logger.info(f"Capture rate: {capture_fps:.1f} FPS")
+                elif total_elapsed > 0 and current_frames > 0:
+                    # Show average rate if no frames in this window
+                    avg_fps = current_frames / total_elapsed
+                    logger.info(f"Capture rate: {avg_fps:.1f} FPS (average)")
+                else:
+                    # Show that we're still waiting for frames
+                    logger.info(f"Capture rate: waiting for frames... ({current_frames} total)")
                 
                 last_frame_count = current_frames
                 last_report_time = current_time
@@ -1220,7 +1229,15 @@ def main():
                 if captured_duration > 0:
                     actual_fps = frame_count / captured_duration
                     expected_fps = args.fps
-                    logger.info(f"Actual FPS: {actual_fps:.2f} (target: {expected_fps})")
+                    logger.info(f"Final capture rate: {actual_fps:.2f} FPS (target: {expected_fps} FPS)")
+                    
+                    # Show performance summary
+                    if actual_fps < expected_fps * 0.8:
+                        logger.warning(f"Capture rate significantly below target: {actual_fps:.1f} < {expected_fps} FPS")
+                    elif actual_fps > expected_fps * 1.2:
+                        logger.info(f"Capture rate above target: {actual_fps:.1f} > {expected_fps} FPS") 
+                    else:
+                        logger.info(f"Capture rate within target range: {actual_fps:.1f} FPS")
             
             # Check for expected video files
             try:
