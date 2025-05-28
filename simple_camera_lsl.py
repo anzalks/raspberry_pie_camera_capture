@@ -843,6 +843,80 @@ def queue_frame_data(frame_num, frame_time, source="unknown"):
     except Exception as e:
         logger.error(f"Failed to queue frame {frame_num}: {e}")
 
+def generate_post_recording_plot(video_path, lsl_data):
+    """Generate frame timing plot after recording is complete"""
+    try:
+        import matplotlib.pyplot as plt
+        import numpy as np
+        
+        if not lsl_data or len(lsl_data) < 2:
+            logger.warning("Insufficient data for plot generation")
+            return False
+        
+        # Extract timestamps and frame numbers
+        timestamps = [float(data[0]) for data in lsl_data]
+        frame_numbers = [int(data[1]) for data in lsl_data]
+        
+        # Calculate frame intervals
+        intervals = []
+        for i in range(1, len(timestamps)):
+            interval = timestamps[i] - timestamps[i-1]
+            intervals.append(interval * 1000)  # Convert to milliseconds
+        
+        # Create plot filename using same base as video
+        plot_path = f"{video_path}_timing.png"
+        
+        # Create the plot
+        plt.figure(figsize=(12, 8))
+        
+        # Plot 1: Frame intervals over time
+        plt.subplot(2, 1, 1)
+        plt.plot(frame_numbers[1:], intervals, 'b-', alpha=0.7, linewidth=1)
+        plt.ylabel('Frame Interval (ms)')
+        plt.title(f'Frame Timing Analysis - {len(lsl_data)} frames captured')
+        plt.grid(True, alpha=0.3)
+        
+        # Add statistics
+        if intervals:
+            mean_interval = np.mean(intervals)
+            std_interval = np.std(intervals)
+            min_interval = np.min(intervals)
+            max_interval = np.max(intervals)
+            
+            plt.axhline(y=mean_interval, color='r', linestyle='--', alpha=0.7, 
+                       label=f'Mean: {mean_interval:.2f}ms')
+            plt.legend()
+        
+        # Plot 2: Histogram of frame intervals
+        plt.subplot(2, 1, 2)
+        if intervals:
+            plt.hist(intervals, bins=50, alpha=0.7, color='green', edgecolor='black')
+            plt.xlabel('Frame Interval (ms)')
+            plt.ylabel('Count')
+            plt.title('Frame Interval Distribution')
+            plt.grid(True, alpha=0.3)
+            
+            # Add statistics text
+            stats_text = f'Mean: {mean_interval:.2f}ms\nStd: {std_interval:.2f}ms\nMin: {min_interval:.2f}ms\nMax: {max_interval:.2f}ms'
+            plt.text(0.02, 0.98, stats_text, transform=plt.gca().transAxes, 
+                    verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+        
+        plt.tight_layout()
+        
+        # Save the plot
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plt.close()  # Close to free memory
+        
+        logger.info(f"Timing plot saved: {plot_path}")
+        return True
+        
+    except ImportError:
+        logger.error("matplotlib not available for plot generation")
+        return False
+    except Exception as e:
+        logger.error(f"Error generating plot: {e}")
+        return False
+
 def main():
     """Main function"""
     global lsl_outlet, stop_event, lsl_data, MARKERS_FILE, frame_queue
@@ -1162,6 +1236,10 @@ def main():
                     logger.info(f"Video file created: {expected_video} ({video_size} bytes)")
                     if video_size < 1000:
                         logger.warning("Video file is very small! Recording may have failed.")
+                    else:
+                        # Generate plot if requested, using actual video path without extension
+                        if args.plot and lsl_data:
+                            generate_post_recording_plot(video_path, lsl_data)
                 else:
                     # Try the other extension
                     alt_extension = ".h264" if is_newer_pi else ".mp4"
@@ -1171,6 +1249,9 @@ def main():
                     if os.path.exists(alt_video):
                         video_size = os.path.getsize(alt_video)
                         logger.info(f"Video file created: {alt_video} ({video_size} bytes)")
+                        # Generate plot if requested, using actual video path without extension
+                        if args.plot and lsl_data:
+                            generate_post_recording_plot(video_path, lsl_data)
                     else:
                         logger.warning(f"No video file was created at {video_path}.[mp4/h264]")
                         
