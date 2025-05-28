@@ -43,6 +43,7 @@ stop_event = threading.Event()
 camera_process = None
 lsl_outlet = None
 lsl_data = []  # Store LSL data
+total_frames_captured = 0  # Track actual frames captured by camera
 
 # Dynamic markers file detection (no sudo required)
 def get_markers_file():
@@ -57,7 +58,7 @@ def get_markers_file():
 MARKERS_FILE = get_markers_file()
 
 # Queue for frame data processing
-frame_queue = Queue(maxsize=10000)  # Large capacity queue
+frame_queue = Queue()  # Unlimited capacity queue - never drop frames
 
 def signal_handler(sig, frame):
     """Handle Ctrl+C gracefully"""
@@ -97,9 +98,10 @@ def create_lsl_outlet(name="IMX296Camera", stream_type="Video", fps=100):
         desc.append_child_value("model", "IMX296_GlobalShutter")
         desc.append_child_value("version", "1.0")
         
-        # Create outlet with buffering for real-time streaming
-        outlet = pylsl.StreamOutlet(info, chunk_size=1, max_buffered=3600)  # 1 hour buffer at 1Hz
+        # Create outlet with minimal buffering for real-time streaming
+        outlet = pylsl.StreamOutlet(info, chunk_size=1, max_buffered=0)  # No buffering, real-time only
         logger.info(f"LSL outlet '{name}' created successfully")
+        logger.info("IMPORTANT: LSL configured for REAL-TIME streaming - every frame will be sent immediately")
         
         # Log stream specifications for verification
         logger.info(f"LSL Stream Details:")
@@ -108,6 +110,7 @@ def create_lsl_outlet(name="IMX296Camera", stream_type="Video", fps=100):
         logger.info(f"  - Channels: 1 (FrameNumber)")
         logger.info(f"  - Sample rate: {fps} Hz")
         logger.info(f"  - Data format: float64")
+        logger.info(f"  - Buffering: DISABLED (real-time only)")
         logger.info(f"  - Source ID: {info.source_id()}")
         logger.info(f"  - Unique UID: {info.uid()}")
         
@@ -139,8 +142,10 @@ def lsl_worker_thread():
     """Thread to process frames from the queue and send to LSL"""
     global frame_queue, stop_event
     
-    logger.info("LSL worker thread started")
+    logger.info("LSL worker thread started - processing EVERY frame captured")
     frames_processed = 0
+    last_frame_num = 0
+    frames_dropped = 0
     last_report_time = time.time()
     
     while not stop_event.is_set():
@@ -150,16 +155,26 @@ def lsl_worker_thread():
                 frame_data = frame_queue.get(timeout=0.1)
                 frame_num, frame_time = frame_data
                 
+                # Check for missing frames (frame number gaps)
+                if last_frame_num > 0 and frame_num > last_frame_num + 1:
+                    missed_frames = frame_num - last_frame_num - 1
+                    frames_dropped += missed_frames
+                    logger.warning(f"Missing {missed_frames} frames: expected {last_frame_num + 1}, got {frame_num}")
+                
                 # Push the frame data to LSL
                 push_lsl_sample(frame_num, frame_time)
                 
                 frames_processed += 1
+                last_frame_num = frame_num
                 
                 # Periodic reporting for debugging
                 if frames_processed % 100 == 0:
                     current_time = time.time()
                     if current_time - last_report_time >= 5.0:
-                        logger.info(f"LSL worker processed {frames_processed} frames so far")
+                        if frames_dropped > 0:
+                            logger.warning(f"LSL worker: {frames_processed} processed, {frames_dropped} frames lost in gaps")
+                        else:
+                            logger.info(f"LSL worker: {frames_processed} frames processed, NO GAPS detected")
                         last_report_time = current_time
                 
                 # Mark task as done
@@ -170,9 +185,14 @@ def lsl_worker_thread():
                 pass
                 
         except Exception as e:
-            logger.warning(f"Error in LSL worker thread: {e}")
+            logger.error(f"Error in LSL worker thread: {e}")
     
-    logger.info(f"LSL worker thread finished after processing {frames_processed} frames")
+    if frames_dropped > 0:
+        logger.warning(f"LSL worker finished: {frames_processed} processed, {frames_dropped} frames lost due to gaps")
+    else:
+        logger.info(f"LSL worker finished: {frames_processed} frames processed, CONTINUOUS STREAM verified")
+    
+    return frames_dropped == 0
 
 def create_output_directory():
     """Create a dated directory structure for recordings"""
@@ -199,7 +219,7 @@ def check_even_dimensions(width, height):
 
 def monitor_markers_file():
     """Monitor the markers file created by GScrop script to get frame information"""
-    global stop_event, lsl_data, MARKERS_FILE, frame_queue
+    global stop_event, lsl_data, MARKERS_FILE, frame_queue, total_frames_captured
     
     # Wait a bit to let the GScrop script start
     time.sleep(0.5)
@@ -313,22 +333,25 @@ def monitor_markers_file():
                                             
                                             # Only process if this is a new frame and not a duplicate
                                             if frame_num > last_frame:
-                                                # Add frame to queue instead of processing directly
-                                                frame_queue.put((frame_num, frame_time))
-                                                last_frame = frame_num
-                                                processed_frames += 1
-                                                
-                                                if processed_frames % 1000 == 0:
-                                                    logger.debug(f"Added {processed_frames} frames to processing queue")
-                                                
-                                        except ValueError:
-                                            # Second part is not a float timestamp
-                                            logger.debug(f"Invalid timestamp in line: {line}")
+                                                # Add frame to queue - always capture every frame
+                                                try:
+                                                    frame_queue.put((frame_num, frame_time))  # Blocking put, never drop
+                                                    last_frame = frame_num
+                                                    processed_frames += 1
+                                                    total_frames_captured += 1  # Count actual captured frames
+                                                    
+                                                    if processed_frames % 1000 == 0:
+                                                        logger.debug(f"Added {processed_frames} frames to processing queue")
+                                                except Exception as e:
+                                                    logger.error(f"Failed to queue frame {frame_num}: {e}")
+                                                    # Still count as captured since we tried
+                                                    total_frames_captured += 1
                                     except ValueError:
-                                        # First part is not an integer - try other formats
-                                        logger.debug(f"Non-numeric frame number in line: {line}")
-                            except ValueError as e:
-                                logger.debug(f"Error parsing line '{line}': {e}")
+                                        # Second part is not a float timestamp
+                                        logger.debug(f"Invalid timestamp in line: {line}")
+                            except ValueError:
+                                # First part is not an integer - try other formats
+                                logger.debug(f"Non-numeric frame number in line: {line}")
                     
             except Exception as e:
                 logger.warning(f"Error reading markers file: {e}")
@@ -482,7 +505,7 @@ def run_gscrop_script(width, height, fps, duration_ms, exposure_us=None, output_
 
 def monitor_process_output(pipe, name):
     """Monitor a process output pipe and log the results, parsing frame data for LSL"""
-    global frame_queue
+    global frame_queue, total_frames_captured
     
     if pipe is None:
         logger.warning(f"No {name} pipe to monitor")
@@ -509,14 +532,17 @@ def monitor_process_output(pipe, name):
                     
                     # Add to queue for LSL processing
                     try:
-                        frame_queue.put_nowait((frame_num, timestamp))
+                        frame_queue.put((frame_num, timestamp))  # Always add frame, never drop
                         frames_processed += 1
+                        total_frames_captured += 1
                         
                         if frames_processed % 100 == 0:
                             logger.debug(f"Real-time LSL: processed {frames_processed} frames")
-                    except:
-                        # Queue is full, skip this frame
-                        pass
+                    except Exception as e:
+                        # Log any queue errors but don't drop the frame
+                        logger.error(f"Failed to queue frame {frame_num}: {e}")
+                        # Still count as captured since we tried
+                        total_frames_captured += 1
                         
             except (ValueError, IndexError) as e:
                 logger.debug(f"Error parsing frame data: {line_str} - {e}")
@@ -950,6 +976,7 @@ def main():
     
     # Reset LSL data collector
     lsl_data = []
+    total_frames_captured = 0  # Reset frame counter
     
     # Calculate appropriate exposure time if not specified
     exposure = args.exposure
@@ -1019,6 +1046,7 @@ def main():
         
         # Monitor LSL data collection
         frames_count = 0
+        lsl_frames_count = 0  # Track LSL processed frames separately
         last_report_time = time.time()
         start_time = time.time()
         
@@ -1031,8 +1059,10 @@ def main():
             
             # Periodically report frame count and LSL status
             if current_time - last_report_time >= 2.0:
-                current_frames = len(lsl_data)
+                current_frames = total_frames_captured  # Use actual captured frames
+                current_lsl_frames = len(lsl_data)  # LSL processed frames
                 new_frames = current_frames - frames_count
+                new_lsl_frames = current_lsl_frames - lsl_frames_count
                 elapsed = current_time - last_report_time
                 fps_rate = new_frames / elapsed if elapsed > 0 else 0
                 
@@ -1040,15 +1070,20 @@ def main():
                 total_elapsed = current_time - start_time
                 
                 if new_frames > 0:
-                    logger.info(f"Frame rate: {fps_rate:.1f} FPS ({new_frames} frames in {elapsed:.1f}s)")
+                    logger.info(f"Camera rate: {fps_rate:.1f} FPS ({new_frames} frames in {elapsed:.1f}s)")
                     
                     # Show performance vs target
                     target_fps = args.fps
                     if abs(fps_rate - target_fps) > target_fps * 0.1:  # More than 10% difference
                         if fps_rate < target_fps * 0.9:
-                            logger.warning(f"Frame rate below target: {fps_rate:.1f} < {target_fps} FPS")
+                            logger.warning(f"Camera rate below target: {fps_rate:.1f} < {target_fps} FPS")
                         elif fps_rate > target_fps * 1.1:
-                            logger.info(f"Frame rate above target: {fps_rate:.1f} > {target_fps} FPS")
+                            logger.info(f"Camera rate above target: {fps_rate:.1f} > {target_fps} FPS")
+                
+                # Show LSL processing status
+                if LSL_AVAILABLE and lsl_outlet and new_lsl_frames > 0:
+                    lsl_fps = new_lsl_frames / elapsed if elapsed > 0 else 0
+                    logger.info(f"LSL streaming: {lsl_fps:.1f} FPS ({new_lsl_frames} processed)")
                 
                 # Only show queue size if there are items being buffered
                 current_queue_size = frame_queue.qsize()
@@ -1059,10 +1094,19 @@ def main():
                 if current_frames > 0:
                     avg_fps = current_frames / total_elapsed if total_elapsed > 0 else 0
                     logger.info(f"Total captured: {current_frames} frames (avg: {avg_fps:.1f} FPS)")
+                    
+                    # Show LSL efficiency if applicable
+                    if current_lsl_frames > 0:
+                        lsl_efficiency = (current_lsl_frames / current_frames) * 100
+                        if lsl_efficiency < 95:
+                            logger.warning(f"LSL efficiency: {lsl_efficiency:.1f}% ({current_lsl_frames}/{current_frames} frames)")
+                        else:
+                            logger.debug(f"LSL efficiency: {lsl_efficiency:.1f}%")
                 elif total_elapsed > 3.0:
-                    logger.warning("No frames captured yet - checking LSL configuration...")
+                    logger.warning("No frames captured yet - checking camera configuration...")
                 
                 frames_count = current_frames
+                lsl_frames_count = current_lsl_frames
                 last_report_time = current_time
         
         # Check exit code
