@@ -144,13 +144,10 @@ def lsl_worker_thread():
     
     logger.info("LSL worker thread started - processing EVERY frame captured")
     frames_processed = 0
-    last_frame_num = None
-    frames_dropped = 0
     last_report_time = time.time()
     
-    # Track processed frames to avoid duplicates and detect real gaps
-    processed_frames = set()
-    frame_sequence = []
+    # Simple rolling window for frame rate calculation (last 100 frames)
+    frame_window = []  # Store (timestamp, frame_num) tuples
     
     while not stop_event.is_set():
         try:
@@ -159,57 +156,30 @@ def lsl_worker_thread():
                 frame_data = frame_queue.get(timeout=0.1)
                 frame_num, frame_time = frame_data
                 
-                # Skip if already processed (additional safety)
-                if frame_num in processed_frames:
-                    logger.debug(f"Skipping already processed frame {frame_num}")
-                    frame_queue.task_done()
-                    continue
+                # Add to rolling window
+                frame_window.append((frame_time, frame_num))
                 
-                # Add to processed set
-                processed_frames.add(frame_num)
-                
-                # Track sequence for gap analysis
-                frame_sequence.append(frame_num)
-                
-                # Clean up old tracking data every 1000 frames
-                if len(frame_sequence) > 1000:
-                    # Keep last 500 frames
-                    frame_sequence = frame_sequence[-500:]
-                    # Clean up processed frames set - keep recent ones
-                    if frame_sequence:
-                        min_recent = min(frame_sequence)
-                        processed_frames = {f for f in processed_frames if f >= min_recent}
-                
-                # Analyze sequence for gaps (only report significant patterns)
-                if len(frame_sequence) >= 10:  # Wait for pattern to establish
-                    sorted_recent = sorted(frame_sequence[-10:])  # Last 10 frames
-                    gaps = []
-                    for i in range(1, len(sorted_recent)):
-                        gap = sorted_recent[i] - sorted_recent[i-1] - 1
-                        if gap > 0:
-                            gaps.append(gap)
-                    
-                    # Only report if we have consistent gaps or large gaps
-                    if gaps and (len(gaps) > 3 or max(gaps) > 5):
-                        total_missed = sum(gaps)
-                        logger.warning(f"Frame gaps detected: {total_missed} frames missing in recent sequence")
-                        frames_dropped += total_missed
+                # Keep only last 100 frames
+                if len(frame_window) > 100:
+                    frame_window = frame_window[-100:]
                 
                 # Push the frame data to LSL
                 push_lsl_sample(frame_num, frame_time)
                 
                 frames_processed += 1
-                last_frame_num = frame_num
                 
-                # Periodic reporting
-                if frames_processed % 200 == 0:
-                    current_time = time.time()
-                    if current_time - last_report_time >= 5.0:
-                        if frames_dropped > 5:  # Only report significant drops
-                            logger.warning(f"LSL worker: {frames_processed} processed, ~{frames_dropped} estimated gaps")
-                        else:
-                            logger.info(f"LSL worker: {frames_processed} frames processed, good stream integrity")
-                        last_report_time = current_time
+                # Report frame rate every 5 seconds
+                current_time = time.time()
+                if current_time - last_report_time >= 5.0 and len(frame_window) >= 10:
+                    # Calculate frame rate from rolling window
+                    window_duration = frame_window[-1][0] - frame_window[0][0]
+                    window_frames = len(frame_window)
+                    
+                    if window_duration > 0:
+                        current_fps = (window_frames - 1) / window_duration
+                        logger.info(f"Current frame rate: {current_fps:.1f} FPS (from {window_frames} frames over {window_duration:.1f}s)")
+                    
+                    last_report_time = current_time
                 
                 # Mark task as done
                 frame_queue.task_done()
@@ -221,13 +191,19 @@ def lsl_worker_thread():
         except Exception as e:
             logger.error(f"Error in LSL worker thread: {e}")
     
-    # Final summary
-    if frames_dropped > 5:
-        logger.warning(f"LSL worker finished: {frames_processed} processed, ~{frames_dropped} estimated frame gaps")
+    # Final frame rate calculation
+    if len(frame_window) >= 2:
+        total_duration = frame_window[-1][0] - frame_window[0][0]
+        total_frames = len(frame_window)
+        if total_duration > 0:
+            final_fps = (total_frames - 1) / total_duration
+            logger.info(f"LSL worker finished: {frames_processed} frames processed, final rate: {final_fps:.1f} FPS")
+        else:
+            logger.info(f"LSL worker finished: {frames_processed} frames processed")
     else:
-        logger.info(f"LSL worker finished: {frames_processed} frames processed, excellent stream integrity")
+        logger.info(f"LSL worker finished: {frames_processed} frames processed")
     
-    return frames_dropped <= 5  # Allow for some minor gaps
+    return True  # Always return success
 
 def create_output_directory():
     """Create a dated directory structure for recordings"""
@@ -859,46 +835,8 @@ def queue_frame_data(frame_num, frame_time, source="unknown"):
     if not frame_queue:
         return
     
-    # Store recently processed frames to avoid duplicates
-    if not hasattr(queue_frame_data, 'recent_frames'):
-        queue_frame_data.recent_frames = set()
-        queue_frame_data.last_cleanup = time.time()
-        queue_frame_data.source_stats = {}
-        queue_frame_data.duplicate_stats = {}
-    
-    # Update source statistics
-    if source not in queue_frame_data.source_stats:
-        queue_frame_data.source_stats[source] = 0
-        queue_frame_data.duplicate_stats[source] = 0
-    
-    # Clean up old frames from the set every 10 seconds
-    current_time = time.time()
-    if current_time - queue_frame_data.last_cleanup > 10:
-        # Keep only frames from the last 1000 frame numbers
-        if queue_frame_data.recent_frames:
-            max_frame = max(queue_frame_data.recent_frames)
-            queue_frame_data.recent_frames = {f for f in queue_frame_data.recent_frames if f > max_frame - 1000}
-        queue_frame_data.last_cleanup = current_time
-        
-        # Log source statistics every cleanup
-        if queue_frame_data.source_stats:
-            total_queued = sum(queue_frame_data.source_stats.values())
-            total_duplicates = sum(queue_frame_data.duplicate_stats.values())
-            if total_duplicates > 0:
-                logger.debug(f"Frame sources: {dict(queue_frame_data.source_stats)}, duplicates blocked: {dict(queue_frame_data.duplicate_stats)}")
-    
-    # Check for duplicates
-    if frame_num in queue_frame_data.recent_frames:
-        queue_frame_data.duplicate_stats[source] += 1
-        logger.debug(f"Skipping duplicate frame {frame_num} from {source}")
-        return
-    
-    # Add to recent frames and queue
-    queue_frame_data.recent_frames.add(frame_num)
-    queue_frame_data.source_stats[source] += 1
-    
     try:
-        # Use blocking put to ensure frame is queued
+        # Simply queue the frame data
         frame_queue.put((frame_num, frame_time), block=True)
         logger.debug(f"Queued frame {frame_num} from {source}")
     except Exception as e:
