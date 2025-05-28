@@ -306,6 +306,13 @@ def monitor_markers_file():
                         if check_count % 5 == 0:
                             logger.debug(f"No new lines in markers file for {int(time.time() - last_check_time)}s, checking file size: {current_pos} bytes")
                             
+                            # Check if file has actually grown
+                            try:
+                                file_size = os.path.getsize(MARKERS_FILE)
+                                logger.debug(f"Markers file size: {file_size} bytes, current position: {current_pos}")
+                            except Exception as e:
+                                logger.debug(f"Error checking file size: {e}")
+                            
                             # Check file content from the beginning if needed
                             if len(lsl_data) == 0 and current_pos > 0:
                                 logger.debug("No LSL data collected yet, reading file from beginning")
@@ -834,14 +841,18 @@ def queue_frame_data(frame_num, frame_time, source="unknown"):
     global frame_queue
     
     if not frame_queue:
+        logger.debug(f"No frame queue available - frame {frame_num} from {source} not queued")
         return
     
     try:
         # Simply queue the frame data
         frame_queue.put((frame_num, frame_time), block=True)
-        logger.debug(f"Queued frame {frame_num} from {source}")
+        
+        # Periodic debug logging (every 100 frames) to avoid spam
+        if frame_num % 100 == 0:
+            logger.debug(f"Queued frame {frame_num} from {source} (queue size: {frame_queue.qsize()})")
     except Exception as e:
-        logger.error(f"Failed to queue frame {frame_num}: {e}")
+        logger.error(f"Failed to queue frame {frame_num} from {source}: {e}")
 
 def generate_post_recording_plot(video_path, lsl_data):
     """Generate frame timing plot after recording is complete"""
@@ -1161,10 +1172,16 @@ def main():
             
             # Report capture frame rate every 5 seconds
             if current_time - last_report_time >= 5.0:
-                current_frames = total_frames_captured  # Actual captured frames
+                # Use LSL data length as the most reliable frame counter
+                current_frames = len(lsl_data)  # Frames actually processed and sent to LSL
                 new_frames = current_frames - last_frame_count
                 elapsed = current_time - last_report_time
                 total_elapsed = current_time - start_time
+                
+                # Debug: Check different frame counters
+                lsl_frames = len(lsl_data)
+                queue_size = frame_queue.qsize()
+                logger.debug(f"Frame counters - LSL: {lsl_frames}, Queue: {queue_size}, total_frames_captured: {total_frames_captured}")
                 
                 if new_frames > 0 and elapsed > 0:
                     # Show instantaneous rate for this 5-second window
